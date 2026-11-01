@@ -2,14 +2,18 @@ import { ScrollView, StyleSheet, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AboutSection } from '../../ui/settings/AboutSection';
+import { useAppState } from '../../state/hooks';
 import { ComputerSection } from '../../ui/settings/ComputerSection';
 import { NotificationSection } from '../../ui/settings/NotificationSection';
 import { TerminalSection } from '../../ui/settings/TerminalSection';
+import { TransportPicker } from '../../ui/settings/TransportPicker';
 import { colors } from '../../ui/theme';
 
 /** Each section is its own component so features can grow independently. */
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const { machine } = useAppState();
+  const computer = machine?.mode === 'relay' ? machine.computer : null;
   return (
     <ScrollView
       style={styles.screen}
@@ -17,6 +21,7 @@ export default function SettingsScreen() {
     >
       <Text style={styles.title}>设置</Text>
       <ComputerSection />
+      {computer ? <TransportPicker computerId={computer.id} /> : null}
       <TerminalSection />
       <NotificationSection />
       <AboutSection />

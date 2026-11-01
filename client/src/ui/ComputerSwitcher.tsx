@@ -9,6 +9,7 @@ import { runOrAlert } from './computerActions';
 import { Icon } from './Icon';
 import { Sheet, SheetRow, useSheet } from './Sheet';
 import { machineLabel, statusColor, statusLabel } from './status';
+import { TransportBadge } from './TransportBadge';
 import { colors } from './theme';
 
 /**
@@ -51,6 +52,7 @@ export function ComputerSwitcher() {
         <Text style={styles.text} numberOfLines={1}>
           {label.name} · {stateText}
         </Text>
+        {!demo && status.state === 'open' ? <TransportBadge channel={machine.channel} /> : null}
         <Icon name="expand" size={11} color={colors.muted} />
       </Pressable>
 

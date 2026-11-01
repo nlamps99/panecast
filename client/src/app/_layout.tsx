@@ -9,6 +9,7 @@ import { useNotificationRouting } from '../notifications/useNotificationRouting'
 import { appStore } from '../state/appStore';
 import { useAppState } from '../state/hooks';
 import { loadPrefs } from '../state/prefs';
+import { InboxToast } from '../ui/InboxToast';
 import { colors } from '../ui/theme';
 
 void SplashScreen.preventAutoHideAsync();
@@ -49,6 +50,7 @@ export default function RootLayout() {
         </Stack.Protected>
         <Stack.Screen name="pair" options={{ presentation: 'modal' }} />
       </Stack>
+      {phase === 'ready' ? <InboxToast /> : null}
     </GestureHandlerRootView>
   );
 }

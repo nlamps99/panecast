@@ -20,6 +20,7 @@ const item: InboxItem = {
   body: '',
   at: 0,
   read: false,
+  needsInput: false,
 };
 
 describe('parseNotification', () => {

@@ -1,5 +1,6 @@
 import { DemoChannel } from '../demo/demoChannel';
 import { parsePairingUrl } from '../protocol/pairing';
+import { forgetInbox, inboxStorageKey } from '../session/inboxPersistence';
 import { InboxStore } from '../session/inboxStore';
 import { TerminalSession, type RpcChannel, type StatusSource } from '../session/terminalSession';
 import { WorkspaceStore } from '../session/workspaceStore';
@@ -15,6 +16,7 @@ import {
 } from './computers';
 import { createComputerChannel, PairingError, registerComputer, type ComputerChannel } from './connect';
 import { loadComputers, saveComputers, storageSupported } from './pairingStorage';
+import { getPrefs } from './prefs';
 
 export { PairingError } from './connect';
 
@@ -103,6 +105,7 @@ export class AppStore {
     await saveComputers(computers);
     if (this.state.machine?.computer?.id === computerId) this.connect(computers);
     else this.setState({ ...this.state, computers });
+    void forgetInbox(inboxStorageKey(computerId));
   }
 
   /** Forgets the current computer. */
@@ -170,14 +173,15 @@ export class AppStore {
       return;
     }
     const channel = createComputerChannel(computer, computers.transport?.[computer.id] ?? 'auto', log);
-    this.activate(computers, channel ? { mode: 'relay', computer, channel, ...this.stores(channel) } : null);
+    this.activate(computers, channel ? { mode: 'relay', computer, channel, ...this.stores(channel, computer) } : null);
   }
 
-  private stores(channel: RpcChannel) {
+  /** The demo's inbox is not saved; a computer's inbox is, per computer. */
+  private stores(channel: RpcChannel, computer: StoredComputer | null = null) {
     return {
-      session: new TerminalSession(channel, { liveLines: 120, log }),
+      session: new TerminalSession(channel, { liveLines: getPrefs().historyLines, log }),
       workspaces: new WorkspaceStore(channel),
-      inbox: new InboxStore(channel),
+      inbox: new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {}),
     };
   }
 

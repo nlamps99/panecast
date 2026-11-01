@@ -1,7 +1,7 @@
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { Redirect, router, useCanGoBack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { appStore, PairingError } from '../state/appStore';
@@ -112,8 +112,15 @@ export default function PairScreen() {
     );
   }
 
+  // Scrolls so the paste field and 配对 stay reachable above the keyboard (both platforms draw edge to edge).
   return (
-    <View style={[styles.screen, { paddingTop, paddingBottom: insets.bottom + 12 }]}>
+    <KeyboardAvoidingView style={styles.fill} behavior="padding">
+    <ScrollView
+      style={styles.fill}
+      contentContainerStyle={[styles.screen, { paddingTop, paddingBottom: insets.bottom + 12 }]}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+    >
       <Header title={title} presented={presented} />
       <Text style={styles.body}>
         {repairing ? `「${repairing.name}」的配对已失效。在这台 Mac 上` : '在 Mac 上'}运行 <Text style={styles.code}>cmux-relay pair</Text>
@@ -137,6 +144,8 @@ export default function PairScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
+            returnKeyType="go"
+            onSubmitEditing={() => manualText && !busy && void attempt(manualText)}
             style={styles.manualInput}
           />
           <Pressable
@@ -158,7 +167,8 @@ export default function PairScreen() {
           <Text style={styles.link}>还没有电脑可连？先看看演示</Text>
         </Pressable>
       )}
-    </View>
+    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -179,7 +189,8 @@ function Header({ title, presented }: { title: string; presented: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.canvas, paddingHorizontal: 20, gap: 12 },
+  fill: { flex: 1, backgroundColor: colors.canvas },
+  screen: { flexGrow: 1, backgroundColor: colors.canvas, paddingHorizontal: 20, gap: 12 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   title: { flex: 1, color: colors.ink, fontSize: 24, fontWeight: '600' },

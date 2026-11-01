@@ -63,6 +63,9 @@
       "/node_modules/",
       "/ios/",
       "/android/"
+    ],
+    "setupFiles": [
+      "<rootDir>/jest.setup.js"
     ]
   }
 }

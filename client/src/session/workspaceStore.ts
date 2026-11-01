@@ -21,6 +21,11 @@ export type WorkspaceState = {
   windows: readonly WindowInfo[];
   /** The window `workspaces` belong to; null means cmux's key window, unscoped. */
   selectedWindowId: string | null;
+  /**
+   * Every workspace and terminal seen on this connection, in any window, so
+   * an open terminal keeps its titles after the list switches windows.
+   */
+  known: { workspaces: Readonly<Record<string, WorkspaceInfo>>; surfaces: Readonly<Record<string, readonly SurfaceInfo[]>> };
   loading: boolean;
   /** Set once a refresh has finished, successfully or not; cleared while switching windows. */
   loaded: boolean;
@@ -55,6 +60,7 @@ export class WorkspaceStore {
     surfaces: {},
     windows: [],
     selectedWindowId: null,
+    known: { workspaces: {}, surfaces: {} },
     loading: false,
     loaded: false,
     error: null,
@@ -174,7 +180,11 @@ export class WorkspaceStore {
       workspaces.forEach((workspace, i) => {
         surfaces[workspace.id] = lists[i];
       });
-      this.update({ windows, selectedWindowId, workspaces, surfaces, loading: false, loaded: true, error: null });
+      const known = {
+        workspaces: { ...this.state.known.workspaces, ...Object.fromEntries(workspaces.map((w) => [w.id, w])) },
+        surfaces: { ...this.state.known.surfaces, ...surfaces },
+      };
+      this.update({ windows, selectedWindowId, workspaces, surfaces, known, loading: false, loaded: true, error: null });
     } catch (error) {
       if (generation !== this.generation) return;
       this.update({ loading: false, loaded: true, error: describeError(error) });

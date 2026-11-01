@@ -34,7 +34,7 @@ export function TerminalScreen() {
   const { channel, session } = machine;
   const status = useConnectionStatus(channel);
   const state = useStore(session);
-  const { workspaces, surfaces } = useStore(machine.workspaces);
+  const { workspaces, surfaces, known } = useStore(machine.workspaces);
   const { fontSize } = usePrefs();
   const inputRef = useRef<TerminalInputHandle>(null);
   const keyboardVisible = useKeyboardVisible();
@@ -82,8 +82,9 @@ export function TerminalScreen() {
     };
   }, [isOpen, channel, session]);
 
-  const workspace = workspaces.find((w) => w.id === target?.workspaceId);
-  const siblings = target ? (surfaces[target.workspaceId] ?? []) : [];
+  // The list may show another cmux window; the open terminal keeps its own titles.
+  const workspace = workspaces.find((w) => w.id === target?.workspaceId) ?? (target ? known.workspaces[target.workspaceId] : undefined);
+  const siblings = target ? (surfaces[target.workspaceId] ?? known.surfaces[target.workspaceId] ?? []) : [];
   const surface = siblings.find((s) => s.id === target?.surfaceId);
   const banner = statusBanner(status) ?? state.subscriptionError ?? targetError;
   // The last reading stays in the store while disconnected; it is stale, so hide it.
