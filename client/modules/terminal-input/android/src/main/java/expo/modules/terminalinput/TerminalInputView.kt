@@ -124,6 +124,14 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
       setHorizontallyScrolling(false)
       maxLines = Int.MAX_VALUE
       isVerticalScrollBarEnabled = false
+      // Lines are ascent + descent (1.3 em for GeistMono), as on iOS and in the
+      // JS height constants; the default pads them to the font's 1.45 em bounds,
+      // and from API 35 a CJK locale raises every line to the CJK font's height.
+      // Lines with Chinese still grow to fit through fallback line spacing.
+      includeFontPadding = false
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+        setLocalePreferredLineHeightForMinimumUsed(false)
+      }
       setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
       // Keyboards report the action key differently (SEND, DONE, UNSPECIFIED,
       // or a raw Enter event); this field has no other action, so any of them
@@ -137,6 +145,9 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         override fun afterTextChanged(s: Editable?) {
+          // The parent measures this field EXACTLY, so a text edit that wraps or
+          // unwraps a line never lays it out again; report the height here too.
+          post { reportContentHeight() }
           if (suppressWatcher) return
           scheduleFlush()
         }
