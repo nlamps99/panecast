@@ -84,13 +84,17 @@ export class TerminalSession {
   /** Bumped whenever an in-flight subscribe should be abandoned. */
   private subscribeToken = 0;
   private historyToken = 0;
-  private resyncing = false;
+  /** An unsubscribe + subscribe is in flight (resync or a live-lines change). Only one at a time. */
+  private replacing = false;
   private lastResyncAt = 0;
   private resyncCooldown = RESYNC_MIN_COOLDOWN_MS;
   private queue: InputItem[] = [];
   private pumping = false;
   private lastFocus: { surfaceId: string; at: number } | null = null;
-  private readonly liveLines: number;
+  private disposed = false;
+  private liveLines: number;
+  /** `lines` sent with the latest `surface.subscribe`. */
+  private subscribedLines: number | null = null;
   private readonly historyPageLines: number;
   private readonly log: (message: string) => void;
 
@@ -98,7 +102,7 @@ export class TerminalSession {
     private readonly channel: RpcChannel,
     options: TerminalSessionOptions = {},
   ) {
-    this.liveLines = options.liveLines ?? 120;
+    this.liveLines = sanitizeLines(options.liveLines ?? 120, 120);
     this.historyPageLines = options.historyPageLines ?? 200;
     this.log = options.log ?? (() => {});
     this.disposers.push(
@@ -117,6 +121,7 @@ export class TerminalSession {
   };
 
   dispose(): void {
+    this.disposed = true;
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
     this.subscribeToken++;
@@ -155,6 +160,7 @@ export class TerminalSession {
     this.update({ subscription: 'subscribing', subscriptionError: null });
     for (let attempt = 0; attempt < SUBSCRIBE_ATTEMPTS; attempt++) {
       try {
+        this.subscribedLines = this.liveLines;
         await this.channel.call('surface.subscribe', {
           workspace_id: target.workspaceId,
           surface_id: target.surfaceId,
@@ -162,6 +168,8 @@ export class TerminalSession {
         });
         if (token !== this.subscribeToken) return;
         this.update({ subscription: 'live' });
+        // `setLiveLines` while this subscribe was in flight.
+        this.applyLiveLines();
         return;
       } catch (error) {
         if (token !== this.subscribeToken) return;
@@ -186,7 +194,7 @@ export class TerminalSession {
    */
   resync(reason: string): void {
     const target = this.state.target;
-    if (!target || this.resyncing || !this.channel.isOpen) return;
+    if (!target || this.replacing || !this.channel.isOpen) return;
     const now = Date.now();
     const sinceLast = now - this.lastResyncAt;
     if (sinceLast < this.resyncCooldown) return;
@@ -196,8 +204,38 @@ export class TerminalSession {
         ? Math.min(this.resyncCooldown * 2, RESYNC_MAX_COOLDOWN_MS)
         : RESYNC_MIN_COOLDOWN_MS;
     this.lastResyncAt = now;
-    this.resyncing = true;
     this.log(`resync (${reason})`);
+    this.replaceSubscription(target);
+  }
+
+  /**
+   * Rows the relay keeps live (`surface.subscribe` `lines`). Takes effect at
+   * once: a live subscription is replaced and starts again from a full
+   * snapshot. Changes made while a replacement is in flight are coalesced.
+   */
+  setLiveLines(lines: number): void {
+    const next = sanitizeLines(lines, this.liveLines);
+    if (next === this.liveLines) return;
+    this.liveLines = next;
+    this.applyLiveLines();
+  }
+
+  /** Replaces a live subscription whose `lines` no longer match `liveLines`. */
+  private applyLiveLines(): void {
+    const target = this.state.target;
+    if (this.disposed || this.replacing || !target || !this.channel.isOpen) return;
+    if (this.state.subscription !== 'live' || this.subscribedLines === this.liveLines) return;
+    this.log(`resubscribe (${this.liveLines} lines)`);
+    this.replaceSubscription(target);
+  }
+
+  /**
+   * Unsubscribes, then subscribes again. The relay may run two requests from
+   * one socket out of order, so overlapping replacements of one surface could
+   * leave it unsubscribed; `replacing` allows one at a time.
+   */
+  private replaceSubscription(target: SurfaceTarget): void {
+    this.replacing = true;
     const token = ++this.subscribeToken;
     this.channel
       .call('surface.unsubscribe', { surface_id: target.surfaceId })
@@ -208,7 +246,8 @@ export class TerminalSession {
         }
       })
       .finally(() => {
-        this.resyncing = false;
+        this.replacing = false;
+        this.applyLiveLines();
       });
   }
 
@@ -471,6 +510,11 @@ export function stitchFirstPage(
 
 function stringArray(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((v) => typeof v === 'string') ? (value as string[]) : null;
+}
+
+/** A positive whole number of rows, or `fallback`. */
+function sanitizeLines(lines: number, fallback: number): number {
+  return Number.isFinite(lines) && lines >= 1 ? Math.round(lines) : fallback;
 }
 
 function sameTarget(a: SurfaceTarget | null, b: SurfaceTarget | null): boolean {
