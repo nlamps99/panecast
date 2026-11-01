@@ -249,6 +249,17 @@ describe('stitchFirstPage', () => {
   it('falls back to the snapshot split when the frozen rows are not found', () => {
     expect(stitchFirstPage(['zz'], ['h1', 'h2'], ['a'])).toEqual(['h1', 'h2']);
   });
+
+  it('still lines up when the bottom row was rewritten and output scrolled meanwhile', () => {
+    // Frozen [a, b, c, spin1]; then the spinner row became `done` and `next`
+    // was printed, so the snapshot ends a b c done next. A whole-window match
+    // fails; matching the top must not repeat a, b, c above the frozen rows.
+    expect(stitchFirstPage(['a', 'b', 'c', 'spin1'], ['h0', 'h1', 'a', 'b'], ['c', 'done', 'next'])).toEqual(['h0', 'h1']);
+  });
+
+  it('does not place a page on a single matching row', () => {
+    expect(stitchFirstPage(['x', 'y', 'z', 'w'], ['h0', 'x'], ['q', 'r'])).toEqual(['h0', 'x']);
+  });
 });
 
 describe('TerminalSession live lines', () => {

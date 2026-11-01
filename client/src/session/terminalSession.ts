@@ -493,17 +493,22 @@ export function stitchFirstPage(
 ): string[] {
   if (frozenRows.length === 0) return [...historyRows, ...anchorRows];
   const combined = [...historyRows, ...anchorRows];
-  const m = frozenRows.length;
-  for (let extra = 0; extra + m <= combined.length; extra++) {
-    const start = combined.length - extra - m;
-    let matches = true;
-    for (let i = 0; i < m; i++) {
-      if (combined[start + i] !== frozenRows[i]) {
-        matches = false;
-        break;
+  // The bottom of the frozen rows may have been rewritten in place since
+  // (a spinner, a progress bar, the prompt line), so only its top has to
+  // match. Prefer the longest matching prefix; one row cannot place a page.
+  const minimum = Math.min(frozenRows.length, Math.max(2, Math.ceil(frozenRows.length / 2)));
+  for (let m = frozenRows.length; m >= minimum; m--) {
+    for (let extra = 0; extra + m <= combined.length; extra++) {
+      const start = combined.length - extra - m;
+      let matches = true;
+      for (let i = 0; i < m; i++) {
+        if (combined[start + i] !== frozenRows[i]) {
+          matches = false;
+          break;
+        }
       }
+      if (matches) return combined.slice(0, start);
     }
-    if (matches) return combined.slice(0, start);
   }
   return [...historyRows];
 }
