@@ -13,6 +13,7 @@ const ICONS = {
   forward: { ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' },
   computer: { ios: 'desktopcomputer', android: 'desktop_mac', web: 'desktop_mac' },
   search: { ios: 'magnifyingglass', android: 'search', web: 'search' },
+  add: { ios: 'plus', android: 'add', web: 'add' },
 } as const satisfies Record<string, SymbolName>;
 
 export type IconName = keyof typeof ICONS;
