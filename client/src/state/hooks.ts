@@ -22,8 +22,12 @@ export function useStore<T>(store: Store<T>): T {
   return useSyncExternalStore(store.subscribe, store.getState, store.getState);
 }
 
-export function useConnectionStatus(source: StatusSource): ConnectionStatus {
-  const subscribe = (listener: () => void) => source.onStatus(listener);
-  const get = () => source.status;
+const IDLE: ConnectionStatus = { state: 'idle' };
+const noSubscription = () => () => {};
+
+/** `null` (no machine, e.g. while the last computer is being removed) reads as idle. */
+export function useConnectionStatus(source: StatusSource | null): ConnectionStatus {
+  const subscribe = source ? (listener: () => void) => source.onStatus(listener) : noSubscription;
+  const get = () => source?.status ?? IDLE;
   return useSyncExternalStore(subscribe, get, get);
 }

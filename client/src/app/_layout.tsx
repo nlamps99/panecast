@@ -14,8 +14,12 @@ import { colors } from '../ui/theme';
 void SplashScreen.preventAutoHideAsync();
 
 /**
- * Paired (or in the demo): the tabs. Otherwise: the pairing screen. The
- * guards swap them when the pairing changes, dropping the other's history.
+ * Paired (or in the demo): the tabs. Otherwise the guard sends the stack to
+ * the pairing screen, which is never guarded so it can also open as a modal
+ * over the tabs to add or re-pair a computer. As the only screen (first run,
+ * last computer removed) the native stack shows it full screen despite
+ * `presentation: 'modal'`, and it replaces itself with the tabs once a
+ * computer or the demo is ready.
  */
 export default function RootLayout() {
   const { phase } = useAppState();
@@ -43,9 +47,7 @@ export default function RootLayout() {
         <Stack.Protected guard={phase === 'ready'}>
           <Stack.Screen name="(tabs)" />
         </Stack.Protected>
-        <Stack.Protected guard={phase !== 'ready'}>
-          <Stack.Screen name="pair" />
-        </Stack.Protected>
+        <Stack.Screen name="pair" options={{ presentation: 'modal' }} />
       </Stack>
     </GestureHandlerRootView>
   );

@@ -3,7 +3,16 @@ import { parsePairingUrl } from '../protocol/pairing';
 import { InboxStore } from '../session/inboxStore';
 import { TerminalSession, type RpcChannel, type StatusSource } from '../session/terminalSession';
 import { WorkspaceStore } from '../session/workspaceStore';
-import { EMPTY_COMPUTER_LIST, selectedComputer, type ComputerList, type StoredComputer, type TransportPreference } from './computers';
+import {
+  EMPTY_COMPUTER_LIST,
+  removeComputer,
+  renameComputer,
+  selectedComputer,
+  upsertComputer,
+  type ComputerList,
+  type StoredComputer,
+  type TransportPreference,
+} from './computers';
 import { createComputerChannel, PairingError, registerComputer, type ComputerChannel } from './connect';
 import { loadComputers, saveComputers, storageSupported } from './pairingStorage';
 
@@ -35,8 +44,11 @@ function isComputerChannel(channel: unknown): channel is ComputerChannel {
   return typeof channel === 'object' && channel !== null && 'stop' in channel && 'wake' in channel;
 }
 
-/** App-wide pairing and connection state. One instance; React reads it with `useSyncExternalStore`. */
-class AppStore {
+/**
+ * App-wide pairing and connection state. One instance (`appStore`); React
+ * reads it with `useSyncExternalStore`. Exported for tests.
+ */
+export class AppStore {
   private state: AppStoreState = { phase: 'loading', computers: EMPTY_COMPUTER_LIST, machine: null };
   private listeners = new Set<() => void>();
   private loaded = false;
@@ -73,27 +85,46 @@ class AppStore {
           : '这不是 Panecast 的配对二维码。',
       );
     }
-    const computer = await registerComputer(parsed.payload);
-    // Re-pairing the same relay replaces its entry rather than adding a second one.
-    const others = this.state.computers.computers.filter(
-      (c) => !(c.broker.relayId === computer.broker.relayId && c.broker.serverUrl === computer.broker.serverUrl),
-    );
-    const computers: ComputerList = { ...this.state.computers, selectedId: computer.id, computers: [...others, computer] };
+    const registered = await registerComputer(parsed.payload);
+    // Re-pairing the same relay replaces its credentials but keeps its id and name.
+    const { list: computers } = upsertComputer(this.state.computers, registered);
     await saveComputers(computers);
     this.connect(computers);
   }
 
-  /** Forgets the current computer on this phone. Its broker entry stays until revoked there. */
+  /**
+   * Forgets a computer on this phone; its broker entry stays until revoked
+   * there. Removing the current one switches to the next paired computer, or
+   * to the pairing screen when none is left. The demo stays the demo.
+   */
+  async remove(computerId: string): Promise<void> {
+    const computers = removeComputer(this.state.computers, computerId);
+    if (computers === this.state.computers) return;
+    await saveComputers(computers);
+    if (this.state.machine?.computer?.id === computerId) this.connect(computers);
+    else this.setState({ ...this.state, computers });
+  }
+
+  /** Forgets the current computer. */
   async unpair(): Promise<void> {
     const current = this.state.machine?.computer;
-    if (!current) return;
-    const remaining = this.state.computers.computers.filter((c) => c.id !== current.id);
-    const computers: ComputerList = { ...this.state.computers, selectedId: remaining[0]?.id ?? null, computers: remaining };
-    await saveComputers(computers);
-    this.connect(computers);
+    if (current) await this.remove(current.id);
   }
 
-  /** Switches to another paired computer. */
+  /** Renames a computer; a blank name falls back to its relay id. The connection is untouched. */
+  async rename(computerId: string, name: string): Promise<void> {
+    const computers = renameComputer(this.state.computers, computerId, name);
+    await saveComputers(computers);
+    const renamed = computers.computers.find((c) => c.id === computerId);
+    const machine = this.state.machine;
+    this.setState({
+      ...this.state,
+      computers,
+      machine: machine && renamed && machine.computer?.id === computerId ? { ...machine, computer: renamed } : machine,
+    });
+  }
+
+  /** Switches to another paired computer (also from the demo). */
   async select(computerId: string): Promise<void> {
     if (this.state.machine?.computer?.id === computerId) return;
     if (!this.state.computers.computers.some((c) => c.id === computerId)) return;
