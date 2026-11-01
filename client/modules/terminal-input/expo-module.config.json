@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "apple", "web"],
+  "apple": {
+    "modules": ["TerminalInputModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.terminalinput.TerminalInputModule"]
+  }
+}
