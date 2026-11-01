@@ -1,67 +1,49 @@
 # Security Policy
 
-Thanks for taking the time to look. cmux Remote is a thin client that
-brokers terminal access between your Mac and your iPhone over your
-Tailscale tailnet, so security issues here can have a sharp blast
-radius — please report responsibly.
+Panecast lets a phone control the terminals on your computer, so a security
+bug here can expose everything those terminals can reach. Please report
+problems privately.
 
 ## Reporting a vulnerability
 
-**Do not file a public GitHub issue for security problems.** Instead,
-email the maintainer:
+Do not open a public issue. Use GitHub's private vulnerability reporting
+instead: open the repository's **Security** tab and choose **Report a
+vulnerability**.
 
-- **hyuni2020@gmail.com** — subject prefix: `[cmux-remote security]`
-
-A working PoC is appreciated but not required. We will acknowledge
-receipt within 7 days and aim to ship a fix or mitigation within 30
-days of the report, coordinating disclosure with the reporter.
+A working proof of concept helps but is not required. We aim to acknowledge
+reports within 7 days and to ship a fix or mitigation within 30 days,
+coordinating disclosure with the reporter. Reporters are credited in the
+security advisory unless they ask to stay anonymous.
 
 ## Scope
 
 In scope:
 
-- the `cmux-relay` Swift daemon (`Sources/RelayServer`, `RelayCore`,
-  `CMUXClient`, `SharedKit`)
-- the `CmuxRemote` iOS app (`ios/CmuxRemote/...`)
-- the wire protocol (HTTP / WebSocket framing, JSON-RPC envelope,
-  diff frames)
-- the auth path: Tailscale UDS whois, bearer issuance, hashed token
-  storage in `DeviceStore`
-- the launchd installer (`scripts/install-launchd.sh`) and rendered
-  plist template
+- the relay (`relay/`): its HTTP/WebSocket server, authentication and device
+  tokens, pairing, rate limiting, and the launchd installer
+- the broker (`broker/`): pairing, device tokens and session forwarding
+- the phone client (`client/`)
+- the wire protocol: HTTP/WebSocket framing, the JSON-RPC envelope and diff
+  frames
 
-Out of scope (please report to the upstream projects instead):
+Out of scope:
 
-- [cmux](https://github.com/manaflow-ai/cmux) itself
-- Tailscale, WireGuard, SwiftNIO, swift-crypto, async-http-client
-- iOS / macOS platform bugs
+- terminal backends such as [cmux](https://github.com/manaflow-ai/cmux),
+  Tailscale, SwiftNIO, Expo, React Native, and iOS, Android or macOS platform
+  bugs. Please report these to their own projects.
+- the unmaintained native clients in `legacy/`
+- the broker being able to read the terminal frames it forwards. This is a
+  documented design limit: connections use TLS but are not end-to-end
+  encrypted.
 
-## What counts as a vulnerability here
+## What counts as a vulnerability
 
-Any of the following are concerning and worth reporting:
-
-- A non-Tailscale source address reaching the relay's RPC handlers
-- A device bearer leaking via response body, logs, or pasteboard
-- A way to forge a registration that succeeds with a Tailscale
-  identity that isn't actually the caller's
-- A path that causes the relay or app to leak terminal contents into
-  a notification payload, log line, telemetry call, or pasteboard
-- Memory or process compromise via crafted RPC / diff frames
-- A way to bypass the per-device rate limiter into another device's
-  budget
-- Anything that lets a paired device read or send to a workspace it
-  was not authorized for
-
-## Out of scope (but still happy to hear about)
-
-- Generic launchd / plist hardening suggestions
-- App Transport Security tightenings that don't reflect a concrete
-  attack
-- Reports against forks that have diverged materially from upstream
-  `main`
-
-## Acknowledgements
-
-Reporters who follow this process are credited in release notes
-(`CHANGELOG.md`) and the public security advisory unless they
-explicitly request to remain anonymous.
+- an unpaired or unauthenticated client reaching relay or broker handlers
+- a device token or pairing code leaking through a response, log line,
+  notification or the clipboard
+- forging a pairing or device registration
+- terminal contents leaking into notifications, logs or telemetry
+- a paired device reading from or sending to a workspace it was not
+  authorized for
+- bypassing the pairing or per-device rate limits
+- memory or process compromise through crafted RPC or diff frames
