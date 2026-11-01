@@ -7,7 +7,8 @@ import type { SurfaceInfo, WorkspaceInfo } from '../../session/surfaces';
 import { useConnectionStatus, useMachine, useStore } from '../../state/hooks';
 import { openSurface } from '../../state/navigation';
 import { Icon } from '../../ui/Icon';
-import { machineLabel, statusBanner, statusColor, statusLabel } from '../../ui/status';
+import { ComputerSwitcher } from '../../ui/ComputerSwitcher';
+import { statusBanner } from '../../ui/status';
 import { colors, fonts } from '../../ui/theme';
 
 /** The first screen: the Mac's workspaces, each with its terminals. */
@@ -21,7 +22,6 @@ export default function WorkspacesScreen() {
   const [query, setQuery] = useState('');
   // Only a pull shows the spinner; refreshes on focus and on cmux events stay quiet.
   const [pulling, setPulling] = useState(false);
-  const label = machineLabel(machine);
   const banner = statusBanner(status);
 
   useFocusEffect(
@@ -58,12 +58,7 @@ export default function WorkspacesScreen() {
     >
       <View style={styles.header}>
         <Text style={styles.title}>工作区</Text>
-        <View style={styles.statusRow}>
-          <View style={[styles.dot, { backgroundColor: machine.mode === 'demo' ? colors.yellow : statusColor(status) }]} />
-          <Text style={styles.statusText} numberOfLines={1}>
-            {label.name} · {machine.mode === 'demo' ? '演示' : statusLabel(status)}
-          </Text>
-        </View>
+        <ComputerSwitcher />
       </View>
 
       {banner ? <Text style={styles.banner}>{banner}</Text> : null}
@@ -174,9 +169,6 @@ const styles = StyleSheet.create({
   content: { paddingBottom: 24, gap: 12 },
   header: { gap: 6, marginBottom: 4 },
   title: { color: colors.ink, fontSize: 28, fontWeight: '700' },
-  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  dot: { width: 7, height: 7, borderRadius: 4 },
-  statusText: { flexShrink: 1, color: colors.muted, fontSize: 13 },
   banner: { color: colors.yellow, fontSize: 13, lineHeight: 18, padding: 12, borderRadius: 10, backgroundColor: colors.surface },
   search: {
     flexDirection: 'row',

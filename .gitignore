@@ -28,3 +28,6 @@ docs/cmux-iphone-improvement-research.md
 
 # Per-machine agent notes: hosts, devices, accounts. Never commit.
 CLAUDE.local.md
+
+# Worktrees symlink node_modules into client/
+client/node_modules

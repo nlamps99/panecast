@@ -10,7 +10,13 @@
     "ios": {
       "bundleIdentifier": "com.nzx.panecast",
       "supportsTablet": true,
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "在同一个 Wi-Fi 下直接连接电脑上的 relay",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
     "android": {
       "package": "com.nzx.panecast",
@@ -57,6 +63,29 @@
         "expo-secure-store",
         {
           "configureAndroidBackup": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "选择要发到电脑上的图片",
+          "cameraPermission": "扫描配对二维码，或拍照发到电脑上",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "enableRemoteNotifications": true,
+          "color": "#1a1b26"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
         }
       ]
     ],

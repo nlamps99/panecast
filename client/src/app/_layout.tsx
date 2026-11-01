@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 import { AppState, StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { useNotificationRouting } from '../notifications/useNotificationRouting';
 import { appStore } from '../state/appStore';
 import { useAppState } from '../state/hooks';
 import { loadPrefs } from '../state/prefs';
@@ -18,6 +19,7 @@ void SplashScreen.preventAutoHideAsync();
  */
 export default function RootLayout() {
   const { phase } = useAppState();
+  useNotificationRouting();
 
   useEffect(() => {
     void loadPrefs();

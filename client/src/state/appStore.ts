@@ -1,22 +1,19 @@
-import Constants from 'expo-constants';
-import * as Device from 'expo-device';
-import { Platform } from 'react-native';
-
 import { DemoChannel } from '../demo/demoChannel';
-import { RelayConnection, type SocketLike } from '../protocol/connection';
-import { brokerEndpoint, webSocketUrl } from '../protocol/endpoint';
 import { parsePairingUrl } from '../protocol/pairing';
-import { registerDevice, RegisterFailure } from '../protocol/register';
 import { InboxStore } from '../session/inboxStore';
 import { TerminalSession, type RpcChannel, type StatusSource } from '../session/terminalSession';
 import { WorkspaceStore } from '../session/workspaceStore';
-import { clearPairing, getClientId, loadPairing, savePairing, storageSupported, type StoredPairing } from './pairingStorage';
+import { EMPTY_COMPUTER_LIST, selectedComputer, type ComputerList, type StoredComputer, type TransportPreference } from './computers';
+import { createComputerChannel, PairingError, registerComputer, type ComputerChannel } from './connect';
+import { loadComputers, saveComputers, storageSupported } from './pairingStorage';
+
+export { PairingError } from './connect';
 
 /** Everything that exists while connected to one Mac (or the demo). */
 export type Machine = {
   mode: 'relay' | 'demo';
-  /** Set in relay mode. */
-  pairing: StoredPairing | null;
+  /** The stored computer in relay mode; null in the demo. */
+  computer: StoredComputer | null;
   channel: RpcChannel & StatusSource;
   session: TerminalSession;
   workspaces: WorkspaceStore;
@@ -26,31 +23,21 @@ export type Machine = {
 export type AppStoreState = {
   /** `loading` until SecureStore has been read. */
   phase: 'loading' | 'unpaired' | 'ready';
+  computers: ComputerList;
   machine: Machine | null;
 };
-
-export class PairingError extends Error {}
-
-const APP_VERSION = Constants.expoConfig?.version ?? '0.1.0';
-
-/**
- * React Native's WebSocket takes a non-standard third argument whose `headers`
- * ride on the upgrade request; that carries the bearer token. Browsers cannot
- * set headers, so on the web the broker rejects the upgrade (undecided, see
- * CLAUDE.md).
- */
-function createSocket(url: string, protocols: string[], headers: Record<string, string>): SocketLike {
-  const NativeWebSocket = WebSocket as unknown as new (u: string, p: string[], o?: { headers: Record<string, string> }) => SocketLike;
-  return Platform.OS === 'web' ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url, protocols, { headers });
-}
 
 function log(message: string) {
   if (__DEV__) console.log(`[relay] ${message}`);
 }
 
+function isComputerChannel(channel: unknown): channel is ComputerChannel {
+  return typeof channel === 'object' && channel !== null && 'stop' in channel && 'wake' in channel;
+}
+
 /** App-wide pairing and connection state. One instance; React reads it with `useSyncExternalStore`. */
 class AppStore {
-  private state: AppStoreState = { phase: 'loading', machine: null };
+  private state: AppStoreState = { phase: 'loading', computers: EMPTY_COMPUTER_LIST, machine: null };
   private listeners = new Set<() => void>();
   private loaded = false;
 
@@ -66,16 +53,16 @@ class AppStore {
   async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
-    let pairing: StoredPairing | null = null;
+    let computers = EMPTY_COMPUTER_LIST;
     try {
-      pairing = await loadPairing();
+      computers = await loadComputers();
     } catch (error) {
-      log(`could not read pairing: ${error instanceof Error ? error.message : String(error)}`);
+      log(`could not read computers: ${error instanceof Error ? error.message : String(error)}`);
     }
-    this.activate(pairing ? this.relayMachine(pairing) : null);
+    this.connect(computers);
   }
 
-  /** Pairs with the relay described by a scanned `cmux://pair?...` URL. */
+  /** Pairs with the computer described by a scanned `cmux://pair?...` URL and switches to it. */
   async pair(rawUrl: string): Promise<void> {
     if (!storageSupported) throw new PairingError('网页版还不能配对，请用手机 App。');
     const parsed = parsePairingUrl(rawUrl);
@@ -86,77 +73,73 @@ class AppStore {
           : '这不是 Panecast 的配对二维码。',
       );
     }
-    const endpoint = brokerEndpoint(parsed.payload.serverUrl, parsed.payload.relayId);
-    if (!endpoint.ok) {
-      throw new PairingError(endpoint.error === 'insecure_url' ? '服务器地址必须是 https。' : '二维码里的服务器地址无效。');
-    }
-    let credentials;
-    try {
-      credentials = await registerDevice({
-        endpoint: endpoint.endpoint,
-        pairingCode: parsed.payload.pairingCode,
-        clientId: await getClientId(),
-        deviceName: Device.deviceName ?? Device.modelName ?? 'Panecast',
-      });
-    } catch (error) {
-      if (error instanceof RegisterFailure) throw new PairingError(error.message);
-      throw error;
-    }
-    const pairing: StoredPairing = {
-      version: 1,
-      serverUrl: endpoint.endpoint.baseUrl,
-      relayId: parsed.payload.relayId,
-      deviceId: credentials.deviceId,
-      token: credentials.token,
-      pairedAt: new Date().toISOString(),
-    };
-    await savePairing(pairing);
-    this.activate(this.relayMachine(pairing));
+    const computer = await registerComputer(parsed.payload);
+    // Re-pairing the same relay replaces its entry rather than adding a second one.
+    const others = this.state.computers.computers.filter(
+      (c) => !(c.broker.relayId === computer.broker.relayId && c.broker.serverUrl === computer.broker.serverUrl),
+    );
+    const computers: ComputerList = { ...this.state.computers, selectedId: computer.id, computers: [...others, computer] };
+    await saveComputers(computers);
+    this.connect(computers);
   }
 
-  /** Forgets the pairing on this phone. The broker entry stays until revoked there. */
+  /** Forgets the current computer on this phone. Its broker entry stays until revoked there. */
   async unpair(): Promise<void> {
-    this.activate(null);
-    await clearPairing();
+    const current = this.state.machine?.computer;
+    if (!current) return;
+    const remaining = this.state.computers.computers.filter((c) => c.id !== current.id);
+    const computers: ComputerList = { ...this.state.computers, selectedId: remaining[0]?.id ?? null, computers: remaining };
+    await saveComputers(computers);
+    this.connect(computers);
+  }
+
+  /** Switches to another paired computer. */
+  async select(computerId: string): Promise<void> {
+    if (this.state.machine?.computer?.id === computerId) return;
+    if (!this.state.computers.computers.some((c) => c.id === computerId)) return;
+    const computers: ComputerList = { ...this.state.computers, selectedId: computerId };
+    await saveComputers(computers);
+    this.connect(computers);
+  }
+
+  /** Sets how to reach a computer (auto / broker / LAN); reconnects if it is the current one. */
+  async setTransport(computerId: string, preference: TransportPreference): Promise<void> {
+    const computers: ComputerList = {
+      ...this.state.computers,
+      transport: { ...this.state.computers.transport, [computerId]: preference },
+    };
+    await saveComputers(computers);
+    if (this.state.machine?.computer?.id === computerId) this.connect(computers);
+    else this.setState({ ...this.state, computers });
   }
 
   /** A pretend Mac, for trying the app without pairing (and for App Review). */
   enterDemo(): void {
     if (this.state.machine?.mode === 'demo') return;
     const channel = new DemoChannel();
-    this.activate({ mode: 'demo', pairing: null, channel, ...this.stores(channel) });
+    this.activate(this.state.computers, { mode: 'demo', computer: null, channel, ...this.stores(channel) });
   }
 
-  /** Leaves the demo for the real Mac if one is paired, otherwise for the pairing screen. */
-  async exitDemo(): Promise<void> {
+  /** Leaves the demo for the selected computer if one is paired, otherwise for the pairing screen. */
+  exitDemo(): void {
     if (this.state.machine?.mode !== 'demo') return;
-    let pairing: StoredPairing | null = null;
-    try {
-      pairing = await loadPairing();
-    } catch {
-      pairing = null;
-    }
-    this.activate(pairing ? this.relayMachine(pairing) : null);
+    this.connect(this.state.computers);
   }
 
   /** Called when the app returns to the foreground. */
   wake(): void {
     const channel = this.state.machine?.channel;
-    if (channel instanceof RelayConnection) channel.wake();
+    if (isComputerChannel(channel)) channel.wake();
   }
 
-  private relayMachine(pairing: StoredPairing): Machine | null {
-    const endpoint = brokerEndpoint(pairing.serverUrl, pairing.relayId);
-    if (!endpoint.ok) return null;
-    const channel = new RelayConnection({
-      url: webSocketUrl(endpoint.endpoint),
-      token: pairing.token,
-      deviceId: pairing.deviceId,
-      appVersion: APP_VERSION,
-      createSocket,
-      log,
-    });
-    return { mode: 'relay', pairing, channel, ...this.stores(channel) };
+  private connect(computers: ComputerList): void {
+    const computer = selectedComputer(computers);
+    if (!computer) {
+      this.activate(computers, null);
+      return;
+    }
+    const channel = createComputerChannel(computer, computers.transport?.[computer.id] ?? 'auto', log);
+    this.activate(computers, channel ? { mode: 'relay', computer, channel, ...this.stores(channel) } : null);
   }
 
   private stores(channel: RpcChannel) {
@@ -167,17 +150,17 @@ class AppStore {
     };
   }
 
-  private activate(machine: Machine | null): void {
+  private activate(computers: ComputerList, machine: Machine | null): void {
     const previous = this.state.machine;
     if (previous) {
       previous.session.setTarget(null);
       previous.session.dispose();
       previous.workspaces.dispose();
       previous.inbox.dispose();
-      if (previous.channel instanceof RelayConnection) previous.channel.stop();
+      if (isComputerChannel(previous.channel)) previous.channel.stop();
     }
-    this.setState({ phase: machine ? 'ready' : 'unpaired', machine });
-    if (machine?.channel instanceof RelayConnection) machine.channel.start();
+    this.setState({ phase: machine ? 'ready' : 'unpaired', computers, machine });
+    if (machine && isComputerChannel(machine.channel)) machine.channel.start();
     else if (machine) void machine.workspaces.refresh();
   }
 

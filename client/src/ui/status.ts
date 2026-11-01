@@ -41,9 +41,9 @@ export function statusBanner(status: ConnectionStatus): string | null {
   return null;
 }
 
-/** What to call the Mac: the broker host and relay id, or "演示电脑". */
+/** What to call the Mac: its name and broker host, or "演示电脑". */
 export function machineLabel(machine: Machine): { name: string; detail: string } {
-  if (machine.mode === 'demo' || !machine.pairing) return { name: '演示电脑', detail: '演示数据，不会连接真实电脑' };
-  const host = machine.pairing.serverUrl.replace(/^https?:\/\//, '');
-  return { name: machine.pairing.relayId, detail: host };
+  if (machine.mode === 'demo' || !machine.computer) return { name: '演示电脑', detail: '演示数据，不会连接真实电脑' };
+  const host = machine.computer.broker.serverUrl.replace(/^https?:\/\//, '');
+  return { name: machine.computer.name, detail: host };
 }
