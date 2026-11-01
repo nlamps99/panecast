@@ -3,6 +3,12 @@ import type { PushFrame } from '../protocol/frames';
 import { encodeKey, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
 
+/** Anything with a connection status: `RelayConnection`, or the demo channel. */
+export type StatusSource = {
+  readonly status: ConnectionStatus;
+  onStatus(listener: (status: ConnectionStatus) => void): () => void;
+};
+
 /** What the session needs from a connection; `RelayConnection` satisfies it. */
 export interface RpcChannel {
   readonly isOpen: boolean;

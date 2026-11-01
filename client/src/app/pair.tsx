@@ -1,5 +1,4 @@
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { router } from 'expo-router';
 import { useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,7 +27,6 @@ export default function PairScreen() {
     setError(null);
     try {
       await appStore.pair(data);
-      router.replace('/terminal');
     } catch (failure) {
       rejected.current = { data, at: Date.now() };
       setError(failure instanceof PairingError ? failure.message : `配对失败：${String(failure)}`);
@@ -49,6 +47,9 @@ export default function PairScreen() {
       <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
         <Text style={styles.title}>Panecast</Text>
         <Text style={styles.body}>网页版还不能连接电脑，请先用 iPhone 或 Android App。</Text>
+        <Pressable onPress={() => appStore.enterDemo()} accessibilityRole="button">
+          <Text style={styles.link}>先看看演示</Text>
+        </Pressable>
       </View>
     );
   }
@@ -116,7 +117,7 @@ export default function PairScreen() {
           <Text style={styles.link}>没法扫码？粘贴配对链接</Text>
         </Pressable>
       )}
-      <Pressable onPress={() => router.push('/demo')} style={styles.demo} accessibilityRole="button">
+      <Pressable onPress={() => appStore.enterDemo()} style={styles.demo} accessibilityRole="button">
         <Text style={styles.link}>还没有电脑可连？先看看演示</Text>
       </Pressable>
     </View>

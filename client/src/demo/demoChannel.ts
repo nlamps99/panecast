@@ -90,6 +90,7 @@ export class DemoChannel implements RpcChannel {
   private subscribed: { surfaceId: string; rows: string[]; rev: number } | null = null;
   private checksumTimer: ReturnType<typeof setInterval> | null = null;
   private pushListeners = new Set<(frame: PushFrame) => void>();
+  private notified = false;
 
   constructor() {
     this.add('demo-ws-1', { id: 'demo-sf-1', title: 'zsh — panecast', focused: true, transcript: projectTranscript(), input: '' });
@@ -125,6 +126,10 @@ export class DemoChannel implements RpcChannel {
   private handle(method: string, params: Record<string, unknown>): unknown {
     switch (method) {
       case 'workspace.list':
+        if (!this.notified) {
+          this.notified = true;
+          setTimeout(() => this.sendDemoNotifications(), 800);
+        }
         return { workspaces: WORKSPACES };
       case 'surface.list': {
         const surfaces = [...this.surfaces.values()]
@@ -256,6 +261,16 @@ export class DemoChannel implements RpcChannel {
     };
   }
 
+  /** What cmux raises when a task finishes or an agent waits for an answer. */
+  private sendDemoNotifications() {
+    const now = Math.floor(Date.now() / 1000);
+    const notes = [
+      { id: 'demo-n-1', workspace_id: 'demo-ws-1', surface_id: 'demo-sf-1', title: '测试全部通过', subtitle: 'panecast', body: 'npm test：99 passed, 99 total', ts: now - 120 },
+      { id: 'demo-n-2', workspace_id: 'demo-ws-2', surface_id: 'demo-sf-3', title: '需要你确认', subtitle: 'notes', body: '是否继续？回到终端里按 ↵ 确认。', ts: now - 30 },
+    ];
+    for (const payload of notes) this.emit({ type: 'event', category: 'notification', name: 'notification.created', payload });
+  }
+
   private emit(frame: PushFrame) {
     for (const listener of this.pushListeners) listener(frame);
   }
@@ -266,12 +281,4 @@ function visibleLength(row: string): number {
   let width = 0;
   for (const char of row.replace(/\u001b\[[0-9;]*m/g, '')) width += codePointWidth(char.codePointAt(0)!);
   return width;
-}
-
-let shared: DemoChannel | null = null;
-
-/** One demo per app run, so its transcript survives leaving and re-entering the demo. */
-export function demoChannel(): DemoChannel {
-  shared ??= new DemoChannel();
-  return shared;
 }

@@ -2,19 +2,31 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
+import { DemoChannel } from '../demo/demoChannel';
 import { RelayConnection, type SocketLike } from '../protocol/connection';
 import { brokerEndpoint, webSocketUrl } from '../protocol/endpoint';
 import { parsePairingUrl } from '../protocol/pairing';
 import { registerDevice, RegisterFailure } from '../protocol/register';
-import { TerminalSession } from '../session/terminalSession';
+import { InboxStore } from '../session/inboxStore';
+import { TerminalSession, type RpcChannel, type StatusSource } from '../session/terminalSession';
+import { WorkspaceStore } from '../session/workspaceStore';
 import { clearPairing, getClientId, loadPairing, savePairing, storageSupported, type StoredPairing } from './pairingStorage';
+
+/** Everything that exists while connected to one Mac (or the demo). */
+export type Machine = {
+  mode: 'relay' | 'demo';
+  /** Set in relay mode. */
+  pairing: StoredPairing | null;
+  channel: RpcChannel & StatusSource;
+  session: TerminalSession;
+  workspaces: WorkspaceStore;
+  inbox: InboxStore;
+};
 
 export type AppStoreState = {
   /** `loading` until SecureStore has been read. */
-  phase: 'loading' | 'unpaired' | 'paired';
-  pairing: StoredPairing | null;
-  connection: RelayConnection | null;
-  session: TerminalSession | null;
+  phase: 'loading' | 'unpaired' | 'ready';
+  machine: Machine | null;
 };
 
 export class PairingError extends Error {}
@@ -38,7 +50,7 @@ function log(message: string) {
 
 /** App-wide pairing and connection state. One instance; React reads it with `useSyncExternalStore`. */
 class AppStore {
-  private state: AppStoreState = { phase: 'loading', pairing: null, connection: null, session: null };
+  private state: AppStoreState = { phase: 'loading', machine: null };
   private listeners = new Set<() => void>();
   private loaded = false;
 
@@ -60,7 +72,7 @@ class AppStore {
     } catch (error) {
       log(`could not read pairing: ${error instanceof Error ? error.message : String(error)}`);
     }
-    this.activate(pairing);
+    this.activate(pairing ? this.relayMachine(pairing) : null);
   }
 
   /** Pairs with the relay described by a scanned `cmux://pair?...` URL. */
@@ -99,7 +111,7 @@ class AppStore {
       pairedAt: new Date().toISOString(),
     };
     await savePairing(pairing);
-    this.activate(pairing);
+    this.activate(this.relayMachine(pairing));
   }
 
   /** Forgets the pairing on this phone. The broker entry stays until revoked there. */
@@ -108,24 +120,35 @@ class AppStore {
     await clearPairing();
   }
 
-  /** Called when the app returns to the foreground. */
-  wake(): void {
-    this.state.connection?.wake();
+  /** A pretend Mac, for trying the app without pairing (and for App Review). */
+  enterDemo(): void {
+    if (this.state.machine?.mode === 'demo') return;
+    const channel = new DemoChannel();
+    this.activate({ mode: 'demo', pairing: null, channel, ...this.stores(channel) });
   }
 
-  private activate(pairing: StoredPairing | null): void {
-    this.state.session?.dispose();
-    this.state.connection?.stop();
-    if (!pairing) {
-      this.setState({ phase: 'unpaired', pairing: null, connection: null, session: null });
-      return;
+  /** Leaves the demo for the real Mac if one is paired, otherwise for the pairing screen. */
+  async exitDemo(): Promise<void> {
+    if (this.state.machine?.mode !== 'demo') return;
+    let pairing: StoredPairing | null = null;
+    try {
+      pairing = await loadPairing();
+    } catch {
+      pairing = null;
     }
+    this.activate(pairing ? this.relayMachine(pairing) : null);
+  }
+
+  /** Called when the app returns to the foreground. */
+  wake(): void {
+    const channel = this.state.machine?.channel;
+    if (channel instanceof RelayConnection) channel.wake();
+  }
+
+  private relayMachine(pairing: StoredPairing): Machine | null {
     const endpoint = brokerEndpoint(pairing.serverUrl, pairing.relayId);
-    if (!endpoint.ok) {
-      this.setState({ phase: 'unpaired', pairing: null, connection: null, session: null });
-      return;
-    }
-    const connection = new RelayConnection({
+    if (!endpoint.ok) return null;
+    const channel = new RelayConnection({
       url: webSocketUrl(endpoint.endpoint),
       token: pairing.token,
       deviceId: pairing.deviceId,
@@ -133,9 +156,29 @@ class AppStore {
       createSocket,
       log,
     });
-    const session = new TerminalSession(connection, { liveLines: 120, log });
-    this.setState({ phase: 'paired', pairing, connection, session });
-    connection.start();
+    return { mode: 'relay', pairing, channel, ...this.stores(channel) };
+  }
+
+  private stores(channel: RpcChannel) {
+    return {
+      session: new TerminalSession(channel, { liveLines: 120, log }),
+      workspaces: new WorkspaceStore(channel),
+      inbox: new InboxStore(channel),
+    };
+  }
+
+  private activate(machine: Machine | null): void {
+    const previous = this.state.machine;
+    if (previous) {
+      previous.session.setTarget(null);
+      previous.session.dispose();
+      previous.workspaces.dispose();
+      previous.inbox.dispose();
+      if (previous.channel instanceof RelayConnection) previous.channel.stop();
+    }
+    this.setState({ phase: machine ? 'ready' : 'unpaired', machine });
+    if (machine?.channel instanceof RelayConnection) machine.channel.start();
+    else if (machine) void machine.workspaces.refresh();
   }
 
   private setState(state: AppStoreState): void {

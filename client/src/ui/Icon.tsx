@@ -1,0 +1,22 @@
+import { SymbolView } from 'expo-symbols';
+import type { ComponentProps } from 'react';
+
+type SymbolName = ComponentProps<typeof SymbolView>['name'];
+
+/** SF Symbols on iOS, Material Symbols (bundled font, no Google Play services) on Android and the web. */
+const ICONS = {
+  workspaces: { ios: 'square.stack.3d.up.fill', android: 'stacks', web: 'stacks' },
+  terminal: { ios: 'terminal.fill', android: 'terminal', web: 'terminal' },
+  inbox: { ios: 'bell.fill', android: 'notifications', web: 'notifications' },
+  settings: { ios: 'gearshape.fill', android: 'settings', web: 'settings' },
+  back: { ios: 'chevron.left', android: 'arrow_back_ios_new', web: 'arrow_back_ios_new' },
+  forward: { ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' },
+  computer: { ios: 'desktopcomputer', android: 'desktop_mac', web: 'desktop_mac' },
+  search: { ios: 'magnifyingglass', android: 'search', web: 'search' },
+} as const satisfies Record<string, SymbolName>;
+
+export type IconName = keyof typeof ICONS;
+
+export function Icon({ name, size = 20, color }: { name: IconName; size?: number; color: string }) {
+  return <SymbolView name={ICONS[name]} size={size} tintColor={color} weight="semibold" />;
+}

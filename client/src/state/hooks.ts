@@ -1,30 +1,29 @@
 import { useSyncExternalStore } from 'react';
 
 import type { ConnectionStatus } from '../protocol/connection';
-import type { TerminalSession, TerminalState } from '../session/terminalSession';
-import { appStore, type AppStoreState } from './appStore';
-
-/** Anything with a connection status: `RelayConnection`, or the demo channel. */
-export type StatusSource = {
-  readonly status: ConnectionStatus;
-  onStatus(listener: (status: ConnectionStatus) => void): () => void;
-};
+import type { StatusSource } from '../session/terminalSession';
+import { appStore, type AppStoreState, type Machine } from './appStore';
 
 export function useAppState(): AppStoreState {
   return useSyncExternalStore(appStore.subscribe, appStore.getState, appStore.getState);
 }
 
-const IDLE: ConnectionStatus = { state: 'idle' };
-const noop = () => () => {};
-
-export function useConnectionStatus(source: StatusSource | null): ConnectionStatus {
-  const subscribe = source ? (listener: () => void) => source.onStatus(listener) : noop;
-  const get = () => source?.status ?? IDLE;
-  return useSyncExternalStore(subscribe, get, get);
+/** The connected Mac (or demo). Only call under the tabs, which exist only while one is ready. */
+export function useMachine(): Machine {
+  const { machine } = useAppState();
+  if (!machine) throw new Error('useMachine used without a machine');
+  return machine;
 }
 
-export function useTerminalState(session: TerminalSession | null): TerminalState | null {
-  const subscribe = session ? session.subscribe : noop;
-  const get = () => session?.getState() ?? null;
+type Store<T> = { getState(): T; subscribe(listener: () => void): () => void };
+
+/** Reads one of the session stores (`TerminalSession`, `WorkspaceStore`, `InboxStore`). */
+export function useStore<T>(store: Store<T>): T {
+  return useSyncExternalStore(store.subscribe, store.getState, store.getState);
+}
+
+export function useConnectionStatus(source: StatusSource): ConnectionStatus {
+  const subscribe = (listener: () => void) => source.onStatus(listener);
+  const get = () => source.status;
   return useSyncExternalStore(subscribe, get, get);
 }
