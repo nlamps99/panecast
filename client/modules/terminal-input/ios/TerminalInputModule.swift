@@ -41,6 +41,9 @@ public class TerminalInputModule: Module {
       AsyncFunction("clear") { (view: TerminalInputView) in
         view.clearText()
       }
+      AsyncFunction("insertText") { (view: TerminalInputView, text: String) in
+        view.insertText(text)
+      }
     }
   }
 }

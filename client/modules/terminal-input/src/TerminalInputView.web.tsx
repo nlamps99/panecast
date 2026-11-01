@@ -21,6 +21,14 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
       if (input.current) input.current.value = '';
       latest.current.onChangeState?.({ text: '', composing: false });
     },
+    insertText: async (text: string) => {
+      const element = input.current;
+      if (!element || !text) return;
+      const end = element.value.length;
+      element.setRangeText(text, element.selectionStart ?? end, element.selectionEnd ?? end, 'end');
+      flushLive();
+      report();
+    },
   }));
 
   useEffect(() => {

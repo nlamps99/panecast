@@ -15,6 +15,12 @@ export type TerminalInputHandle = {
   focus(): Promise<void>;
   blur(): Promise<void>;
   clear(): Promise<void>;
+  /**
+   * Inserts text at the caret (replacing any selection) as if it had been
+   * typed: `onChangeState` reports it in line mode, `onCommitText` sends it in
+   * live mode. Text still being composed is committed first.
+   */
+  insertText(text: string): Promise<void>;
 };
 
 export type TerminalInputProps = {

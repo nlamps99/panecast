@@ -145,6 +145,26 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
     reportContentHeight()
   }
 
+  /// Inserts `text` at the caret, replacing any selection, as if it had been
+  /// typed: the placeholder, live mode, `onChangeState` and the height update
+  /// the same way. Text the input method is still composing is committed
+  /// first, so it is neither lost nor sent half-finished.
+  func insertText(_ text: String) {
+    guard !text.isEmpty else { return }
+    if textView.markedTextRange != nil { textView.unmarkText() }
+    let current = (textView.text ?? "") as NSString
+    var range = textView.selectedRange
+    if range.location == NSNotFound || range.location > current.length {
+      range = NSRange(location: current.length, length: 0)
+    }
+    range.length = min(range.length, current.length - range.location)
+    textView.text = current.replacingCharacters(in: range, with: text)
+    textView.selectedRange = NSRange(location: range.location + (text as NSString).length, length: 0)
+    // Setting `text` does not call the delegate; run the same path as typing.
+    textViewDidChange(textView)
+    textView.scrollRangeToVisible(textView.selectedRange)
+  }
+
   // MARK: UITextViewDelegate
 
   func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
