@@ -35,7 +35,7 @@ openssl rand -hex 32   # lan.pairing_code，不要复用其他任何密钥
 
 ```bash
 launchctl kickstart -k "gui/$(id -u)/com.genie.cmuxremote"
-./.build/release/cmux-relay pair       # 会自动探测本机局域网 IP
+./relay/.build/release/cmux-relay pair       # 会自动探测本机局域网 IP
 ```
 
 二维码里会同时带上局域网地址和 VPS 地址。手机扫码后连接模式自动变成
@@ -43,7 +43,7 @@ launchctl kickstart -k "gui/$(id -u)/com.genie.cmuxremote"
 VPN 时常见），用 `--lan-host` 指定：
 
 ```bash
-./.build/release/cmux-relay pair --lan-host 192.168.1.42
+./relay/.build/release/cmux-relay pair --lan-host 192.168.1.42
 ```
 
 ### AUTO 模式的工作方式
@@ -107,7 +107,7 @@ openssl rand -hex 32   # CMUX_PAIRING_CODE
 把仓库放到 VPS 后执行：
 
 ```bash
-cd cmux-remote/broker
+cd panecast/broker
 cp .env.example .env
 chmod 600 .env
 ```
@@ -142,8 +142,8 @@ curl https://relay.example.com/v1/health
 先从 **cmux 内的终端** 安装 relay：
 
 ```bash
-cd cmux-remote
-./scripts/install-launchd.sh
+cd panecast
+./relay/scripts/install-launchd.sh
 ```
 
 cmux 默认的 owner-only socket 模式会给内部终端注入一枚 capability。安装脚本
@@ -231,4 +231,4 @@ docker compose exec broker npm run devices -- revoke <device-id>
 | `cmux-relay pair` 报无法探测局域网地址 | 用 `--lan-host <ip>` 手动指定 |
 
 升级代码后，在 VPS 运行 `docker compose up -d --build`；在 Mac 重新运行
-`./scripts/install-launchd.sh`，以确保服务使用新构建的二进制。
+`./relay/scripts/install-launchd.sh`，以确保服务使用新构建的二进制。

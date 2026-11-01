@@ -11,7 +11,7 @@ settings:
     SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 packages:
   SharedKit:
-    path: ..
+    path: ../../relay
   IOSSecuritySuite:
     url: https://github.com/securing/IOSSecuritySuite
     from: "1.9.10"
