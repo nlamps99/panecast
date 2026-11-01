@@ -91,7 +91,8 @@ export function TerminalScreen() {
   const side = { paddingLeft: insets.left, paddingRight: insets.right };
 
   return (
-    <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    // Android too: edge-to-edge (forced from API 35) stops adjustResize from shrinking the window.
+    <KeyboardAvoidingView style={styles.screen} behavior="padding">
       <View style={[styles.header, side, { paddingTop: insets.top }]}>
         <View style={styles.titleRow}>
           <Pressable
