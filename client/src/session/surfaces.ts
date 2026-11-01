@@ -2,14 +2,60 @@ import type { RpcChannel, SurfaceTarget } from './terminalSession';
 
 export type WorkspaceInfo = { id: string; title: string; index: number; selected: boolean };
 export type SurfaceInfo = { id: string; title: string; index: number; focused: boolean; type: string };
+/** A cmux window. `key` is cmux's key (frontmost) window. */
+export type WindowInfo = { id: string; ref: string; index: number; workspaceCount: number | null; key: boolean };
+/** One window's workspaces; `windowId` is the window cmux says it listed, when it says. */
+export type WorkspaceListing = { windowId: string | null; workspaces: WorkspaceInfo[] };
 
 /**
- * `workspace.list` without params covers cmux's key window only; that is
- * enough for the prototype. Field names follow
- * `docs/specs/cmux-payload-samples/`.
+ * cmux's windows, in order. Older cmux builds do not implement `window.list`;
+ * the call then rejects and callers fall back to the key window.
  */
-export async function listWorkspaces(channel: RpcChannel): Promise<WorkspaceInfo[]> {
-  const result = await channel.call('workspace.list', {});
+export async function listWindows(channel: RpcChannel): Promise<WindowInfo[]> {
+  const result = await channel.call('window.list', {});
+  return arrayField(result, 'windows')
+    .map((item, position): WindowInfo | null => {
+      if (!isObject(item)) return null;
+      const id = stringField(item, 'id') ?? stringField(item, 'window_id');
+      if (!id) return null;
+      return {
+        id,
+        ref: stringField(item, 'ref') ?? id,
+        index: numberField(item, 'index') ?? position,
+        workspaceCount: numberField(item, 'workspace_count') ?? numberField(item, 'workspaceCount') ?? null,
+        // cmux calls it `key`, as in key window, not `is_key`.
+        key: item.key === true,
+      };
+    })
+    .filter((w): w is WindowInfo => w !== null)
+    .sort((a, b) => a.index - b.index);
+}
+
+/**
+ * `workspace.list` covers one cmux window: `windowId`'s, or the key window's
+ * without it. Field names follow `docs/specs/cmux-payload-samples/`.
+ */
+export async function listWorkspaces(channel: RpcChannel, windowId?: string | null): Promise<WorkspaceInfo[]> {
+  return (await listWorkspacesIn(channel, windowId)).workspaces;
+}
+
+/** Like `listWorkspaces`, plus the window cmux reports having listed. */
+export async function listWorkspacesIn(channel: RpcChannel, windowId?: string | null): Promise<WorkspaceListing> {
+  const result = await channel.call('workspace.list', windowId ? { window_id: windowId } : {});
+  return {
+    windowId: isObject(result) ? (stringField(result, 'window_id') ?? null) : null,
+    workspaces: parseWorkspaces(result),
+  };
+}
+
+/** cmux windows have no names; `window:2` becomes 窗口 2. */
+export function windowLabel(window: WindowInfo): string {
+  const match = /^window:(.+)$/.exec(window.ref);
+  if (match) return `窗口 ${match[1]}`;
+  return window.ref === window.id ? `窗口 ${window.index + 1}` : window.ref;
+}
+
+function parseWorkspaces(result: unknown): WorkspaceInfo[] {
   const raw = arrayField(result, 'workspaces');
   return raw
     .map((item, position): WorkspaceInfo | null => {
