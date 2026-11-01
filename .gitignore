@@ -25,3 +25,6 @@ legacy/ios/CmuxRemote.xcodeproj/
 evidence/
 plans/
 docs/cmux-iphone-improvement-research.md
+
+# Per-machine agent notes: hosts, devices, accounts. Never commit.
+CLAUDE.local.md
