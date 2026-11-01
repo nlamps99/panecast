@@ -1,17 +1,32 @@
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Redirect, router, useCanGoBack, useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { appStore, PairingError } from '../state/appStore';
+import { useAppState } from '../state/hooks';
 import { storageSupported } from '../state/pairingStorage';
+import { Icon } from '../ui/Icon';
 import { colors, fonts } from '../ui/theme';
 
 /** Re-scanning a code that just failed is ignored for this long. */
 const RETRY_SAME_CODE_MS = 4_000;
 
+/**
+ * Two roles. As the only screen in the stack (first run, or the last
+ * computer was removed) it replaces itself with the tabs once a computer or
+ * the demo is ready. Opened over the tabs (`openPairing`, presented as a
+ * modal) it has a close button and closes itself after pairing; the tabs
+ * underneath are already on the new computer. `?computer=<id>` re-pairs that
+ * computer.
+ */
 export default function PairScreen() {
   const insets = useSafeAreaInsets();
+  const presented = useCanGoBack();
+  const { phase, computers } = useAppState();
+  const { computer: repairId } = useLocalSearchParams<{ computer?: string }>();
+  const repairing = computers.computers.find((c) => c.id === repairId) ?? null;
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,6 +34,17 @@ export default function PairScreen() {
   const [manualText, setManualText] = useState('');
   const handling = useRef(false);
   const rejected = useRef<{ data: string; at: number } | null>(null);
+  // A modal swiped away mid-pairing must not pop whatever is underneath.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // As the root screen; the tabs guard has already been lifted in the same render.
+  if (!presented && phase === 'ready') return <Redirect href="/" />;
 
   const attempt = async (data: string) => {
     if (handling.current) return;
@@ -27,6 +53,7 @@ export default function PairScreen() {
     setError(null);
     try {
       await appStore.pair(data);
+      if (presented && mounted.current) router.back();
     } catch (failure) {
       rejected.current = { data, at: Date.now() };
       setError(failure instanceof PairingError ? failure.message : `配对失败：${String(failure)}`);
@@ -42,14 +69,22 @@ export default function PairScreen() {
     void attempt(data);
   };
 
+  // An iOS modal sheet starts below the status bar; full screen (and Android's modal) needs the inset.
+  const paddingTop = (presented && Platform.OS === 'ios' ? 0 : insets.top) + 12;
+  const title = repairing ? '重新配对' : presented ? '添加电脑' : '连接电脑';
+
   if (!storageSupported) {
     return (
-      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
-        <Text style={styles.title}>Panecast</Text>
-        <Text style={styles.body}>网页版还不能连接电脑，请先用 iPhone 或 Android App。</Text>
-        <Pressable onPress={() => appStore.enterDemo()} accessibilityRole="button">
-          <Text style={styles.link}>先看看演示</Text>
-        </Pressable>
+      <View style={[styles.screen, { paddingTop, paddingBottom: insets.bottom + 12 }]}>
+        <Header title="Panecast" presented={presented} />
+        <View style={styles.center}>
+          <Text style={styles.body}>网页版还不能连接电脑，请先用 iPhone 或 Android App。</Text>
+          {presented ? null : (
+            <Pressable onPress={() => appStore.enterDemo()} accessibilityRole="button">
+              <Text style={styles.link}>先看看演示</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
     );
   }
@@ -78,10 +113,11 @@ export default function PairScreen() {
   }
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}>
-      <Text style={styles.title}>连接电脑</Text>
+    <View style={[styles.screen, { paddingTop, paddingBottom: insets.bottom + 12 }]}>
+      <Header title={title} presented={presented} />
       <Text style={styles.body}>
-        在 Mac 上运行 <Text style={styles.code}>cmux-relay pair</Text>，然后扫描它显示的二维码。
+        {repairing ? `「${repairing.name}」的配对已失效。在这台 Mac 上` : '在 Mac 上'}运行 <Text style={styles.code}>cmux-relay pair</Text>
+        ，然后扫描它显示的二维码。
       </Text>
       <View style={styles.cameraBox}>{camera}</View>
       {busy ? (
@@ -117,9 +153,27 @@ export default function PairScreen() {
           <Text style={styles.link}>没法扫码？粘贴配对链接</Text>
         </Pressable>
       )}
-      <Pressable onPress={() => appStore.enterDemo()} style={styles.demo} accessibilityRole="button">
-        <Text style={styles.link}>还没有电脑可连？先看看演示</Text>
-      </Pressable>
+      {presented ? null : (
+        <Pressable onPress={() => appStore.enterDemo()} style={styles.demo} accessibilityRole="button">
+          <Text style={styles.link}>还没有电脑可连？先看看演示</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+/** The title, plus a close button when opened over the tabs (swipe-down and Android back also close it). */
+function Header({ title, presented }: { title: string; presented: boolean }) {
+  return (
+    <View style={styles.header}>
+      <Text style={styles.title} accessibilityRole="header">
+        {title}
+      </Text>
+      {presented ? (
+        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.close} accessibilityRole="button" accessibilityLabel="关闭">
+          <Icon name="close" size={14} color={colors.inkDim} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -127,7 +181,16 @@ export default function PairScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.canvas, paddingHorizontal: 20, gap: 12 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  title: { color: colors.ink, fontSize: 24, fontWeight: '600' },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  title: { flex: 1, color: colors.ink, fontSize: 24, fontWeight: '600' },
+  close: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceRaised,
+  },
   body: { color: colors.inkDim, fontSize: 15, lineHeight: 22 },
   code: { fontFamily: fonts.mono, color: colors.green },
   cameraBox: {

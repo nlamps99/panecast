@@ -20,6 +20,10 @@ const ICONS = {
   batteryLow: { ios: 'battery.25', android: 'battery_android_1', web: 'battery_android_1' },
   batteryCharging: { ios: 'battery.100.bolt', android: 'battery_android_bolt', web: 'battery_android_bolt' },
   add: { ios: 'plus', android: 'add', web: 'add' },
+  check: { ios: 'checkmark', android: 'check', web: 'check' },
+  close: { ios: 'xmark', android: 'close', web: 'close' },
+  expand: { ios: 'chevron.down', android: 'expand_more', web: 'expand_more' },
+  demo: { ios: 'play.rectangle', android: 'slideshow', web: 'slideshow' },
 } as const satisfies Record<string, SymbolName>;
 
 export type IconName = keyof typeof ICONS;
