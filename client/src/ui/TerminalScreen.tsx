@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { TerminalInputHandle } from '../../modules/terminal-input';
 import type { ConnectionStatus } from '../protocol/connection';
-import { pickDefaultTarget } from '../session/surfaces';
+import { HostStatusStore } from '../session/hostStatus';
+import { canCloseSurface, SurfaceActions } from '../session/surfaceActions';
+import { pickDefaultTarget, type SurfaceInfo } from '../session/surfaces';
 import { describeError } from '../session/terminalSession';
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { backToWorkspaces } from '../state/navigation';
 import { setPrefs, usePrefs } from '../state/prefs';
+import { BatteryBadge } from './BatteryBadge';
 import { Icon } from './Icon';
 import { InputBar } from './InputBar';
 import { statusBanner, statusColor, statusLabel } from './status';
@@ -20,6 +24,9 @@ import { useKeyboardVisible } from './useKeyboardVisible';
  * The terminal tab. Top to bottom: back to the list, the workspace and its
  * terminals (hidden while typing), the terminal, the key row, and the input
  * right above the keyboard. The tab bar is hidden here.
+ *
+ * In the chip row, "+" opens a new terminal in the workspace and a long press
+ * closes one on the Mac. The title row shows the Mac's battery.
  */
 export function TerminalScreen() {
   const insets = useSafeAreaInsets();
@@ -34,6 +41,24 @@ export function TerminalScreen() {
   const [targetError, setTargetError] = useState<string | null>(null);
   const target = state.target;
   const isOpen = status.state === 'open';
+  const actions = useMemo(() => new SurfaceActions(machine), [machine]);
+  const { running, error: actionError } = useStore(actions);
+  const host = useMemo(() => new HostStatusStore(channel), [channel]);
+  const { battery } = useStore(host);
+
+  // Battery: read on focus, then every minute until the tab loses focus.
+  useFocusEffect(
+    useCallback(() => {
+      host.start();
+      return () => host.stop();
+    }, [host]),
+  );
+
+  // An action's error belongs to the workspace it was made in.
+  const workspaceId = target?.workspaceId;
+  useEffect(() => {
+    actions.clearError();
+  }, [actions, workspaceId]);
 
   // Opened from the tab bar before choosing a terminal: follow whatever cmux has focused.
   useEffect(() => {
@@ -61,6 +86,8 @@ export function TerminalScreen() {
   const siblings = target ? (surfaces[target.workspaceId] ?? []) : [];
   const surface = siblings.find((s) => s.id === target?.surfaceId);
   const banner = statusBanner(status) ?? state.subscriptionError ?? targetError;
+  // The last reading stays in the store while disconnected; it is stale, so hide it.
+  const showBattery = isOpen && battery !== null;
   const side = { paddingLeft: insets.left, paddingRight: insets.right };
 
   return (
@@ -87,27 +114,66 @@ export function TerminalScreen() {
               </Text>
             </View>
           </View>
-          {machine.mode === 'demo' ? <Text style={styles.demoBadge}>演示</Text> : null}
+          {showBattery || machine.mode === 'demo' ? (
+            <View style={styles.badges}>
+              {showBattery ? <BatteryBadge battery={battery} onPress={() => void host.refresh()} /> : null}
+              {machine.mode === 'demo' ? <Text style={styles.demoBadge}>演示</Text> : null}
+            </View>
+          ) : null}
         </View>
-        {!keyboardVisible && siblings.length > 1 ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-            {siblings.map((item) => {
-              const selected = item.id === target?.surfaceId;
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => target && session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id })}
-                  style={[styles.chip, selected && styles.chipSelected]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                >
-                  <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
+        {!keyboardVisible && target && siblings.length > 0 ? (
+          <>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+              {siblings.map((item) => {
+                const selected = item.id === target.surfaceId;
+                const closable = canCloseSurface(siblings);
+                return (
+                  <Pressable
+                    key={item.id}
+                    onPress={() => {
+                      actions.clearError();
+                      session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id });
+                    }}
+                    onLongPress={() => {
+                      if (!closable) actions.refuseLastClose();
+                      else confirmClose(item, () => void actions.close(target.workspaceId, item.id));
+                    }}
+                    disabled={running !== null}
+                    style={[styles.chip, selected && styles.chipSelected, running !== null && !selected && styles.chipBusy]}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected, disabled: running !== null }}
+                    accessibilityHint={closable ? '长按可以关闭这个终端' : undefined}
+                  >
+                    <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+              <Pressable
+                onPress={() => void actions.create(target.workspaceId)}
+                disabled={running !== null}
+                style={({ pressed }) => [styles.chip, styles.newChip, pressed && styles.newChipPressed, running === 'close' && styles.chipBusy]}
+                accessibilityRole="button"
+                accessibilityLabel="新建终端"
+                accessibilityState={{ disabled: running !== null, busy: running === 'create' }}
+              >
+                <View style={styles.newChipIcon}>
+                  {running === 'create' ? (
+                    <ActivityIndicator size="small" color={colors.green} style={styles.newChipSpinner} />
+                  ) : (
+                    <Icon name="plus" size={12} color={colors.green} />
+                  )}
+                </View>
+                <Text style={styles.newChipText}>新建</Text>
+              </Pressable>
+            </ScrollView>
+            {actionError ? (
+              <Text style={styles.actionError} numberOfLines={2}>
+                {actionError}
+              </Text>
+            ) : null}
+          </>
         ) : null}
       </View>
       {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
@@ -125,6 +191,25 @@ export function TerminalScreen() {
         <InputBar session={session} disabled={!target} error={state.input.error} inputRef={inputRef} />
       </View>
     </KeyboardAvoidingView>
+  );
+}
+
+/** Asks before closing a terminal; it closes in cmux on the Mac, not just on the phone. */
+function confirmClose(surface: SurfaceInfo, onConfirm: () => void): void {
+  const message = `「${surface.title}」会在电脑上的 cmux 里关闭，里面正在运行的程序也会结束。`;
+  if (Platform.OS === 'web') {
+    // react-native-web's Alert.alert does nothing.
+    if (window.confirm(`关闭终端？\n\n${message}`)) onConfirm();
+    return;
+  }
+  Alert.alert(
+    '关闭终端？',
+    message,
+    [
+      { text: '取消', style: 'cancel' },
+      { text: '关闭', style: 'destructive', onPress: onConfirm },
+    ],
+    { cancelable: true },
   );
 }
 
@@ -150,8 +235,8 @@ const styles = StyleSheet.create({
   subtitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   dot: { width: 6, height: 6, borderRadius: 3 },
   subtitle: { flexShrink: 1, color: colors.muted, fontSize: 12 },
+  badges: { flexDirection: 'row', alignItems: 'center', gap: 6, marginRight: 8 },
   demoBadge: {
-    marginRight: 8,
     color: colors.canvas,
     backgroundColor: colors.yellow,
     fontSize: 11,
@@ -173,8 +258,15 @@ const styles = StyleSheet.create({
     borderColor: colors.divider,
   },
   chipSelected: { backgroundColor: colors.surfaceRaised, borderColor: colors.green },
+  chipBusy: { opacity: 0.6 },
   chipText: { color: colors.muted, fontSize: 13 },
   chipTextSelected: { color: colors.ink, fontWeight: '600' },
+  newChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, borderColor: colors.green },
+  newChipPressed: { backgroundColor: colors.surfaceRaised },
+  newChipIcon: { width: 14, height: 14, alignItems: 'center', justifyContent: 'center' },
+  newChipSpinner: { transform: [{ scale: 0.7 }] },
+  newChipText: { color: colors.green, fontSize: 13, fontWeight: '600' },
+  actionError: { color: colors.red, fontSize: 12, lineHeight: 16, paddingHorizontal: 12, paddingTop: 6 },
   banner: {
     color: colors.yellow,
     fontSize: 13,
