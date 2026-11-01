@@ -1,29 +1,15 @@
-import { Text, View, StyleSheet } from "react-native";
+import { Redirect } from 'expo-router';
+import { StyleSheet, View } from 'react-native';
+
+import { useAppState } from '../state/hooks';
+import { colors } from '../ui/theme';
 
 export default function Index() {
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Panecast</Text>
-      <Text style={styles.subtitle}>在手机上查看和操作电脑上的终端</Text>
-    </View>
-  );
+  const { phase } = useAppState();
+  if (phase === 'loading') return <View style={styles.blank} />;
+  return <Redirect href={phase === 'paired' ? '/terminal' : '/pair'} />;
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#1a1b26",
-  },
-  title: {
-    color: "#c0caf5",
-    fontSize: 28,
-    fontWeight: "600",
-  },
-  subtitle: {
-    color: "#565f89",
-    fontSize: 14,
-    marginTop: 8,
-  },
+  blank: { flex: 1, backgroundColor: colors.canvas },
 });
