@@ -251,6 +251,135 @@ describe('stitchFirstPage', () => {
   });
 });
 
+describe('TerminalSession live lines', () => {
+  const subscribedLines = (channel: FakeChannel) =>
+    channel.calls.filter((c) => c.method === 'surface.subscribe').map((c) => c.params.lines);
+
+  it('uses the new value for the next subscribe without any call before a target', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setLiveLines(200);
+    expect(channel.calls).toHaveLength(0);
+    session.setTarget(target);
+    await flush();
+    expect(subscribedLines(channel)).toEqual([200]);
+  });
+
+  it('replaces a live subscription, unsubscribing first', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    await flush();
+    session.setLiveLines(240);
+    await flush();
+    expect(channel.methods()).toEqual(['surface.subscribe', 'surface.unsubscribe', 'surface.subscribe']);
+    expect(subscribedLines(channel)).toEqual([120, 240]);
+    expect(session.getState().subscription).toBe('live');
+  });
+
+  it('does nothing for the same value or a nonsense one', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    await flush();
+    session.setLiveLines(120);
+    session.setLiveLines(Number.NaN);
+    session.setLiveLines(0);
+    await flush();
+    expect(channel.methods()).toEqual(['surface.subscribe']);
+  });
+
+  it('runs one replacement at a time and ends on the latest value', async () => {
+    const channel = new FakeChannel();
+    channel.autoReply.delete('surface.unsubscribe');
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    await flush();
+    session.setLiveLines(140);
+    session.setLiveLines(160);
+    session.setLiveLines(180);
+    const unsubscribes = () => channel.calls.filter((c) => c.method === 'surface.unsubscribe');
+    expect(unsubscribes()).toHaveLength(1);
+    unsubscribes()[0].resolve({});
+    await flush();
+    // The first cycle subscribed with the latest value, so no second cycle is needed.
+    expect(subscribedLines(channel)).toEqual([120, 180]);
+    expect(unsubscribes()).toHaveLength(1);
+  });
+
+  it('catches up with a change made while a replacement is subscribing', async () => {
+    const channel = new FakeChannel();
+    channel.autoReply.delete('surface.subscribe');
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    channel.calls[0].resolve({});
+    await flush();
+    session.setLiveLines(200);
+    await flush();
+    const subscribes = () => channel.calls.filter((c) => c.method === 'surface.subscribe');
+    expect(subscribes().map((c) => c.params.lines)).toEqual([120, 200]);
+    session.setLiveLines(300);
+    subscribes()[1].resolve({});
+    await flush();
+    expect(subscribes().map((c) => c.params.lines)).toEqual([120, 200, 300]);
+    expect(channel.methods().filter((m) => m === 'surface.unsubscribe')).toHaveLength(2);
+    subscribes()[2].resolve({});
+    await flush();
+    expect(session.getState().subscription).toBe('live');
+  });
+
+  it('catches up with a change made during the first subscribe', async () => {
+    const channel = new FakeChannel();
+    channel.autoReply.delete('surface.subscribe');
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    session.setLiveLines(200);
+    expect(channel.methods()).toEqual(['surface.subscribe']);
+    channel.calls[0].resolve({});
+    await flush();
+    expect(channel.methods()).toEqual(['surface.subscribe', 'surface.unsubscribe', 'surface.subscribe']);
+    expect(channel.calls[2].params.lines).toBe(200);
+  });
+
+  it('waits for the reconnect while offline', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    await flush();
+    channel.status({ state: 'waiting', attempt: 1, retryAt: 0, reason: 'network' });
+    session.setLiveLines(260);
+    channel.status({ state: 'open' });
+    await flush();
+    expect(channel.methods()).toEqual(['surface.subscribe', 'surface.subscribe']);
+    expect(subscribedLines(channel)).toEqual([120, 260]);
+  });
+
+  it('holds off a checksum resync while a replacement is in flight', async () => {
+    const channel = new FakeChannel();
+    channel.autoReply.delete('surface.unsubscribe');
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    await flush();
+    channel.push(firstTick(['a']));
+    session.setLiveLines(200);
+    channel.push({ type: 'screen.checksum', surfaceId: 's1', rev: 1, hash: 'bad' });
+    expect(channel.methods().filter((m) => m === 'surface.unsubscribe')).toHaveLength(1);
+  });
+
+  it('sends nothing after dispose', async () => {
+    const channel = new FakeChannel();
+    channel.autoReply.delete('surface.unsubscribe');
+    const session = new TerminalSession(channel, { liveLines: 120 });
+    session.setTarget(target);
+    await flush();
+    session.setLiveLines(200);
+    session.dispose();
+    channel.calls.find((c) => c.method === 'surface.unsubscribe')!.resolve({});
+    await flush();
+    expect(channel.methods()).toEqual(['surface.subscribe', 'surface.unsubscribe']);
+  });
+});
+
 describe('TerminalSession input', () => {
   it('sends input in order, one request at a time, coalescing text', async () => {
     const channel = new FakeChannel();
