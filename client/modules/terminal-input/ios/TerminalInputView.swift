@@ -27,11 +27,6 @@ final class TerminalTextView: UITextView {
 ///   `onKeyAction`.
 /// - line mode: the field keeps its text; JS gets `onChangeState` with the
 ///   text and whether it is composing, and `onSubmit` on Return.
-///
-/// Korean on iOS does not use marked text: the keyboard edits the last
-/// syllable in place (한 → 하 + ㄴ moves to the next syllable). Live mode
-/// therefore keeps text that ends in Hangul in the field until a non-Hangul
-/// character, Return or a mode change flushes it.
 final class TerminalInputView: ExpoView, UITextViewDelegate {
   enum Mode { case line, live }
 
@@ -92,7 +87,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
 
   func setMode(_ next: Mode) {
     guard next != mode else { return }
-    if mode == .live { flushLive(force: true) }
+    if mode == .live { flushLive() }
     mode = next
     textView.returnKeyType = next == .live ? .default : .send
     clearText()
@@ -138,7 +133,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
     if textView.markedTextRange != nil { return true }
     switch mode {
     case .live:
-      flushLive(force: true)
+      flushLive()
       onKeyAction(["key": "enter"])
     case .line:
       onSubmit(["text": textView.text ?? ""])
@@ -149,7 +144,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
   func textViewDidChange(_ textView: UITextView) {
     updatePlaceholder()
     if mode == .live {
-      flushLive(force: false)
+      flushLive()
     }
     emitState()
   }
@@ -157,13 +152,10 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
   // MARK: Live mode
 
   /// Sends whatever the input method has committed. Never sends marked text.
-  private func flushLive(force: Bool) {
+  private func flushLive() {
     guard mode == .live, textView.markedTextRange == nil else { return }
     let text = textView.text ?? ""
     guard !text.isEmpty else { return }
-    if !force, let last = text.unicodeScalars.last, Self.isHangul(last) {
-      return
-    }
     textView.text = ""
     updatePlaceholder()
     onCommitText(["text": text])
@@ -184,14 +176,5 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
 
   private func updatePlaceholder() {
     placeholderLabel.isHidden = !(textView.text ?? "").isEmpty || textView.markedTextRange != nil
-  }
-
-  private static func isHangul(_ scalar: Unicode.Scalar) -> Bool {
-    switch scalar.value {
-    case 0x1100...0x11FF, 0x3130...0x318F, 0xA960...0xA97F, 0xAC00...0xD7A3, 0xD7B0...0xD7FF:
-      return true
-    default:
-      return false
-    }
   }
 }

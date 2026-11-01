@@ -22,8 +22,8 @@ import expo.modules.kotlin.views.ExpoView
 
 /**
  * Terminal input that only hands text to JavaScript once the input method has
- * committed it. Text inside the IME's composing span (Pinyin letters, a Hangul
- * syllable being built) stays in the field. See the iOS view for the modes.
+ * committed it. Pinyin letters inside the IME's composing span stay in the
+ * field. See the iOS view for the modes.
  */
 class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   enum class Mode { LINE, LIVE }
@@ -201,11 +201,7 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
     }
   }
 
-  /**
-   * Sends committed text. Never sends text inside the composing span; Android
-   * keyboards keep a Hangul syllable there too, so unlike iOS no extra
-   * hold-back is needed.
-   */
+  /** Sends committed text. Never sends text inside the composing span. */
   private fun flushLive() {
     if (mode != Mode.LIVE || isComposing()) return
     val text = editText.text?.toString() ?: return
