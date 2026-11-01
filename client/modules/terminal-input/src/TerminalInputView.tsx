@@ -28,6 +28,7 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
     focus: async () => nativeRef.current?.focus(),
     blur: async () => nativeRef.current?.blur(),
     clear: async () => nativeRef.current?.clear(),
+    insertText: async (text: string) => nativeRef.current?.insertText(text),
   }));
   return (
     <NativeView

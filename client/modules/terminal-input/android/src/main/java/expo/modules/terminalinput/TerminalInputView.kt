@@ -200,6 +200,26 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
     emitState()
   }
 
+  /**
+   * Inserts [text] at the caret, replacing any selection, as if it had been
+   * typed: the TextWatcher schedules the same flush (live mode) and state
+   * report. Text the IME is still composing is committed first, and the IME
+   * is restarted so it does not keep composing against text that moved.
+   */
+  fun insertText(text: String) {
+    if (text.isEmpty()) return
+    val editable = editText.text ?: return
+    val wasComposing = isComposing()
+    if (wasComposing) BaseInputConnection.removeComposingSpans(editable)
+    var start = minOf(editText.selectionStart, editText.selectionEnd)
+    var end = maxOf(editText.selectionStart, editText.selectionEnd)
+    if (start < 0 || start > editable.length) start = editable.length
+    end = end.coerceIn(start, editable.length)
+    editable.replace(start, end, text)
+    editText.setSelection((start + text.length).coerceAtMost(editable.length))
+    if (wasComposing) restartInput()
+  }
+
   // MARK: Input handling
 
   private fun isComposing(): Boolean {
