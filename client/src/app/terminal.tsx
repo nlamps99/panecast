@@ -13,6 +13,7 @@ import { InputBar, KeyBar } from '../ui/InputBar';
 import { SurfacePicker } from '../ui/SurfacePicker';
 import { TerminalView } from '../ui/TerminalView';
 import { colors } from '../ui/theme';
+import { useKeyboardVisible } from '../ui/useKeyboardVisible';
 
 export default function TerminalScreen() {
   const insets = useSafeAreaInsets();
@@ -20,6 +21,7 @@ export default function TerminalScreen() {
   const status = useConnectionStatus(connection);
   const state = useTerminalState(session);
   const inputRef = useRef<TerminalInputHandle>(null);
+  const keyboardVisible = useKeyboardVisible();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [title, setTitle] = useState<string | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
@@ -102,7 +104,7 @@ export default function TerminalScreen() {
         </Pressable>
       ) : null}
       <TerminalView session={session} state={state} />
-      <View style={{ paddingBottom: Math.max(insets.bottom - 8, 4) }}>
+      <View style={{ paddingBottom: keyboardVisible ? 2 : Math.max(insets.bottom - 8, 4) }}>
         <InputBar session={session} disabled={!target} error={state.input.error} inputRef={inputRef} />
         <KeyBar session={session} onHideKeyboard={() => void inputRef.current?.blur()} />
       </View>

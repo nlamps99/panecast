@@ -16,3 +16,8 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // ReactFontManager: resolve fonts the same way RN Text does.
+  implementation 'com.facebook.react:react-android'
+}

@@ -5,11 +5,11 @@ import android.graphics.Typeface
 import android.os.Build
 import android.text.Editable
 import android.text.InputType
-import android.text.Spanned
 import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
@@ -109,14 +109,12 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
       imeOptions = EditorInfo.IME_ACTION_SEND
       setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
-      setOnEditorActionListener { _, actionId, event ->
-        val isEnter = event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN
-        if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE || isEnter) {
-          handleEnter()
-          true
-        } else {
-          false
-        }
+      // Keyboards report the action key differently (SEND, DONE, UNSPECIFIED,
+      // or a raw Enter event); this field has no other action, so any of them
+      // means Enter. Only the key-up half of a raw event is ignored.
+      setOnEditorActionListener { _, _, event ->
+        if (event == null || event.action == KeyEvent.ACTION_DOWN) handleEnter()
+        true
       }
       addTextChangedListener(object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -181,8 +179,7 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
   }
 
   fun clearText() {
-    setTextSilently("")
-    restartInput()
+    clearSilently()
     emitState()
   }
 
@@ -190,9 +187,7 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
 
   private fun isComposing(): Boolean {
     val text = editText.text ?: return false
-    return text.getSpans(0, text.length, Any::class.java).any { span ->
-      (text.getSpanFlags(span) and Spanned.SPAN_COMPOSING) != 0
-    }
+    return BaseInputConnection.getComposingSpanStart(text) != -1
   }
 
   private fun scheduleFlush() {
@@ -215,8 +210,10 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
     if (mode != Mode.LIVE || isComposing()) return
     val text = editText.text?.toString() ?: return
     if (text.isEmpty()) return
-    setTextSilently("")
-    restartInput()
+    // Emptying the same Editable reports the new selection to the keyboard
+    // without restarting input, which would reset its layout (symbols page,
+    // shift) after every character.
+    clearSilently()
     onCommitText(mapOf("text" to text))
   }
 
@@ -255,14 +252,13 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
     onChangeState(mapOf("text" to (editText.text?.toString() ?: ""), "composing" to isComposing()))
   }
 
-  private fun setTextSilently(text: String) {
+  private fun clearSilently() {
     suppressWatcher = true
-    editText.setText(text)
-    editText.setSelection(text.length)
+    editText.text?.clear()
     suppressWatcher = false
   }
 
-  /** Tells the IME the field changed under it, so it drops stale composing state. */
+  /** Tells the IME the field changed under it (new action key, dropped composing state). */
   private fun restartInput() {
     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
     imm?.restartInput(editText)
