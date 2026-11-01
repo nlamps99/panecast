@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router';
 
 import { useMachine, useStore } from '../../state/hooks';
+import { useLiveLinesPref } from '../../state/useLiveLinesPref';
 import { TabBar } from '../../ui/TabBar';
 import { colors } from '../../ui/theme';
 
@@ -13,8 +14,10 @@ import { colors } from '../../ui/theme';
  * ROUTE_NAMES_CHANGED warning. The tab bar sets the order on screen.
  */
 export default function TabsLayout() {
-  const { inbox } = useMachine();
+  const { inbox, session } = useMachine();
   const { unread } = useStore(inbox);
+  // The layout lives as long as the connection, so the history-lines pref follows changes here.
+  useLiveLinesPref(session);
 
   return (
     <Tabs
