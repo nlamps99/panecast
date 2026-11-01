@@ -251,6 +251,7 @@ private struct TerminalHistoryCollectionView: UIViewRepresentable {
         var lastBottomRequest = Int.min
 
         private var configuration: TerminalRenderConfiguration?
+        private var viewportColumns: Int?
         private var heightCache: [String: CGFloat] = [:]
         private let attributedCache: NSCache<NSString, NSAttributedString> = {
             let cache = NSCache<NSString, NSAttributedString>()
@@ -271,6 +272,10 @@ private struct TerminalHistoryCollectionView: UIViewRepresentable {
         func updateConfiguration(_ next: TerminalRenderConfiguration) -> Bool {
             guard next.invalidatesCache(comparedTo: configuration) else { return false }
             configuration = next
+            viewportColumns = TerminalHistoryTextRenderer.viewportColumns(
+                fitting: next.width - TerminalHistoryTextCell.horizontalInsets,
+                fontSize: next.fontSize
+            )
             heightCache.removeAll(keepingCapacity: true)
             attributedCache.removeAllObjects()
             return true
@@ -442,7 +447,8 @@ private struct TerminalHistoryCollectionView: UIViewRepresentable {
             let result = TerminalHistoryTextRenderer.make(
                 rows: item.rows,
                 fontSize: configuration?.fontSize ?? CmuxFont.Role.headline.size,
-                lineHeight: configuration?.lineHeight ?? 0
+                lineHeight: configuration?.lineHeight ?? 0,
+                viewportColumns: viewportColumns
             )
             attributedCache.setObject(result, forKey: key)
             return result
@@ -547,16 +553,29 @@ private final class TerminalHistoryTextCell: UICollectionViewCell {
     }
 }
 
-private enum TerminalHistoryTextRenderer {
-    static func make(rows: [String], fontSize: CGFloat, lineHeight: CGFloat) -> NSAttributedString {
+enum TerminalHistoryTextRenderer {
+    /// `viewportColumns` is how many monospace cells fit on one visual line,
+    /// or nil while the viewport width is still unknown.
+    static func make(
+        rows: [String],
+        fontSize: CGFloat,
+        lineHeight: CGFloat,
+        viewportColumns: Int?
+    ) -> NSAttributedString {
         let output = NSMutableAttributedString()
         let paragraph = NSMutableParagraphStyle()
         paragraph.minimumLineHeight = lineHeight
         paragraph.maximumLineHeight = lineHeight
-        paragraph.lineBreakMode = .byCharWrapping
+        // Mac panes are far wider than a phone, so most rows wrap. Breaking at
+        // word boundaries keeps English words whole; CJK still breaks between
+        // characters, and an over-long path or URL still breaks mid-token.
+        paragraph.lineBreakMode = .byWordWrapping
 
         for (rowIndex, rawRow) in rows.enumerated() {
-            let cells = ANSIParser.parse(rawRow, base: .default)
+            var cells = ANSIParser.parse(rawRow, base: .default)
+            if let viewportColumns {
+                cells = TerminalRuleRow.fit(cells, columns: viewportColumns)
+            }
             var index = 0
             while index < cells.count {
                 let attr = cells[index].attr
@@ -609,6 +628,40 @@ private enum TerminalHistoryTextRenderer {
     private static func font(named name: String, size: CGFloat, bold: Bool) -> UIFont {
         UIFont(name: name, size: size)
             ?? .monospacedSystemFont(ofSize: size, weight: bold ? .bold : .regular)
+    }
+
+    /// Monospace cells that fit in `textWidth`. One point of slack keeps
+    /// floating-point rounding from wrapping the last glyph onto a new line.
+    static func viewportColumns(fitting textWidth: CGFloat, fontSize: CGFloat) -> Int? {
+        let regular = font(named: "GeistMono-Regular", size: fontSize, bold: false)
+        let advance = ("──────────" as NSString).size(withAttributes: [.font: regular]).width / 10
+        guard advance > 0, textWidth - 1 >= advance else { return nil }
+        return Int(((textWidth - 1) / advance).rounded(.down))
+    }
+}
+
+/// A row made only of horizontal-rule glyphs, such as Claude Code's prompt
+/// separators or a `-----` banner. It is drawn for the Mac pane's width, so at
+/// phone width it would wrap into several lines of dashes; trimming it to the
+/// viewport keeps it one full-width rule. Rows with any other text are left
+/// alone.
+enum TerminalRuleRow {
+    private static let ruleCharacters: Set<Character> = [
+        "─", "━", "═", "╌", "╍", "┄", "┅", "┈", "┉", "-", "=",
+    ]
+
+    static func fit(_ cells: [ANSICell], columns: Int) -> [ANSICell] {
+        guard cells.count > columns, isRule(cells) else { return cells }
+        return Array(cells.prefix(max(1, columns)))
+    }
+
+    private static func isRule(_ cells: [ANSICell]) -> Bool {
+        var sawRule = false
+        for cell in cells where cell.character != " " {
+            guard ruleCharacters.contains(cell.character) else { return false }
+            sawRule = true
+        }
+        return sawRule
     }
 }
 

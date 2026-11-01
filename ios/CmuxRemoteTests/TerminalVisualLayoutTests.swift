@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 import SharedKit
 @testable import CmuxRemote
 
@@ -36,5 +37,60 @@ final class TerminalVisualLayoutTests: XCTestCase {
 
         XCTAssertEqual(layout.rows.map(\.plainText), ["A한", "B"])
         XCTAssertEqual(layout.rows.map(\.columns), [3, 1])
+    }
+
+    func testFullWidthRuleRowIsTrimmedToTheViewport() {
+        let rule = ANSIParser.parse(String(repeating: "─", count: 156), base: .default)
+
+        XCTAssertEqual(TerminalRuleRow.fit(rule, columns: 40).count, 40)
+    }
+
+    func testIndentedRuleKeepsItsIndent() {
+        let rule = ANSIParser.parse("  " + String(repeating: "=", count: 60), base: .default)
+
+        let fitted = TerminalRuleRow.fit(rule, columns: 40)
+
+        XCTAssertEqual(fitted.count, 40)
+        XCTAssertEqual(fitted.prefix(3).map(\.character), [" ", " ", "="])
+    }
+
+    func testRowsWithTextAreNeverTrimmed() {
+        let titled = ANSIParser.parse("── Title " + String(repeating: "─", count: 60), base: .default)
+        let prose = ANSIParser.parse(String(repeating: "word ", count: 30), base: .default)
+
+        XCTAssertEqual(TerminalRuleRow.fit(titled, columns: 40), titled)
+        XCTAssertEqual(TerminalRuleRow.fit(prose, columns: 40), prose)
+    }
+
+    func testRuleThatAlreadyFitsIsUnchanged() {
+        let rule = ANSIParser.parse(String(repeating: "─", count: 30), base: .default)
+
+        XCTAssertEqual(TerminalRuleRow.fit(rule, columns: 40), rule)
+    }
+
+    func testFittedRuleRendersOnOneVisualLine() throws {
+        let textWidth: CGFloat = 365
+        let lineHeight: CGFloat = 17
+        let columns = try XCTUnwrap(
+            TerminalHistoryTextRenderer.viewportColumns(fitting: textWidth, fontSize: 15)
+        )
+
+        let text = TerminalHistoryTextRenderer.make(
+            rows: [String(repeating: "─", count: 156)],
+            fontSize: 15,
+            lineHeight: lineHeight,
+            viewportColumns: columns
+        )
+        let height = text.boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        ).height
+
+        XCTAssertLessThan(height, lineHeight * 1.5)
+    }
+
+    func testViewportColumnsAreUnknownBeforeTheViewportHasWidth() {
+        XCTAssertNil(TerminalHistoryTextRenderer.viewportColumns(fitting: 0, fontSize: 15))
     }
 }
