@@ -62,4 +62,19 @@ final class HostServicesTests: XCTestCase {
         XCTAssertTrue(text.contains(#""id":"b1""#), text)
         XCTAssertTrue(text.contains(#""available""#), text)
     }
+
+    func testProtocolMachineAnswersRelayInfoWithMessageAndUploadLimits() async {
+        let cmux = RecordingCMUXFacade()
+        let machine = WSProtocolMachine(cmux: cmux)
+        _ = await machine.processText(#"{"deviceId":"d","appVersion":"1","protocolVersion":1}"#)
+
+        let actions = await machine.processText(#"{"id":"i1","method":"relay.info","params":{}}"#)
+
+        let calls = await cmux.snapshot()
+        XCTAssertEqual(calls, [])
+        guard actions.count == 1, case .sendText(let text) = actions[0] else { return XCTFail("expected sendText") }
+        XCTAssertTrue(text.contains(#""id":"i1""#), text)
+        XCTAssertTrue(text.contains(#""max_message_bytes":\#(HTTPServer.maxWebSocketFrameBytes)"#), text)
+        XCTAssertTrue(text.contains(#""max_upload_bytes":\#(RelayFileUploadService.maxBytes)"#), text)
+    }
 }

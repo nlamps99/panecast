@@ -9,6 +9,7 @@ import {
   encodeWithinBudget,
   fitWithin,
   formatBytes,
+  parseRelayLimits,
   parseUploadResult,
   pathInsertion,
   planEncodeAttempts,
@@ -32,6 +33,27 @@ describe('size budget', () => {
     const budget = base64Budget('lan');
     expect(decodedByteLength('A'.repeat(budget))).toBeGreaterThanOrEqual(6 * 1024 * 1024);
     expect((budget / 4) * 3).toBeLessThanOrEqual(RELAY_UPLOAD_MAX_BYTES);
+  });
+
+  it('uses the legacy 6 MiB through the broker when the relay reports large frames', () => {
+    const limits = parseRelayLimits({ max_message_bytes: 24 * 1024 * 1024, max_upload_bytes: 12 * 1024 * 1024 });
+    expect(limits).toEqual({ maxMessageBytes: 24 * 1024 * 1024, maxUploadBytes: 12 * 1024 * 1024 });
+    expect(base64Budget('broker', limits)).toBe(base64Budget('lan'));
+  });
+
+  it('never exceeds a smaller reported frame or upload limit', () => {
+    expect(base64Budget('broker', { maxMessageBytes: 2 * 1024 * 1024, maxUploadBytes: 12 * 1024 * 1024 })).toBe(
+      2 * 1024 * 1024 - 64 * 1024,
+    );
+    expect(base64Budget('broker', { maxMessageBytes: 24 * 1024 * 1024, maxUploadBytes: 3 * 1024 * 1024 })).toBe(
+      4 * 1024 * 1024,
+    );
+  });
+
+  it('falls back to the 1 MiB-safe budget for relays without relay.info', () => {
+    expect(parseRelayLimits(null)).toBeNull();
+    expect(parseRelayLimits({ max_message_bytes: 'x' })).toBeNull();
+    expect(base64Budget('broker', null)).toBe(BROKER_BASE64_BUDGET);
   });
 
   it('treats anything that is not a LAN channel as the broker', () => {

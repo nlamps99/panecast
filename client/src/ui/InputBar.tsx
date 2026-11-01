@@ -20,6 +20,7 @@ import {
   base64Budget,
   decodedByteLength,
   formatBytes,
+  parseRelayLimits,
   parseUploadResult,
   pathInsertion,
   shellQuotePath,
@@ -151,7 +152,9 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
         return;
       }
       setAttach({ kind: 'busy', label: '正在压缩图片…' });
-      const image = await encodeImage(uri, base64Budget(uploadTransportOf(channel)));
+      // Newer relays say how large a message they take; older ones fail the call.
+      const limits = parseRelayLimits(await channel.call('relay.info', {}, 5_000).catch(() => null));
+      const image = await encodeImage(uri, base64Budget(uploadTransportOf(channel), limits));
       if (!image) throw new AttachmentError('图片太大，压缩后还是发不了，换一张小一点的试试');
       setAttach({ kind: 'busy', label: `正在发送图片（${formatBytes(decodedByteLength(image.base64))}）…` });
       const params = uploadParams(attachmentFilename(new Date(), Platform.OS), image.base64);

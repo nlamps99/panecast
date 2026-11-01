@@ -7,10 +7,11 @@
  * Size limits on the way (base64 inflates the bytes by 4/3):
  * - relay `RelayFileUploadService.maxBytes`: 12 MiB of decoded data;
  * - relay LAN WebSocket frames: 24 MiB; broker `MAX_WS_PAYLOAD_BYTES`: 32 MiB;
- * - the relay's tunnel to the broker (`BrokerTunnelClient`) is a
- *   `URLSessionWebSocketTask` with the default `maximumMessageSize` of 1 MiB.
- *   A larger frame fails the relay's `receive()` and drops the whole tunnel,
- *   so through the broker the RPC frame must stay under 1 MiB.
+ * - the relay's tunnel to the broker (`BrokerTunnelClient`): relays that
+ *   answer `relay.info` raise its `maximumMessageSize` to their frame limit;
+ *   older ones keep URLSession's 1 MiB default, where a larger frame fails
+ *   `receive()` and drops the whole tunnel, so for them the RPC frame must
+ *   stay under 1 MiB.
  *
  * Pure helpers only; the Expo picker and encoder glue is in `attachImage.ts`.
  */
@@ -49,11 +50,35 @@ export const ENCODE_LADDER: readonly EncodeStep[] = [
   { maxDimension: 1024, quality: 0.4 },
 ];
 
-/** Largest base64 payload worth sending on this transport, never past the relay's limit. */
-export function base64Budget(transport: UploadTransport): number {
-  const relayMax = Math.floor(RELAY_UPLOAD_MAX_BYTES / 3) * 4;
-  const wanted = transport === 'lan' ? Math.ceil(LAN_BYTES_BUDGET / 3) * 4 : BROKER_BASE64_BUDGET;
+/** What the relay reports through `relay.info`; null for relays that predate it. */
+export type RelayLimits = { maxMessageBytes: number; maxUploadBytes: number };
+
+/** Room left in a frame for the RPC and broker envelope JSON around the base64. */
+const FRAME_OVERHEAD = 64 * 1024;
+
+/**
+ * Largest base64 payload worth sending, never past the relay's limit. A relay
+ * that reports its limits (it accepts large frames through the broker too)
+ * gets the legacy client's 6 MiB preference; an older one, through the
+ * broker, stays under its 1 MiB tunnel frames.
+ */
+export function base64Budget(transport: UploadTransport, limits: RelayLimits | null = null): number {
+  const uploadMax = limits ? Math.min(limits.maxUploadBytes, RELAY_UPLOAD_MAX_BYTES) : RELAY_UPLOAD_MAX_BYTES;
+  const relayMax = Math.floor(uploadMax / 3) * 4;
+  const preferred = Math.ceil(LAN_BYTES_BUDGET / 3) * 4;
+  if (limits) return Math.max(0, Math.min(preferred, relayMax, limits.maxMessageBytes - FRAME_OVERHEAD));
+  const wanted = transport === 'lan' ? preferred : BROKER_BASE64_BUDGET;
   return Math.min(wanted, relayMax);
+}
+
+/** Reads `relay.info` (`{max_message_bytes, max_upload_bytes}`); null when missing or malformed. */
+export function parseRelayLimits(value: unknown): RelayLimits | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const message = record.max_message_bytes;
+  const upload = record.max_upload_bytes;
+  if (typeof message !== 'number' || typeof upload !== 'number' || message <= 0 || upload <= 0) return null;
+  return { maxMessageBytes: message, maxUploadBytes: upload };
 }
 
 /** The transport a channel reports (`ComputerChannel.transport`); anything else counts as the broker, the tighter one. */

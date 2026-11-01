@@ -86,6 +86,10 @@ public actor BrokerTunnelClient {
             let connectedAt = ContinuousClock.now
             let currentSession = makeSession()
             let current = currentSession.webSocketTask(with: authorizedRequest())
+            // URLSession's default is 1 MiB. A larger envelope (a phone's
+            // `file.upload`) would fail `receive()` and drop the tunnel for
+            // every phone, so accept what the direct WebSocket accepts.
+            current.maximumMessageSize = HTTPServer.maxWebSocketFrameBytes
             var heartbeat: Task<Void, Never>?
             activeSession = currentSession
             do {

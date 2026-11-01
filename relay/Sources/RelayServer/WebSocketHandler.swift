@@ -84,8 +84,20 @@ public actor WSProtocolMachine {
     }
 
 
+    /// What this relay accepts, so a client can size uploads without guessing.
+    /// Older relays forward the unknown method to cmux, which fails it; clients
+    /// then fall back to the 1 MiB-safe sizes.
+    static var relayInfo: JSONValue {
+        .object([
+            "max_message_bytes": .int(Int64(HTTPServer.maxWebSocketFrameBytes)),
+            "max_upload_bytes": .int(Int64(RelayFileUploadService.maxBytes)),
+        ])
+    }
+
     private static func relayOwnedResponse(for req: RPCRequest) -> String? {
         switch req.method {
+        case "relay.info":
+            return encode(RPCResponse(id: req.id, ok: true, result: relayInfo, error: nil))
         case "host.battery":
             return encode(RPCResponse(id: req.id, ok: true, result: HostBatteryService.snapshot().json, error: nil))
         case "file.upload":
