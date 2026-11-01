@@ -27,8 +27,13 @@ final class TerminalTextView: UITextView {
 ///   `onKeyAction`.
 /// - line mode: the field keeps its text; JS gets `onChangeState` with the
 ///   text and whether it is composing, and `onSubmit` on Return.
+///
+/// `onContentSizeChange` reports the height the text needs (including the
+/// vertical inset), so JS can grow the field; past that the view scrolls.
 final class TerminalInputView: ExpoView, UITextViewDelegate {
   enum Mode { case line, live }
+
+  static let verticalInset: CGFloat = 8
 
   let textView = TerminalTextView()
   private let placeholderLabel = UILabel()
@@ -40,6 +45,8 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
   let onKeyAction = EventDispatcher()
   let onChangeState = EventDispatcher()
   let onSubmit = EventDispatcher()
+  let onContentSizeChange = EventDispatcher()
+  private var lastContentHeight: CGFloat = 0
 
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
@@ -50,7 +57,8 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
     textView.isScrollEnabled = true
     textView.showsVerticalScrollIndicator = false
     textView.textContainer.lineFragmentPadding = 0
-    // Long input wraps and the view scrolls to keep the caret visible.
+    textView.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: 0, bottom: Self.verticalInset, right: 0)
+    // Long input wraps; JS grows the view up to a limit, then it scrolls.
     textView.autocorrectionType = .no
     textView.autocapitalizationType = .none
     textView.spellCheckingType = .no
@@ -76,11 +84,22 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
   override func layoutSubviews() {
     super.layoutSubviews()
     textView.frame = bounds
-    // Center one line vertically.
     let lineHeight = textView.font?.lineHeight ?? fontSize * 1.2
-    let inset = max(0, (bounds.height - lineHeight) / 2)
-    textView.textContainerInset = UIEdgeInsets(top: inset, left: 0, bottom: inset, right: 0)
-    placeholderLabel.frame = CGRect(x: 0, y: inset, width: bounds.width, height: lineHeight)
+    placeholderLabel.frame = CGRect(x: 0, y: Self.verticalInset, width: bounds.width, height: lineHeight)
+    if textView.contentSize.height <= bounds.height + 0.5, textView.contentOffset.y != 0 {
+      textView.contentOffset = .zero
+    }
+    reportContentHeight()
+  }
+
+  /// Height the current text needs at the current width, including the inset.
+  private func reportContentHeight() {
+    guard bounds.width > 0 else { return }
+    let fitted = textView.sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude)).height
+    let height = ceil(fitted)
+    guard abs(height - lastContentHeight) > 0.5 else { return }
+    lastContentHeight = height
+    onContentSizeChange(["height": height])
   }
 
   // MARK: Props
@@ -114,6 +133,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
       ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
     textView.font = font
     placeholderLabel.font = font
+    lastContentHeight = 0
     setNeedsLayout()
   }
 
@@ -122,6 +142,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
     textView.text = ""
     updatePlaceholder()
     emitState()
+    reportContentHeight()
   }
 
   // MARK: UITextViewDelegate
@@ -147,6 +168,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
       flushLive()
     }
     emitState()
+    reportContentHeight()
   }
 
   // MARK: Live mode

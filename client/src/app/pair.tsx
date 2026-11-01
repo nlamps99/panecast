@@ -116,6 +116,9 @@ export default function PairScreen() {
           <Text style={styles.link}>没法扫码？粘贴配对链接</Text>
         </Pressable>
       )}
+      <Pressable onPress={() => router.push('/demo')} style={styles.demo} accessibilityRole="button">
+        <Text style={styles.link}>还没有电脑可连？先看看演示</Text>
+      </Pressable>
     </View>
   );
 }
@@ -141,6 +144,7 @@ const styles = StyleSheet.create({
   buttonDim: { opacity: 0.5 },
   buttonText: { color: colors.canvas, fontSize: 15, fontWeight: '600' },
   link: { color: colors.blue, fontSize: 14 },
+  demo: { marginTop: 'auto', alignSelf: 'center', paddingVertical: 8 },
   manual: { gap: 8 },
   manualInput: {
     color: colors.ink,

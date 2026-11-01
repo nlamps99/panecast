@@ -28,10 +28,16 @@ import expo.modules.kotlin.views.ExpoView
 class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   enum class Mode { LINE, LIVE }
 
+  companion object {
+    /** Matches the iOS view's text container inset. */
+    const val VERTICAL_INSET_DP = 8f
+  }
+
   private val onCommitText by EventDispatcher()
   private val onKeyAction by EventDispatcher()
   private val onChangeState by EventDispatcher()
   private val onSubmit by EventDispatcher()
+  private val onContentSizeChange by EventDispatcher()
 
   private var mode = Mode.LINE
   private var batchDepth = 0
@@ -39,6 +45,11 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
   private var suppressWatcher = false
   private var fontFamily: String? = null
   private var fontSizeSp = 15f
+  private var lastContentHeight = 0f
+
+  // Text wraps and the field reports its height, so Android has to lay it
+  // out when the line count changes.
+  override val shouldUseAndroidLayout: Boolean = true
 
   val editText: EditText = object : EditText(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
@@ -100,14 +111,19 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
     editText.apply {
       layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
       background = null
-      setPadding(0, 0, 0, 0)
-      gravity = Gravity.CENTER_VERTICAL or Gravity.START
-      isSingleLine = true
-      setHorizontallyScrolling(true)
+      val inset = (VERTICAL_INSET_DP * resources.displayMetrics.density).toInt()
+      setPadding(0, inset, 0, inset)
+      gravity = Gravity.TOP or Gravity.START
       // No suggestions: keyboards like Gboard otherwise keep whole English
       // words in the composing span, which would delay live input to word ends.
+      // A text (not multi-line) input type keeps Return an action key instead
+      // of a newline; set it first, since it also switches single-line on.
       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
       imeOptions = EditorInfo.IME_ACTION_SEND
+      // ...but wrap on screen so long commands stay readable.
+      setHorizontallyScrolling(false)
+      maxLines = Int.MAX_VALUE
+      isVerticalScrollBarEnabled = false
       setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
       // Keyboards report the action key differently (SEND, DONE, UNSPECIFIED,
       // or a raw Enter event); this field has no other action, so any of them
@@ -116,6 +132,7 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
         if (event == null || event.action == KeyEvent.ACTION_DOWN) handleEnter()
         true
       }
+      addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> reportContentHeight() }
       addTextChangedListener(object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -238,6 +255,17 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
       }
       Mode.LINE -> onSubmit(mapOf("text" to (editText.text?.toString() ?: "")))
     }
+  }
+
+  /** Height the text needs at the current width, in dp, including the inset. */
+  private fun reportContentHeight() {
+    val layout = editText.layout ?: return
+    val density = resources.displayMetrics.density
+    val px = layout.getLineTop(maxOf(1, editText.lineCount)) + editText.paddingTop + editText.paddingBottom
+    val dp = kotlin.math.ceil(px / density)
+    if (kotlin.math.abs(dp - lastContentHeight) < 0.5f) return
+    lastContentHeight = dp
+    onContentSizeChange(mapOf("height" to dp.toDouble()))
   }
 
   private fun emitKey(key: String) {

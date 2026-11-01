@@ -364,6 +364,11 @@ export class TerminalSession {
     if (this.state.input.error) this.update({ input: { ...this.state.input, error: null } });
   }
 
+  /** Input not yet acknowledged. The key bar stops auto-repeat while this backs up. */
+  get pendingInput(): number {
+    return this.queue.length + (this.pumping ? 1 : 0);
+  }
+
   /**
    * Sends queued input one request at a time. Through the broker, concurrent
    * requests are not guaranteed to reach cmux in order.

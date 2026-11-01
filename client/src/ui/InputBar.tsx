@@ -1,30 +1,43 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { TerminalInputView, type TerminalInputHandle, type TerminalInputKey } from '../../modules/terminal-input';
 import { translateCommitted } from '../input/translate';
 import { Keys, type Key } from '../protocol/keys';
 import type { TerminalSession } from '../session/terminalSession';
+import { setPrefs, usePrefs } from '../state/prefs';
 import { colors, fonts } from './theme';
 
-type Mode = 'line' | 'live';
+const INPUT_FONT_SIZE = 15;
+/** One line of GeistMono at 15 pt plus the native view's 8 pt top and bottom inset. */
+const INPUT_MIN_HEIGHT = 36;
+const INPUT_MAX_LINES = 4;
+const INPUT_LINE_HEIGHT = Math.round(INPUT_FONT_SIZE * 1.3);
+const INPUT_MAX_HEIGHT = INPUT_LINE_HEIGHT * INPUT_MAX_LINES + 16;
 
 type Props = {
   session: TerminalSession;
   disabled: boolean;
-  /** Shown under the input, e.g. a send failure. */
+  /** A send failure from the session. */
   error: string | null;
   inputRef: React.RefObject<TerminalInputHandle | null>;
 };
 
 /**
- * Command mode (`line`): type a whole line and send it with Enter.
+ * The bottom of the terminal screen: a row of keys a phone keyboard lacks,
+ * then the input. The input sits directly above the keyboard, the way chat
+ * apps do; the keys are one row up and also work with the keyboard hidden,
+ * which covers most TUI prompts (arrows, Enter, Esc).
+ *
+ * Command mode (`line`): edit a line, send it with Return or ↑.
  * Live mode: every committed character goes to the terminal as it is typed.
  * In both, text the input method is still composing is never sent.
  */
 export function InputBar({ session, disabled, error, inputRef }: Props) {
-  const [mode, setMode] = useState<Mode>('line');
+  const { inputMode: mode } = usePrefs();
   const [hint, setHint] = useState<string | null>(null);
+  const [hasText, setHasText] = useState(false);
+  const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT);
   const draft = useRef({ text: '', composing: false });
 
   const submit = (text: string) => {
@@ -35,6 +48,7 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
     setHint(null);
     session.submitLine(text.replace(/[\r\n]+$/, ''));
     draft.current = { text: '', composing: false };
+    setHasText(false);
     void inputRef.current?.clear();
   };
 
@@ -49,149 +63,191 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
     session.sendKey(key === 'enter' ? Keys.enter : Keys.backspace);
   };
 
-  const toggleMode = () => {
+  const switchMode = (next: 'line' | 'live') => {
+    if (next === mode) return;
     setHint(null);
+    setHasText(false);
     draft.current = { text: '', composing: false };
-    setMode((current) => (current === 'line' ? 'live' : 'line'));
+    setInputHeight(INPUT_MIN_HEIGHT);
+    setPrefs({ inputMode: next });
   };
 
   const message = hint ?? error;
+  const maxHeight = mode === 'line' ? INPUT_MAX_HEIGHT : INPUT_MIN_HEIGHT;
 
   return (
-    <View style={styles.wrapper}>
+    <View>
+      {message ? <Text style={[styles.message, !hint && styles.messageError]}>{message}</Text> : null}
+      <KeyBar session={session} />
       <View style={styles.row}>
-        <Pressable
-          onPress={toggleMode}
-          style={[styles.mode, mode === 'live' && styles.modeLive]}
-          accessibilityRole="button"
-          accessibilityLabel={mode === 'live' ? '切换到命令输入' : '切换到逐字输入'}
-        >
-          <Text style={[styles.modeText, mode === 'live' && styles.modeTextLive]}>{mode === 'live' ? '逐字' : '命令'}</Text>
-        </Pressable>
-        <Text style={styles.prompt}>$</Text>
-        <TerminalInputView
-          ref={inputRef}
-          mode={mode}
-          editable={!disabled}
-          placeholder={mode === 'live' ? '打字直接发到终端' : '输入命令，回车发送'}
-          placeholderColor={colors.muted}
-          textColor={colors.ink}
-          caretColor={colors.green}
-          fontFamily={fonts.mono}
-          fontSize={15}
-          style={styles.input}
-          onChangeState={(state) => {
-            draft.current = state;
-            if (hint && !state.composing) setHint(null);
-          }}
-          onSubmit={submit}
-          onCommitText={sendCommitted}
-          onKeyAction={sendKeyAction}
-        />
+        <View style={styles.segment} accessibilityRole="tablist">
+          {(['line', 'live'] as const).map((item) => (
+            <Pressable
+              key={item}
+              onPress={() => switchMode(item)}
+              style={[styles.segmentItem, mode === item && styles.segmentItemActive]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: mode === item }}
+              accessibilityLabel={item === 'line' ? '命令输入：整行发送' : '逐字输入：打一个字发一个字'}
+            >
+              <Text style={[styles.segmentText, mode === item && styles.segmentTextActive]}>
+                {item === 'line' ? '命令' : '逐字'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.inputBox}>
+          <TerminalInputView
+            ref={inputRef}
+            mode={mode}
+            editable={!disabled}
+            placeholder={mode === 'live' ? '打字直接发到终端' : '输入命令'}
+            placeholderColor={colors.muted}
+            textColor={colors.ink}
+            caretColor={colors.green}
+            fontFamily={fonts.mono}
+            fontSize={INPUT_FONT_SIZE}
+            style={{ height: Math.min(maxHeight, Math.max(INPUT_MIN_HEIGHT, inputHeight)) }}
+            onContentSizeChange={setInputHeight}
+            onChangeState={(state) => {
+              draft.current = state;
+              const nextHasText = state.text.length > 0;
+              if (nextHasText !== hasText) setHasText(nextHasText);
+              if (hint && !state.composing) setHint(null);
+            }}
+            onSubmit={submit}
+            onCommitText={sendCommitted}
+            onKeyAction={sendKeyAction}
+          />
+        </View>
         {mode === 'line' ? (
           <Pressable
             onPress={() => submit(draft.current.text)}
             disabled={disabled}
-            style={({ pressed }) => [styles.send, (pressed || disabled) && styles.sendDim]}
+            style={({ pressed }) => [styles.send, !hasText && styles.sendEmpty, pressed && styles.sendPressed]}
             accessibilityRole="button"
-            accessibilityLabel="发送"
+            accessibilityLabel={hasText ? '发送命令' : '发送回车'}
+            hitSlop={6}
           >
-            <Text style={styles.sendText}>发送</Text>
+            <Text style={[styles.sendText, !hasText && styles.sendTextEmpty]}>发送</Text>
           </Pressable>
         ) : null}
       </View>
-      {message ? <Text style={[styles.message, !hint && styles.messageError]}>{message}</Text> : null}
     </View>
   );
 }
 
-type KeyBarProps = {
-  session: TerminalSession;
-  onHideKeyboard: () => void;
-};
+type KeySpec = { label: string; key: Key; a11y: string; repeat?: boolean };
 
-const KEYS: { label: string; key: Key; a11y: string }[] = [
+const KEYS: KeySpec[] = [
   { label: 'esc', key: Keys.escape, a11y: 'Esc' },
-  { label: 'tab', key: Keys.tab, a11y: 'Tab' },
   { label: '^C', key: Keys.ctrlC, a11y: 'Ctrl C' },
-  { label: '←', key: Keys.left, a11y: '左' },
-  { label: '↑', key: Keys.up, a11y: '上' },
-  { label: '↓', key: Keys.down, a11y: '下' },
-  { label: '→', key: Keys.right, a11y: '右' },
+  { label: 'tab', key: Keys.tab, a11y: 'Tab' },
+  { label: '←', key: Keys.left, a11y: '左', repeat: true },
+  { label: '↑', key: Keys.up, a11y: '上', repeat: true },
+  { label: '↓', key: Keys.down, a11y: '下', repeat: true },
+  { label: '→', key: Keys.right, a11y: '右', repeat: true },
+  { label: '↵', key: Keys.enter, a11y: '回车' },
 ];
 
-/** Keys a phone keyboard does not have. */
-export function KeyBar({ session, onHideKeyboard }: KeyBarProps) {
+const REPEAT_DELAY_MS = 400;
+const REPEAT_INTERVAL_MS = 90;
+
+function KeyBar({ session }: { session: TerminalSession }) {
   return (
     <View style={styles.keyBar}>
-      {KEYS.map(({ label, key, a11y }) => (
-        <Pressable
-          key={label}
-          onPress={() => session.sendKey(key)}
-          style={({ pressed }) => [styles.key, pressed && styles.keyPressed]}
-          accessibilityRole="button"
-          accessibilityLabel={`发送 ${a11y}`}
-        >
-          <Text style={styles.keyText}>{label}</Text>
-        </Pressable>
+      {KEYS.map((spec) => (
+        <KeyButton key={spec.label} spec={spec} session={session} />
       ))}
-      <Pressable
-        onPress={onHideKeyboard}
-        style={({ pressed }) => [styles.key, styles.keyNarrow, pressed && styles.keyPressed]}
-        accessibilityRole="button"
-        accessibilityLabel="收起键盘"
-      >
-        <Text style={styles.keyText}>⌄</Text>
-      </Pressable>
     </View>
+  );
+}
+
+/** Sends on touch-down. Arrow keys repeat while held, but never faster than the relay answers. */
+function KeyButton({ spec, session }: { spec: KeySpec; session: TerminalSession }) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stop = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+
+  useEffect(() => stop, []);
+
+  const tick = () => {
+    if (session.pendingInput <= 1) session.sendKey(spec.key);
+    timer.current = setTimeout(tick, REPEAT_INTERVAL_MS);
+  };
+
+  return (
+    <Pressable
+      onPressIn={() => {
+        session.sendKey(spec.key);
+        if (spec.repeat) timer.current = setTimeout(tick, REPEAT_DELAY_MS);
+      }}
+      onPressOut={stop}
+      style={({ pressed }) => [styles.key, spec.key === Keys.enter && styles.keyEnter, pressed && styles.keyPressed]}
+      accessibilityRole="button"
+      accessibilityLabel={`发送 ${spec.a11y}`}
+    >
+      <Text style={[styles.keyText, /[a-z^]/i.test(spec.label) && styles.keyTextSmall]}>{spec.label}</Text>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  wrapper: { paddingHorizontal: 10, paddingTop: 6, gap: 4 },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: colors.surfaceSunken,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.divider,
-    paddingLeft: 6,
-    paddingRight: 6,
-    height: 44,
-  },
-  mode: {
-    paddingHorizontal: 8,
-    height: 28,
-    justifyContent: 'center',
-    borderRadius: 6,
-    backgroundColor: colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.divider,
-  },
-  modeLive: { backgroundColor: colors.green },
-  modeText: { color: colors.green, fontSize: 12, fontWeight: '600' },
-  modeTextLive: { color: colors.canvas },
-  prompt: { color: colors.green, fontFamily: fonts.mono, fontSize: 15 },
-  input: { flex: 1, height: 40 },
-  send: { paddingHorizontal: 12, height: 32, justifyContent: 'center', borderRadius: 6, backgroundColor: colors.green },
-  sendDim: { opacity: 0.6 },
-  sendText: { color: colors.canvas, fontSize: 14, fontWeight: '600' },
-  message: { color: colors.yellow, fontSize: 12, paddingHorizontal: 4 },
+  message: { color: colors.yellow, fontSize: 12, paddingHorizontal: 14, paddingTop: 4 },
   messageError: { color: colors.red },
-  keyBar: { flexDirection: 'row', gap: 6, paddingHorizontal: 10, paddingVertical: 6 },
+  keyBar: { flexDirection: 'row', gap: 5, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
   key: {
     flex: 1,
-    height: 36,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 6,
     backgroundColor: colors.surface,
+  },
+  keyEnter: { backgroundColor: colors.surfaceRaised },
+  keyPressed: { backgroundColor: colors.divider },
+  keyText: { color: colors.ink, fontFamily: fonts.mono, fontSize: 16 },
+  keyTextSmall: { fontSize: 13 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingTop: 2,
+    paddingBottom: 6,
+  },
+  segment: {
+    flexDirection: 'row',
+    height: 36,
+    padding: 3,
+    borderRadius: 8,
+    backgroundColor: colors.surface,
+  },
+  segmentItem: { paddingHorizontal: 8, justifyContent: 'center', borderRadius: 6 },
+  segmentItemActive: { backgroundColor: colors.surfaceRaised },
+  segmentText: { color: colors.muted, fontSize: 13 },
+  segmentTextActive: { color: colors.green, fontWeight: '600' },
+  inputBox: {
+    flex: 1,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceSunken,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.divider,
   },
-  keyNarrow: { flex: 0.8 },
-  keyPressed: { backgroundColor: colors.surfaceRaised },
-  keyText: { color: colors.ink, fontFamily: fonts.mono, fontSize: 14 },
+  send: {
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.green,
+  },
+  sendEmpty: { backgroundColor: colors.surface },
+  sendPressed: { opacity: 0.7 },
+  sendText: { color: colors.canvas, fontSize: 14, fontWeight: '600' },
+  sendTextEmpty: { color: colors.muted },
 });

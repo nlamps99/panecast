@@ -5,7 +5,7 @@ public class TerminalInputModule: Module {
     Name("TerminalInput")
 
     View(TerminalInputView.self) {
-      Events("onCommitText", "onKeyAction", "onChangeState", "onSubmit")
+      Events("onCommitText", "onKeyAction", "onChangeState", "onSubmit", "onContentSizeChange")
 
       Prop("mode") { (view: TerminalInputView, mode: String) in
         view.setMode(mode == "live" ? .live : .line)

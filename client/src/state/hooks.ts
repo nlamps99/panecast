@@ -1,8 +1,14 @@
 import { useSyncExternalStore } from 'react';
 
-import type { ConnectionStatus, RelayConnection } from '../protocol/connection';
+import type { ConnectionStatus } from '../protocol/connection';
 import type { TerminalSession, TerminalState } from '../session/terminalSession';
 import { appStore, type AppStoreState } from './appStore';
+
+/** Anything with a connection status: `RelayConnection`, or the demo channel. */
+export type StatusSource = {
+  readonly status: ConnectionStatus;
+  onStatus(listener: (status: ConnectionStatus) => void): () => void;
+};
 
 export function useAppState(): AppStoreState {
   return useSyncExternalStore(appStore.subscribe, appStore.getState, appStore.getState);
@@ -11,9 +17,9 @@ export function useAppState(): AppStoreState {
 const IDLE: ConnectionStatus = { state: 'idle' };
 const noop = () => () => {};
 
-export function useConnectionStatus(connection: RelayConnection | null): ConnectionStatus {
-  const subscribe = connection ? (listener: () => void) => connection.onStatus(listener) : noop;
-  const get = () => connection?.status ?? IDLE;
+export function useConnectionStatus(source: StatusSource | null): ConnectionStatus {
+  const subscribe = source ? (listener: () => void) => source.onStatus(listener) : noop;
+  const get = () => source?.status ?? IDLE;
   return useSyncExternalStore(subscribe, get, get);
 }
 

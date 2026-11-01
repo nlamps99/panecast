@@ -31,4 +31,6 @@ export type TerminalInputProps = {
   onKeyAction?: (key: TerminalInputKey) => void;
   onChangeState?: (state: { text: string; composing: boolean }) => void;
   onSubmit?: (text: string) => void;
+  /** Height in points the text needs, including the 8 pt top and bottom inset. Native only. */
+  onContentSizeChange?: (height: number) => void;
 };

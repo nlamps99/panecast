@@ -5,18 +5,22 @@ import type { TerminalInputHandle, TerminalInputKey, TerminalInputProps } from '
 
 type NativeEvent<T> = { nativeEvent: T };
 
-type NativeProps = Omit<TerminalInputProps, 'onCommitText' | 'onKeyAction' | 'onChangeState' | 'onSubmit'> & {
+type NativeProps = Omit<
+  TerminalInputProps,
+  'onCommitText' | 'onKeyAction' | 'onChangeState' | 'onSubmit' | 'onContentSizeChange'
+> & {
   ref?: Ref<TerminalInputHandle>;
   onCommitText?: (event: NativeEvent<{ text: string }>) => void;
   onKeyAction?: (event: NativeEvent<{ key: TerminalInputKey }>) => void;
   onChangeState?: (event: NativeEvent<{ text: string; composing: boolean }>) => void;
   onSubmit?: (event: NativeEvent<{ text: string }>) => void;
+  onContentSizeChange?: (event: NativeEvent<{ height: number }>) => void;
 };
 
 const NativeView: ComponentType<NativeProps> = requireNativeView('TerminalInput');
 
 const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(function TerminalInputView(
-  { onCommitText, onKeyAction, onChangeState, onSubmit, ...rest },
+  { onCommitText, onKeyAction, onChangeState, onSubmit, onContentSizeChange, ...rest },
   ref,
 ) {
   const nativeRef = useRef<TerminalInputHandle>(null);
@@ -33,6 +37,7 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
       onKeyAction={onKeyAction && ((e) => onKeyAction(e.nativeEvent.key))}
       onChangeState={onChangeState && ((e) => onChangeState(e.nativeEvent))}
       onSubmit={onSubmit && ((e) => onSubmit(e.nativeEvent.text))}
+      onContentSizeChange={onContentSizeChange && ((e) => onContentSizeChange(e.nativeEvent.height))}
     />
   );
 });
