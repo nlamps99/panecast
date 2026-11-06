@@ -8,11 +8,15 @@ public struct APNsPushAlert: Sendable, Equatable {
     public var deviceToken: String
     public var environment: String
     public var notification: NotificationRecord
+    public var relayId: String?
+    public var needsInput: Bool
 
-    public init(deviceToken: String, environment: String, notification: NotificationRecord) {
+    public init(deviceToken: String, environment: String, notification: NotificationRecord, relayId: String? = nil, needsInput: Bool = false) {
         self.deviceToken = deviceToken
         self.environment = environment
         self.notification = notification
+        self.relayId = relayId
+        self.needsInput = needsInput
     }
 }
 
@@ -147,7 +151,7 @@ public final class APNsProviderClient: APNsSending, @unchecked Sendable {
             throw APNsProviderError.invalidURL
         }
         let token = try providerToken(config: config)
-        let body = try payloadData(for: push.notification)
+        let body = try payloadData(for: push.notification, relayId: push.relayId, needsInput: push.needsInput)
         guard body.count <= 4096 else { throw APNsProviderError.payloadTooLarge }
 
         return APNsPreparedRequest(
@@ -226,12 +230,12 @@ public final class APNsProviderClient: APNsSending, @unchecked Sendable {
             .replacingOccurrences(of: "=", with: "")
     }
 
-    private func payloadData(for notification: NotificationRecord) throws -> Data {
+    private func payloadData(for notification: NotificationRecord, relayId: String?, needsInput: Bool) throws -> Data {
         var payload: [String: Any] = [
             "aps": [
                 "alert": [
-                    "title": "cmux needs attention",
-                    "body": "Open cmux Remote to review this inbox item.",
+                    "title": notification.id.hasPrefix("test-") ? "Panecast · 测试通知" : needsInput ? "Panecast · 需要你处理" : "Panecast · 任务已完成",
+                    "body": "打开 Panecast 查看详情。",
                 ],
                 "sound": "default",
                 "thread-id": notification.threadId,
@@ -243,6 +247,8 @@ public final class APNsProviderClient: APNsSending, @unchecked Sendable {
         if let surfaceId = notification.surfaceId, !surfaceId.isEmpty {
             payload["surface_id"] = surfaceId
         }
+        if let relayId { payload["relay_id"] = relayId }
+        if needsInput { payload["needs_input"] = true }
         return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
 

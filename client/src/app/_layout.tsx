@@ -28,7 +28,12 @@ export default function RootLayout() {
 
   useEffect(() => {
     void loadPrefs();
-    void appStore.load();
+    void appStore.load().then(async () => {
+      if (__DEV__ && process.env.EXPO_PUBLIC_STORE_CAPTURE === '1') {
+        const { prepareStoreCapture } = await import('../demo/storeCapture');
+        prepareStoreCapture();
+      }
+    });
     const subscription = AppState.addEventListener('change', (state) => {
       // iOS may have killed the socket while we were suspended.
       if (state === 'active') appStore.wake();

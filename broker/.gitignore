@@ -1,0 +1,3 @@
+# Per-relay credentials are local deployment configuration.
+relays.json
+relays.*.local.json

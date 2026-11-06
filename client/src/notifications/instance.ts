@@ -16,6 +16,7 @@ export const notifications = new NotificationController({
   confirm: (title, message, buttons) => Alert.alert(title, message, buttons),
   openSettings: () => Linking.openSettings(),
   openSurface,
+  openAgent: (sourceId, threadId) => router.navigate({ pathname: '/sources', params: { sourceId, threadId } }),
   navigate: (path) => (path === '/' ? backToWorkspaces() : router.navigate('/inbox')),
   log: (message) => {
     if (__DEV__) console.log(message);

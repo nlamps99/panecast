@@ -64,6 +64,8 @@ public actor RemoteSessionBridge {
 
         case .sessionClose:
             await removeSession(id: envelope.sessionId)
+        case .pushRegister, .pushTest, .pushSync, .pushResult:
+            break
         }
     }
 

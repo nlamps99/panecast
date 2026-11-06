@@ -57,7 +57,7 @@ const notification = (id: string, extra: Record<string, unknown> = {}): PushFram
   type: 'event',
   category: 'notification',
   name: 'notification.created',
-  payload: { id, workspace_id: 'w1', title: `title ${id}`, body: `body ${id}`, ...extra },
+  payload: { id, workspace_id: 'w1', title: `title ${id}`, body: `body ${id}`, status: 'completed', ...extra },
 });
 
 /** A Claude Code prompt without an id: SharedKit derives one from its content. */
@@ -111,10 +111,33 @@ beforeEach(() => {
 });
 
 describe('InboxStore in memory', () => {
+  it('announces a Codex request once when both the conversation and inbox events arrive', () => {
+    const inbox = new InboxStore(new FakeChannel());
+    const announced: string[] = []; inbox.onNew((item) => announced.push(item.id));
+    inbox.ingest({ type: 'event', category: 'agent', name: 'item/commandExecution/requestApproval', payload: { source_id: 'codex', threadId: 'thread', turnId: 'turn', request_id: '42' } });
+    inbox.ingest({ type: 'event', category: 'notification', name: 'notification.created', payload: { id: 'request:codex:42', source_id: 'codex', thread_id: 'thread', turn_id: 'turn', request_id: '42', needs_input: true } });
+    expect(announced).toEqual(['request:codex:42']);
+    expect(inbox.getState().pending).toBe(1);
+    inbox.dispose();
+  });
+
+  it('keeps read prompts pending until handled and allows reopening', () => {
+    const channel = new FakeChannel();
+    const inbox = new InboxStore(channel);
+    channel.emit(prompt('w2'));
+    const item = inbox.getState().items[0];
+    inbox.markRead(item.id);
+    expect(inbox.getState()).toMatchObject({ unread: 0, pending: 1, pendingByWorkspace: { w2: 1 } });
+    inbox.snooze(item.id, Date.now() + 60_000, 'reminder');
+    inbox.resolve(item.id);
+    expect(inbox.getState()).toMatchObject({ pending: 0, items: [expect.objectContaining({ reminderId: null, snoozedUntil: null })] });
+    inbox.resolve(item.id, false);
+    expect(inbox.getState().pending).toBe(1);
+  });
   it('keeps its existing behavior without a storage key and never touches storage', async () => {
     const channel = new FakeChannel();
     const inbox = new InboxStore(channel);
-    expect(inbox.getState()).toEqual({ items: [], unread: 0, unreadByWorkspace: {}, loaded: true });
+    expect(inbox.getState()).toEqual({ items: [], unread: 0, unreadByWorkspace: {}, pending: 0, pendingByWorkspace: {}, loaded: true });
     channel.emit(notification('n1'));
     inbox.markAllRead();
     inbox.remove('n1');

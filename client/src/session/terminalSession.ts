@@ -2,6 +2,8 @@ import { RpcCallError, type ConnectionStatus } from '../protocol/connection';
 import type { PushFrame } from '../protocol/frames';
 import { encodeKey, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
+import { locateReadingPosition, type ReadingPosition } from './readingPosition';
+import { alignHistory, sameVisibleRows } from './historyAlignment';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -34,6 +36,8 @@ export type Browse = {
   loading: boolean;
   error: string | null;
   liveChanged: boolean;
+  /** Expired/stalled cursors must be replaced, not retried verbatim. */
+  restartRequired?: boolean;
 };
 
 export type SubscriptionState = 'none' | 'subscribing' | 'live' | 'error';
@@ -47,15 +51,26 @@ export type TerminalState = {
   subscriptionError: string | null;
   browse: Browse | null;
   input: InputState;
+  /** Explicit input should reveal the prompt even while viewing a live TUI. */
+  inputRevision?: number;
+  restoredReading?: ReadingPosition | null;
+  restoringReading?: boolean;
+  readingNotice?: string | null;
+  /** Alternate-screen programs own their history and consume mouse-wheel input. */
+  applicationScroll?: { columns: number; rows: number; busy: boolean; error: string | null } | null;
 };
 
-type InputItem = { kind: 'text'; text: string } | { kind: 'key'; key: Key };
+export type SendReceipt = { status: 'sent' | 'not_sent' | 'unknown'; message: string };
+type InputItem = { kind: 'text'; text: string } | { kind: 'key'; key: Key }
+  | { kind: 'line'; text: string; target: SurfaceTarget; resolve: (result: SendReceipt) => void };
 
 export type TerminalSessionOptions = {
   /** Rows kept on the live screen; `surface.subscribe`'s `lines`. */
   liveLines?: number;
   historyPageLines?: number;
   log?: (message: string) => void;
+  readingForTarget?: (target: SurfaceTarget) => ReadingPosition | null;
+  saveReading?: (target: SurfaceTarget, position: ReadingPosition | null) => void;
 };
 
 const SUBSCRIBE_ATTEMPTS = 4;
@@ -63,6 +78,8 @@ const RESYNC_MIN_COOLDOWN_MS = 3_000;
 const RESYNC_MAX_COOLDOWN_MS = 60_000;
 /** Re-pin cmux focus before a key unless we did so for this surface very recently. */
 const FOCUS_REUSE_MS = 1_500;
+const MAX_HISTORY_ALIGNMENT_PAGES = 25;
+const HISTORY_ALIGNMENT_TIMEOUT_MS = 10_000;
 
 /**
  * State for one terminal surface on top of a relay connection: keeps the
@@ -84,6 +101,7 @@ export class TerminalSession {
   /** Bumped whenever an in-flight subscribe should be abandoned. */
   private subscribeToken = 0;
   private historyToken = 0;
+  private historyCursors = new Set<string>();
   /** An unsubscribe + subscribe is in flight (resync or a live-lines change). Only one at a time. */
   private replacing = false;
   private lastResyncAt = 0;
@@ -92,6 +110,14 @@ export class TerminalSession {
   private pumping = false;
   private lastFocus: { surfaceId: string; at: number } | null = null;
   private disposed = false;
+  private pendingReading: ReadingPosition | null = null;
+  private restoringPosition = false;
+  private readingTask = 0;
+  private selectionIntent = 0;
+  private scrollGeneration = 0;
+  private inspectingScroll = false;
+  private queuedScroll = 0;
+  private scrollingApplication = false;
   private liveLines: number;
   /** `lines` sent with the latest `surface.subscribe`. */
   private subscribedLines: number | null = null;
@@ -100,7 +126,7 @@ export class TerminalSession {
 
   constructor(
     private readonly channel: RpcChannel,
-    options: TerminalSessionOptions = {},
+    private readonly options: TerminalSessionOptions = {},
   ) {
     this.liveLines = sanitizeLines(options.liveLines ?? 120, 120);
     this.historyPageLines = options.historyPageLines ?? 200;
@@ -112,6 +138,17 @@ export class TerminalSession {
   }
 
   getState = (): TerminalState => this.state;
+
+  get isConnected(): boolean { return this.channel.isOpen; }
+  get selectionVersion(): number { return this.selectionIntent; }
+  reserveSelection(): number { return ++this.selectionIntent; }
+
+  private discardQueuedInput(): void {
+    for (const item of this.queue) {
+      if (item.kind === 'line') item.resolve({ status: 'not_sent', message: '尚未发送，草稿已保留' });
+    }
+    this.queue = [];
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -126,21 +163,27 @@ export class TerminalSession {
     this.disposers = [];
     this.subscribeToken++;
     this.historyToken++;
-    this.queue = [];
+    this.cancelApplicationScroll();
+    this.discardQueuedInput();
     this.listeners.clear();
   }
 
   // MARK: Target and subscription
 
   setTarget(target: SurfaceTarget | null): void {
+    this.selectionIntent++;
     const previous = this.state.target;
     if (sameTarget(previous, target)) return;
     if (previous && this.channel.isOpen) {
       this.channel.call('surface.unsubscribe', { surface_id: previous.surfaceId }).catch(() => {});
     }
     this.historyToken++;
-    this.queue = [];
+    this.cancelApplicationScroll();
+    this.discardQueuedInput();
     this.lastFocus = null;
+    this.readingTask++;
+    this.restoringPosition = false;
+    this.pendingReading = target ? this.options.readingForTarget?.(target) ?? null : null;
     this.update({
       target,
       screen: EMPTY_SCREEN,
@@ -148,6 +191,10 @@ export class TerminalSession {
       subscriptionError: null,
       browse: null,
       input: { busy: this.pumping, error: null },
+      restoredReading: null,
+      restoringReading: this.pendingReading !== null,
+      readingNotice: null,
+      applicationScroll: null,
     });
     if (target) void this.subscribeCurrent();
   }
@@ -263,6 +310,8 @@ export class TerminalSession {
     const browse = this.state.browse;
     if (browse?.loading) this.update({ browse: { ...browse, loading: false } });
     this.historyToken++;
+    this.cancelApplicationScroll();
+    if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, busy: false } });
   }
 
   private handlePush(frame: PushFrame): void {
@@ -275,6 +324,10 @@ export class TerminalSession {
       }
       case 'screen.diff': {
         if (!target || frame.surfaceId !== target.surfaceId) return;
+        if (frame.rev > this.state.screen.rev + 1 && frame.ops[0]?.op !== 'clear') {
+          this.resync('missing screen diff');
+          return;
+        }
         const next = applyDiff(this.state.screen, frame);
         if (next !== this.state.screen) this.setScreen(next);
         return;
@@ -292,6 +345,14 @@ export class TerminalSession {
       }
       case 'event':
         if (frame.category === 'system' && frame.name === 'cmux.reset') this.resync('cmux restarted');
+        if (frame.category === 'source' && frame.name === 'source.changed' && frame.payload && typeof frame.payload === 'object' && 'source_ids' in frame.payload && Array.isArray(frame.payload.source_ids) && frame.payload.source_ids.some((id) => target?.surfaceId.startsWith(`${id}~`))) {
+          this.lastResyncAt = 0;
+          this.resync('source authorization changed');
+        }
+        if (frame.category === 'source' && frame.payload && typeof frame.payload === 'object' && 'source_id' in frame.payload && target?.surfaceId.startsWith(`${frame.payload.source_id}~`)) {
+          if (frame.name === 'source.disconnected') this.update({ subscription: 'error', subscriptionError: '终端来源已断开，正在重新连接…' });
+          if (frame.name === 'source.reconnected') this.update({ subscription: 'live', subscriptionError: null });
+        }
         return;
       default:
         return;
@@ -306,13 +367,48 @@ export class TerminalSession {
     } else {
       this.update({ screen });
     }
+    if (this.pendingReading && !this.restoringPosition) void this.restoreReadingPosition();
+  }
+
+  rememberReading(position: ReadingPosition): void {
+    if (this.state.target && !this.state.restoringReading) this.options.saveReading?.(this.state.target, position);
+  }
+
+  private async restoreReadingPosition(): Promise<void> {
+    const position = this.pendingReading, target = this.state.target;
+    if (!position || !target) return;
+    this.restoringPosition = true;
+    const token = ++this.readingTask;
+    this.startBrowsing();
+    let found: number | null = null;
+    // Bound recovery work. The relay's history may have rotated since the last visit.
+    for (let page = 0; page <= 24; page++) {
+      if (this.disposed || token !== this.readingTask || !sameTarget(target, this.state.target)) return;
+      const browse = this.state.browse;
+      if (!browse) break;
+      const rows = [...browse.olderRows, ...browse.frozenRows];
+      found = locateReadingPosition(rows, position);
+      if (found !== null) {
+        this.update({ restoredReading: { ...position, rowFromBottom: rows.length - found - 1 }, restoringReading: false });
+        break;
+      }
+      if (page === 24 || browse.exhausted || !this.channel.isOpen) break;
+      await this.loadOlder({ retry: true });
+      if (this.state.browse?.error) break;
+    }
+    if (token !== this.readingTask || this.disposed) return;
+    this.pendingReading = null;
+    this.restoringPosition = false;
+    if (found === null) this.update({ restoringReading: false, readingNotice: '上次阅读的位置已不在可恢复的历史中，当前显示最近的历史输出' });
   }
 
   // MARK: History
 
   /** Freezes the view at the current live rows; call when the user scrolls away from the bottom. */
-  startBrowsing(): void {
+  startBrowsing(options: { freezeApplication?: boolean } = {}): void {
+    if (this.state.applicationScroll && !options.freezeApplication) return;
     if (this.state.browse) return;
+    this.historyCursors.clear();
     this.update({
       browse: {
         frozenRows: this.state.screen.rows,
@@ -327,57 +423,162 @@ export class TerminalSession {
     });
   }
 
+  private cancelApplicationScroll(): void {
+    this.scrollGeneration++;
+    this.inspectingScroll = false;
+    this.scrollingApplication = false;
+    this.queuedScroll = 0;
+  }
+
+  /** Older relays and ordinary shells retain cursor-based scrollback. */
+  async inspectScrollMode(): Promise<void> {
+    const target = this.state.target;
+    if (!target || !this.channel.isOpen || this.inspectingScroll || this.disposed) return;
+    const generation = this.scrollGeneration;
+    this.inspectingScroll = true;
+    try {
+      const raw = await this.channel.call('terminal.replay', { workspace_id: target.workspaceId, surface_id: target.surfaceId, anchor: 'screen', max_scrollback_rows: 0 }, 5_000);
+      if (generation !== this.scrollGeneration || this.disposed) return;
+      const size = applicationScrollSize(raw);
+      if (size) {
+        if (!this.state.applicationScroll) this.resumeLive();
+        this.update({ applicationScroll: { ...size, busy: this.scrollingApplication, error: this.state.applicationScroll?.error ?? null } });
+      } else if (this.state.applicationScroll) {
+        this.queuedScroll = 0;
+        this.update({ applicationScroll: null });
+      }
+    } catch {
+      // Capability detection must not break history on tmux or older cmux.
+    } finally {
+      if (generation === this.scrollGeneration) this.inspectingScroll = false;
+    }
+  }
+
+  /** Scroll the selected application without injecting text or changing pane focus. */
+  scrollApplication(lines: number): void {
+    if (!this.state.applicationScroll || !this.state.target || !this.channel.isOpen || this.disposed || !Number.isFinite(lines)) return;
+    this.queuedScroll = Math.max(-120, Math.min(120, this.queuedScroll + Math.trunc(lines)));
+    if (this.queuedScroll && !this.scrollingApplication) void this.pumpApplicationScroll();
+  }
+
+  private async pumpApplicationScroll(): Promise<void> {
+    const target = this.state.target!, generation = this.scrollGeneration;
+    this.scrollingApplication = true;
+    this.update({ applicationScroll: { ...this.state.applicationScroll!, busy: true, error: null } });
+    try {
+      while (this.queuedScroll && this.state.applicationScroll && generation === this.scrollGeneration) {
+        const lines = this.queuedScroll, size = this.state.applicationScroll;
+        this.queuedScroll = 0;
+        await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+          delta_lines: lines, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5_000);
+      }
+    } catch (error) {
+      if (generation !== this.scrollGeneration) return;
+      this.queuedScroll = 0;
+      if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, error: describeError(error) } });
+    } finally {
+      if (generation === this.scrollGeneration) {
+        this.scrollingApplication = false;
+        if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, busy: false } });
+      }
+    }
+  }
+
   /** Back to the live screen; drops loaded history so the next browse starts from a fresh snapshot. */
   resumeLive(): void {
-    if (!this.state.browse) return;
+    if (!this.state.browse && !this.pendingReading && !this.state.restoringReading) return;
     this.historyToken++;
-    this.update({ browse: null });
+    this.readingTask++;
+    this.pendingReading = null;
+    this.restoringPosition = false;
+    if (this.state.target) this.options.saveReading?.(this.state.target, null);
+    this.update({ browse: null, restoringReading: false, restoredReading: null, readingNotice: null });
   }
 
   /** Loads the page above what is shown. No-op while loading, after the start of history, or after an error. */
   async loadOlder(options: { retry?: boolean } = {}): Promise<void> {
     const target = this.state.target;
-    const browse = this.state.browse;
+    let browse = this.state.browse;
     if (!target || !browse || browse.loading || browse.exhausted) return;
     if (browse.error && !options.retry) return;
     if (!this.channel.isOpen) return;
+    const restarting = Boolean(options.retry && browse.restartRequired);
+    if (restarting) {
+      // Restart explicitly from today's live screen. Keeping an expired cursor
+      // would fail forever; splicing a new snapshot onto old pages can duplicate
+      // or skip output, so discard the old pagination boundary together.
+      this.historyCursors.clear();
+      browse = { frozenRows: this.state.screen.rows, olderRows: [], cursor: null, started: false, exhausted: false, loading: false, error: null, liveChanged: false };
+      this.update({ browse, restoredReading: null, readingNotice: '已重新读取当前终端的历史' });
+    }
     const token = ++this.historyToken;
     const first = !browse.started;
     this.update({ browse: { ...browse, loading: true, error: null } });
     try {
-      const params: Record<string, unknown> = {
-        workspace_id: target.workspaceId,
-        surface_id: target.surfaceId,
-        limit: this.historyPageLines,
+      const seen = new Set(this.historyCursors);
+      const readPage = async (cursor: string | null, timeoutMs = 30_000): Promise<HistoryPage> => {
+        const params = { workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: this.historyPageLines,
+          ...(cursor ? { cursor } : { tail_lines: Math.max(1, browse!.frozenRows.length || this.liveLines) }) };
+        const raw = await this.channel.call('surface.history', params, timeoutMs);
+        if (token !== this.historyToken || !this.state.browse || this.disposed) throw new RpcCallError('history_cancelled', '已取消历史加载');
+        const page = parseHistoryPage(raw);
+        if (page.nextCursor && (page.nextCursor === cursor || seen.has(page.nextCursor))) throw new RpcCallError('history_stalled', '历史分页没有前进，请重新读取历史');
+        if (page.nextCursor && page.rows.length === 0) throw new RpcCallError('history_stalled', '历史服务重复返回空页，请重新读取历史');
+        if (page.nextCursor) seen.add(page.nextCursor);
+        return page;
       };
-      if (first) params.tail_lines = Math.max(1, browse.frozenRows.length || this.liveLines);
-      else if (browse.cursor) params.cursor = browse.cursor;
-      const page = parseHistoryPage(await this.channel.call('surface.history', params, 30_000));
+      let page = await readPage(first ? null : browse.cursor);
+      let olderRows: readonly string[] = page.rows;
+      let replacementAnchor: readonly string[] | null = null;
+      if (first && page.anchorRows !== null) {
+        const anchor = page.anchorRows;
+        let collected = page.rows;
+        let aligned = alignHistory(browse.frozenRows, collected, anchor);
+        const deadline = Date.now() + HISTORY_ALIGNMENT_TIMEOUT_MS;
+        // If output advanced by more than one page, these rows are NEWER than
+        // the frozen screen. Walk backwards before displaying any of them.
+        for (let hop = 1; page.nextCursor && !aligned.ambiguous && !(restarting && !aligned.matched) && hop < MAX_HISTORY_ALIGNMENT_PAGES && Date.now() < deadline && (!aligned.matched || aligned.olderRows.length === 0); hop++) {
+          page = await readPage(page.nextCursor, Math.max(100, deadline - Date.now()));
+          collected = [...page.rows, ...collected];
+          aligned = alignHistory(browse.frozenRows, collected, anchor);
+        }
+        if (aligned.matched) olderRows = aligned.olderRows;
+        else {
+          // Never erase a frozen screen just because the computer was cleared
+          // or history rotated. Replacing different text needs an explicit
+          // reload; equivalent repeated rows can safely use the snapshot split.
+          if (!restarting && !sameVisibleRows(browse.frozenRows, anchor)) throw new RpcCallError('history_alignment', '历史与当前画面无法衔接，当前内容已保留；请重新加载历史');
+          olderRows = collected; replacementAnchor = anchor;
+        }
+      }
       const current = this.state.browse;
       if (token !== this.historyToken || !current) return;
-      const olderRows = first
-        ? stitchFirstPage(current.frozenRows, page.rows, page.anchorRows ?? [])
-        : [...page.rows, ...current.olderRows];
+      this.historyCursors = seen;
       this.update({
         browse: {
           ...current,
-          olderRows,
+          frozenRows: replacementAnchor ?? current.frozenRows,
+          olderRows: first ? olderRows : [...page.rows, ...current.olderRows],
           cursor: page.nextCursor,
           started: true,
           exhausted: page.nextCursor === null,
           loading: false,
           error: null,
+          restartRequired: false,
+          liveChanged: replacementAnchor !== null || current.liveChanged,
         },
+        ...(replacementAnchor !== null ? { restoredReading: null, readingNotice: '历史已按电脑保存的完整快照重新对齐' } : {}),
       });
     } catch (error) {
       const current = this.state.browse;
       if (token !== this.historyToken || !current) return;
-      const expired = error instanceof RpcCallError && /expired/i.test(error.message);
+      const expired = error instanceof RpcCallError && /expired|过期|invalid.*cursor|cursor.*invalid/i.test(error.message);
       this.update({
         browse: {
           ...current,
           loading: false,
-          error: expired ? '历史记录已过期，回到底部后再往上滑可以重新加载' : describeError(error),
+          error: expired ? '历史快照已过期，请重新加载历史' : describeError(error),
+          restartRequired: expired || (error instanceof RpcCallError && ['history_stalled', 'history_alignment'].includes(error.code)),
         },
       });
     }
@@ -385,8 +586,15 @@ export class TerminalSession {
 
   // MARK: Input
 
+  private revealInputResult(): void {
+    if (!this.state.target || !this.channel.isOpen || this.disposed) return;
+    this.resumeLive();
+    this.update({ inputRevision: (this.state.inputRevision ?? 0) + 1 });
+  }
+
   sendText(text: string): void {
     if (text.length === 0) return;
+    this.revealInputResult();
     const last = this.queue[this.queue.length - 1];
     // Coalesce text typed while the previous request is in flight.
     if (last && last.kind === 'text') last.text += text;
@@ -395,14 +603,22 @@ export class TerminalSession {
   }
 
   sendKey(key: Key): void {
+    this.revealInputResult();
     this.queue.push({ kind: 'key', key });
     void this.pump();
   }
 
   /** Command mode: the line, then Enter. An empty line sends just Enter. */
-  submitLine(line: string): void {
-    if (line.length > 0) this.sendText(line);
-    this.sendKey({ name: 'enter' });
+  submitLine(line: string): Promise<SendReceipt> {
+    const target = this.state.target;
+    if (!target || !this.channel.isOpen || this.disposed) {
+      return Promise.resolve({ status: 'not_sent', message: '尚未连接，草稿已保留' });
+    }
+    this.revealInputResult();
+    return new Promise((resolve) => {
+      this.queue.push({ kind: 'line', text: line, target, resolve });
+      void this.pump();
+    });
   }
 
   clearInputError(): void {
@@ -427,14 +643,17 @@ export class TerminalSession {
       const target = this.state.target;
       const item = this.queue.shift()!;
       if (!target) {
-        this.queue = [];
+        if (item.kind === 'line') item.resolve({ status: 'not_sent', message: '终端已关闭，草稿已保留' });
+        this.discardQueuedInput();
         break;
       }
       try {
         await this.execute(target, item);
+        if (item.kind === 'line') item.resolve({ status: 'sent', message: '已送达终端' });
       } catch (failure) {
-        this.queue = [];
+        this.discardQueuedInput();
         error = describeError(failure);
+        if (item.kind === 'line') item.resolve({ status: 'unknown', message: `发送未确认：${error}。请先检查终端，再决定是否重发` });
       }
     }
     this.pumping = false;
@@ -443,6 +662,13 @@ export class TerminalSession {
 
   private async execute(target: SurfaceTarget, item: InputItem): Promise<void> {
     const ids = { workspace_id: target.workspaceId, surface_id: target.surfaceId };
+    if (item.kind === 'line') {
+      if (!sameTarget(target, item.target)) throw new RpcCallError('target_changed', '终端已切换');
+      if (item.text) await this.channel.call('surface.send_text', { ...ids, text: item.text });
+      if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
+      await this.execute(target, { kind: 'key', key: { name: 'enter' } });
+      return;
+    }
     if (item.kind === 'text') {
       await this.channel.call('surface.send_text', { ...ids, text: item.text });
       return;
@@ -452,7 +678,7 @@ export class TerminalSession {
     const now = Date.now();
     const focus = this.lastFocus;
     if (!focus || focus.surfaceId !== target.surfaceId || now - focus.at > FOCUS_REUSE_MS) {
-      await this.channel.call('surface.focus', ids).catch(() => {});
+      await this.channel.call('surface.focus', ids);
     }
     await this.channel.call('surface.send_key', { ...ids, key: encodeKey(item.key) });
     this.lastFocus = { surfaceId: target.surfaceId, at: Date.now() };
@@ -466,12 +692,25 @@ export class TerminalSession {
 
 export type HistoryPage = { rows: string[]; anchorRows: string[] | null; nextCursor: string | null };
 
+function applicationScrollSize(value: unknown): { columns: number; rows: number } | null {
+  if (!value || typeof value !== 'object' || !('render_grid' in value)) return null;
+  const grid = value.render_grid;
+  if (!grid || typeof grid !== 'object' || !('active_screen' in grid) || grid.active_screen !== 'alternate'
+    || !('modes' in grid) || !Array.isArray(grid.modes)
+    || !grid.modes.some((mode) => mode && mode.ansi === false && [1000, 1002, 1003].includes(mode.code) && mode.on === true)
+    || !('columns' in grid) || !Number.isSafeInteger(grid.columns) || Number(grid.columns) < 1
+    || !('rows' in grid) || !Number.isSafeInteger(grid.rows) || Number(grid.rows) < 1) return null;
+  return { columns: Number(grid.columns), rows: Number(grid.rows) };
+}
+
 export function parseHistoryPage(value: unknown): HistoryPage {
-  if (typeof value !== 'object' || value === null) throw new RpcCallError('bad_response', '历史记录格式不对');
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new RpcCallError('bad_response', '历史记录格式不对');
   const record = value as Record<string, unknown>;
   const rows = stringArray(record.rows);
   if (!rows) throw new RpcCallError('bad_response', '历史记录格式不对');
   const anchorRows = stringArray(record.anchor_rows);
+  if (record.anchor_rows !== undefined && record.anchor_rows !== null && !anchorRows) throw new RpcCallError('bad_response', '历史记录位置格式不对');
+  if (record.next_cursor !== null && typeof record.next_cursor !== 'string') throw new RpcCallError('bad_response', '历史分页信息不完整，请重试');
   const nextCursor = typeof record.next_cursor === 'string' && record.next_cursor.length > 0 ? record.next_cursor : null;
   return { rows, anchorRows, nextCursor };
 }
@@ -491,26 +730,7 @@ export function stitchFirstPage(
   historyRows: readonly string[],
   anchorRows: readonly string[],
 ): string[] {
-  if (frozenRows.length === 0) return [...historyRows, ...anchorRows];
-  const combined = [...historyRows, ...anchorRows];
-  // The bottom of the frozen rows may have been rewritten in place since
-  // (a spinner, a progress bar, the prompt line), so only its top has to
-  // match. Prefer the longest matching prefix; one row cannot place a page.
-  const minimum = Math.min(frozenRows.length, Math.max(2, Math.ceil(frozenRows.length / 2)));
-  for (let m = frozenRows.length; m >= minimum; m--) {
-    for (let extra = 0; extra + m <= combined.length; extra++) {
-      const start = combined.length - extra - m;
-      let matches = true;
-      for (let i = 0; i < m; i++) {
-        if (combined[start + i] !== frozenRows[i]) {
-          matches = false;
-          break;
-        }
-      }
-      if (matches) return combined.slice(0, start);
-    }
-  }
-  return [...historyRows];
+  return alignHistory(frozenRows, historyRows, anchorRows).olderRows;
 }
 
 function stringArray(value: unknown): string[] | null {

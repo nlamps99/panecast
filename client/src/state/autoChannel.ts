@@ -122,6 +122,8 @@ export class AutoChannel {
   private lanBlocked = false;
   private kind: NetworkKind = 'unknown';
   private reportedKind: NetworkKind | null = null;
+  /** OS reports invalidate older asynchronous foreground network reads. */
+  private networkRevision = 0;
   private lanRetryDelay: number;
   private lanRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private lanDeadline: ReturnType<typeof setTimeout> | null = null;
@@ -232,10 +234,15 @@ export class AutoChannel {
     this.active.connection.wake();
     if (!this.autoLan) return;
     const epoch = this.epoch;
+    const networkRevision = this.networkRevision;
     this.lanRetryDelay = this.opts.lanRetryMinMs;
     void this.readNetwork().then((kind) => {
-      if (epoch !== this.epoch || !this.running) return;
+      if (epoch !== this.epoch || !this.running || networkRevision !== this.networkRevision) return;
+      // This read is the newest observation. It also replaces a pending older
+      // debounce and the deduplication baseline for the next OS event.
+      this.clearTimer('networkDebounce');
       this.kind = kind;
+      this.reportedKind = kind;
       this.reevaluate();
     });
   }
@@ -510,6 +517,7 @@ export class AutoChannel {
   /** Raw reports: exact repeats are dropped, real changes are acted on once the burst settles. */
   private networkReported(epoch: number, kind: NetworkKind): void {
     if (epoch !== this.epoch || !this.running) return;
+    this.networkRevision++;
     if (kind === this.reportedKind) return;
     this.reportedKind = kind;
     this.clearTimer('networkDebounce');

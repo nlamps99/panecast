@@ -38,6 +38,8 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
   let textView = TerminalTextView()
   private let placeholderLabel = UILabel()
   private var mode: Mode = .line
+  private var submitOnEnter = true
+  private var appliedInitialText = false
   private var fontName: String?
   private var fontSize: CGFloat = 15
 
@@ -108,9 +110,47 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
     guard next != mode else { return }
     if mode == .live { flushLive() }
     mode = next
-    textView.returnKeyType = next == .live ? .default : .send
+    textView.returnKeyType = next == .live || !submitOnEnter ? .default : .send
     clearText()
     if textView.isFirstResponder { textView.reloadInputViews() }
+  }
+
+  func setInitialText(_ text: String) {
+    guard !appliedInitialText else { return }
+    appliedInitialText = true
+    guard (textView.text ?? "").isEmpty, textView.markedTextRange == nil else { return }
+    textView.text = text
+    textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+    updatePlaceholder()
+    emitState()
+    reportContentHeight()
+  }
+
+  func setSubmitOnEnter(_ submit: Bool) {
+    guard submitOnEnter != submit else { return }
+    submitOnEnter = submit
+    textView.returnKeyType = mode == .live || !submit ? .default : .send
+    if textView.isFirstResponder { textView.reloadInputViews() }
+  }
+
+  func snapshot() -> [String: Any] {
+    let text = textView.text ?? ""
+    let length = (text as NSString).length
+    let selection = textView.selectedRange
+    let start = selection.location == NSNotFound ? length : min(selection.location, length)
+    return ["text": text, "composing": textView.markedTextRange != nil,
+            "selectionStart": start, "selectionEnd": min(length, start + selection.length)]
+  }
+
+  func applyEdit(expected: String, text: String, start: Int, end: Int) -> Bool {
+    guard mode == .line, textView.markedTextRange == nil, (textView.text ?? "") == expected else { return false }
+    let length = (text as NSString).length
+    let lower = max(0, min(start, length)), upper = max(0, min(end, length))
+    textView.text = text
+    textView.selectedRange = NSRange(location: min(lower, upper), length: abs(upper - lower))
+    textViewDidChange(textView)
+    textView.scrollRangeToVisible(textView.selectedRange)
+    return true
   }
 
   func setPlaceholder(_ text: String) {
@@ -177,6 +217,7 @@ final class TerminalInputView: ExpoView, UITextViewDelegate {
       flushLive()
       onKeyAction(["key": "enter"])
     case .line:
+      if !submitOnEnter { return true }
       onSubmit(["text": textView.text ?? ""])
     }
     return false

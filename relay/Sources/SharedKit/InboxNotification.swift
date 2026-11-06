@@ -41,6 +41,7 @@ public enum InboxNotification {
             ?? payload.stringValue(for: "surfaceID")
             ?? payload.stringValue(for: "surface")
         let id = payload.stringValue(for: "id")
+            ?? NotificationSignal.lifecycleId(event)
             ?? payload.stringValue(for: "notification_id")
             ?? payload.stringValue(for: "notificationId")
             ?? payload.stringValue(for: "event_id")
@@ -76,55 +77,23 @@ public enum InboxNotification {
 
 private extension EventFrame {
     var isInboxEvent: Bool {
-        isNotificationEvent || isNeedsInputEvent
-    }
-
-    var isNotificationEvent: Bool {
-        category == .notification || name == "notification.created"
+        NotificationSignal.from(self) != nil
     }
 
     var isNeedsInputEvent: Bool {
-        let text = inboxSearchText
-        let needsHuman = text.contains("needs input")
-            || text.contains("waiting for your input")
-            || text.contains("needs your attention")
-            || text.contains("needs your approval")
-            || text.contains("approval required")
-            || text.contains("permission prompt")
-        return needsHuman && (hasKnownAgentSource || isDirectNeedsInputEvent)
-    }
-
-    var hasKnownAgentSource: Bool {
-        let text = inboxSearchText
-        return text.contains("claude")
-            || text.contains("codex")
-            || text.contains("openai")
-    }
-
-    var isDirectNeedsInputEvent: Bool {
-        let normalizedName = name
-            .lowercased()
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-        return inboxSearchText.contains("needs input")
-            || normalizedName.contains("needs input")
+        NotificationSignal.from(self) == .attention
     }
 
     var inboxSearchText: String {
         var values = [category.rawValue, name]
         if case .object(let payload) = payload {
-            for key in [
-                "app", "source", "kind", "type", "status", "state", "reason",
-                "title", "subtitle", "body", "message", "text", "summary",
-                "workspace_title", "workspaceTitle", "surface_title", "surfaceTitle",
-                "agent", "model", "role",
-            ] {
+            for key in ["app", "source", "agent", "model", "title", "message", "body"] {
                 if let value = payload.stringValue(for: key) {
                     values.append(value)
                 }
             }
-            self.payload.appendStringLeaves(to: &values)
         }
+        if case .object(let p) = payload, let detail = p.nestedStringValue(["details", "message"]) { values.append(detail) }
         return values
             .joined(separator: " ")
             .lowercased()
@@ -134,6 +103,7 @@ private extension EventFrame {
 
     var titleFallback: String {
         if isNeedsInputEvent { return "\(needsInputSourceName) needs input" }
+        if NotificationSignal.from(self) == .completed { return "Task completed" }
         switch name {
         case "notification.created": return "cmux 알림"
         default: return name
@@ -193,24 +163,5 @@ private extension Dictionary where Key == String, Value == JSONValue {
         }
         guard case .object(let object) = value else { return nil }
         return object.nestedStringValue(Array(keys.dropFirst()))
-    }
-}
-
-private extension JSONValue {
-    func appendStringLeaves(to values: inout [String]) {
-        switch self {
-        case .string(let value):
-            if !value.isEmpty { values.append(value) }
-        case .array(let array):
-            for value in array {
-                value.appendStringLeaves(to: &values)
-            }
-        case .object(let object):
-            for value in object.values {
-                value.appendStringLeaves(to: &values)
-            }
-        default:
-            break
-        }
     }
 }

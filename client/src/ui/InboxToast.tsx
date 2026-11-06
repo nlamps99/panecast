@@ -10,6 +10,8 @@ import type { Machine } from '../state/appStore';
 import { useAppState, useStore } from '../state/hooks';
 import { openSurface } from '../state/navigation';
 import { colors } from './theme';
+import { notifications } from '../notifications/instance';
+import { notificationGroup } from '../notifications/preferences';
 
 const SHOW_MS = 4_000;
 
@@ -32,6 +34,7 @@ function MachineToast({ machine }: { machine: Machine }) {
   const pathname = usePathname();
   const pathnameRef = useRef(pathname);
   const seq = useRef(0);
+  const groups = useRef(new Map<string, number>());
   const [shown, setShown] = useState<Shown | null>(null);
   const { items } = useStore(machine.inbox);
   const { workspaces, surfaces } = useStore(machine.workspaces);
@@ -43,6 +46,13 @@ function MachineToast({ machine }: { machine: Machine }) {
   useEffect(
     () =>
       machine.inbox.onNew((item) => {
+        const computerId = machine.computer?.id ?? null;
+        if (!notifications.allowsItem(item, computerId)) return;
+        const seconds = computerId ? notifications.rules(computerId).getState().preferences.dedupe_seconds : 0;
+        const key = notificationGroup(item), now = Date.now();
+        for (const [group, at] of groups.current) if (now - at > 3600_000) groups.current.delete(group);
+        if (seconds && now - (groups.current.get(key) ?? -Infinity) < seconds * 1000) return;
+        groups.current.set(key, now);
         if (!shouldAnnounce(item, pathnameRef.current, machine.session.getState().target)) return;
         seq.current += 1;
         setShown({ id: item.id, machine, seq: seq.current });
@@ -64,6 +74,7 @@ function MachineToast({ machine }: { machine: Machine }) {
   const open = (target: InboxItem) => {
     setShown(null);
     machine.inbox.markRead(target.id);
+    if (target.sourceId && target.threadId) { router.navigate({ pathname: '/sources', params: { sourceId: target.sourceId, threadId: target.threadId } }); return; }
     const surface = inboxTarget(target, surfaces);
     if (surface) openSurface(machine, surface.workspaceId, surface.surfaceId);
     else router.navigate('/inbox');

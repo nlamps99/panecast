@@ -85,6 +85,22 @@ final class SurfaceHistoryServiceTests: XCTestCase {
         XCTAssertEqual(calls, 1)
     }
 
+    func testManyPagesRemainContiguousWhenTheTerminalChangesDuringBrowsing() async throws {
+        let original = (0..<600).map { "history-\($0)" }
+        let facade = HistoryCMUXFacade(rows: original)
+        let service = SurfaceHistoryService(cmux: facade)
+        var page = try await service.page(workspaceId: "w", surfaceId: "s", cursor: nil, tailLines: 17, limit: 73)
+        var collected = rows(in: page) + (anchorRows(in: page) ?? [])
+        await facade.append((600..<900).map { "new-\($0)" })
+        while let cursor = nextCursor(in: page) {
+            page = try await service.page(workspaceId: "w", surfaceId: "s", cursor: cursor, tailLines: 17, limit: 73)
+            collected = rows(in: page) + collected
+        }
+        XCTAssertEqual(collected, original)
+        let calls = await facade.calls
+        XCTAssertEqual(calls, 1)
+    }
+
     private func rows(in page: JSONValue) -> [String] {
         guard case .object(let values) = page,
               case .array(let rows)? = values["rows"]
@@ -107,12 +123,14 @@ final class SurfaceHistoryServiceTests: XCTestCase {
 }
 
 private actor HistoryCMUXFacade: CMUXFacade {
-    private let rows: [String]
+    private var rows: [String]
     private(set) var calls = 0
 
     init(rows: [String]) {
         self.rows = rows
     }
+
+    func append(_ more: [String]) { rows += more }
 
     func dispatch(method: String, params: JSONValue) async throws -> JSONValue {
         calls += 1

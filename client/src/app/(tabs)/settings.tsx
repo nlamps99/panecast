@@ -7,6 +7,8 @@ import { ComputerSection } from '../../ui/settings/ComputerSection';
 import { NotificationSection } from '../../ui/settings/NotificationSection';
 import { TerminalSection } from '../../ui/settings/TerminalSection';
 import { TransportPicker } from '../../ui/settings/TransportPicker';
+import { DiagnosticSection } from '../../ui/settings/DiagnosticSection';
+import { KeyboardProfileSection } from '../../ui/settings/KeyboardProfileSection';
 import { colors } from '../../ui/theme';
 
 /** Each section is its own component so features can grow independently. */
@@ -23,7 +25,9 @@ export default function SettingsScreen() {
       <ComputerSection />
       {computer ? <TransportPicker computerId={computer.id} /> : null}
       <TerminalSection />
+      <KeyboardProfileSection />
       <NotificationSection />
+      <DiagnosticSection key={computer?.id ?? 'demo'} />
       <AboutSection />
     </ScrollView>
   );

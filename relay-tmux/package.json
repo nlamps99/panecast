@@ -1,0 +1,14 @@
+{
+  "name": "panecast-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connect your Mac's terminals to Panecast",
+  "license": "MIT",
+  "bin": { "panecast": "bin/panecast.mjs" },
+  "files": ["bin/", "src/", "hub.example.json", "relay.example.json", "README.md", "HUB.md", "LICENSE"],
+  "bundleDependencies": ["ws", "qrcode-terminal"],
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node src/cli.mjs serve", "pair": "node src/cli.mjs pair", "hub": "node src/hub/cli.mjs", "desktop": "node src/hub/desktop-setup.mjs", "test": "node --test" },
+  "dependencies": { "ws": "^8.18.3", "qrcode-terminal": "^0.12.0" }
+}

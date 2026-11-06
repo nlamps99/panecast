@@ -18,6 +18,7 @@ const ICONS: Record<string, IconName> = {
   terminal: 'terminal',
   inbox: 'inbox',
   settings: 'settings',
+  sources: 'computer',
 };
 
 /** A floating tab bar in the style of the native cmux Remote client. */

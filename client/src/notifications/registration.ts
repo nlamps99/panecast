@@ -1,5 +1,6 @@
 import { brokerEndpoint, directEndpoint } from '../protocol/endpoint';
 import type { StoredComputer } from '../state/computers';
+import type { NotificationPreferences } from './preferences';
 
 /** The relay accepts these two values only (`Routes.registerApns`). */
 export type ApnsEnvironment = 'sandbox' | 'prod';
@@ -9,17 +10,16 @@ export type ApnsEnvironment = 'sandbox' | 'prod';
  *
  * - `relay`: the Mac relay's own `POST /v1/devices/me/apns`, with the token
  *   the relay issued at LAN pairing. The relay stores it in its DeviceStore,
- *   and `InboxPushFanout` pushes to every device there. This is the only
- *   registration that makes the Mac push today.
+ *   and `InboxPushFanout` pushes to registered devices there.
  * - `broker`: the broker's `POST /v1/devices/me/apns?relay_id=…`. The broker
- *   keeps only a hash and holds no Apple key, so nothing is pushed from it.
- *   Sent anyway, as the native client does, so a broker that later forwards
- *   registrations to the relay works without an app update.
+ *   keeps only a hash and forwards registration over the authenticated relay
+ *   tunnel. New relays confirm registration and report their APNs configuration.
+ *   A legacy 204 acknowledgement still registers only with the broker.
  */
 export type RegistrationTarget = { via: 'broker' | 'relay'; url: string; bearer: string };
 
 export type RegistrationResult =
-  | { ok: true }
+  | { ok: true; forwarded?: boolean; pushEnabled?: boolean; preferencesApplied?: boolean }
   | { ok: false; reason: 'unauthorized' | 'rejected' | 'network' | 'timeout' }
   | { ok: false; reason: 'http'; status: number };
 
@@ -62,7 +62,7 @@ export async function registerApnsToken(
   target: RegistrationTarget,
   token: string,
   env: ApnsEnvironment,
-  options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  options: { fetchImpl?: typeof fetch; timeoutMs?: number; preferences?: NotificationPreferences } = {},
 ): Promise<RegistrationResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
@@ -72,7 +72,7 @@ export async function registerApnsToken(
     response = await fetchImpl(target.url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${target.bearer}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apns_token: token, env }),
+      body: JSON.stringify({ apns_token: token, env, ...(options.preferences ? { preferences: options.preferences } : {}) }),
       signal: controller.signal,
     });
   } catch {
@@ -80,8 +80,16 @@ export async function registerApnsToken(
   } finally {
     clearTimeout(timer);
   }
-  // Both answer 204; accept any 2xx.
-  if (response.status >= 200 && response.status < 300) return { ok: true };
+  if (response.status >= 200 && response.status < 300) {
+    if (response.status !== 204) {
+      try {
+        const body = await response.json();
+        if (body.forwarded === true) return { ok: true, forwarded: true, pushEnabled: body.push_enabled === true, ...(body.preferences_applied === true ? { preferencesApplied: true } : {}) };
+        if (body.preferences_applied === true) return { ok: true, preferencesApplied: true };
+      } catch { /* Older brokers acknowledge without a body. */ }
+    }
+    return { ok: true };
+  }
   if (response.status === 401 || response.status === 403) return { ok: false, reason: 'unauthorized' };
   if (response.status === 400) return { ok: false, reason: 'rejected' };
   return { ok: false, reason: 'http', status: response.status };
@@ -99,6 +107,8 @@ export function describeRegistrationFailure(result: Exclude<RegistrationResult, 
     case 'timeout':
       return '连接超时';
     case 'http':
+      if (via === 'broker' && result.status === 503) return '服务器暂时无法连接电脑，请确认电脑在线';
+      if (via === 'broker' && result.status === 504) return '电脑没有回复推送登记，请确认 relay 在线并已升级';
       return `${peer}返回了错误（HTTP ${result.status}）`;
   }
 }

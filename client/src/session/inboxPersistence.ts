@@ -1,6 +1,7 @@
 import type { AsyncStorageStatic } from '@react-native-async-storage/async-storage';
 
 import type { InboxItem } from './inboxStore';
+import { EMPTY_RECOVERY, type RecoveryMetadata } from './inboxRecovery';
 
 /**
  * Keeps each computer's inbox (items and read state) across launches, in
@@ -22,6 +23,7 @@ type Storage = Pick<AsyncStorageStatic, 'getItem' | 'setItem' | 'removeItem'>;
 
 /** The newest list per key, once a store has loaded it. */
 const snapshots = new Map<string, readonly InboxItem[]>();
+const metadata = new Map<string, RecoveryMetadata>();
 /** Keys with a write queued but not yet started. */
 const queued = new Set<string>();
 /** The tail of each key's chain of storage operations. */
@@ -69,7 +71,9 @@ export async function readInbox(key: string): Promise<readonly InboxItem[]> {
   const store = getStorage();
   if (!store) return [];
   try {
-    return parseStoredInbox(await store.getItem(key));
+    const raw = await store.getItem(key);
+    metadata.set(key, parseRecovery(raw));
+    return parseStoredInbox(raw);
   } catch (error) {
     warn('could not read the inbox', error);
     return [];
@@ -89,7 +93,7 @@ export function saveInbox(key: string, items: readonly InboxItem[]): void {
   enqueue(key, async (store) => {
     queued.delete(key);
     const latest = snapshots.get(key);
-    if (latest) await store.setItem(key, serializeInbox(latest));
+    if (latest) await store.setItem(key, serializeInbox(latest, metadata.get(key)));
   });
 }
 
@@ -99,6 +103,7 @@ export function saveInbox(key: string, items: readonly InboxItem[]): void {
  */
 export function forgetInbox(key: string): Promise<void> {
   snapshots.delete(key);
+  metadata.delete(key);
   queued.delete(key);
   return enqueue(key, (store) => store.removeItem(key));
 }
@@ -126,8 +131,19 @@ function enqueue(key: string, task: (store: Storage) => Promise<void>): Promise<
   return next;
 }
 
-export function serializeInbox(items: readonly InboxItem[]): string {
-  return JSON.stringify({ version: VERSION, items: items.slice(0, INBOX_LIMIT) });
+export function serializeInbox(items: readonly InboxItem[], recovery?: RecoveryMetadata): string {
+  return JSON.stringify({ version: VERSION, items: items.slice(0, INBOX_LIMIT), ...(recovery ? { recovery } : {}) });
+}
+
+export function cachedRecovery(key: string): RecoveryMetadata { return metadata.get(key) ?? EMPTY_RECOVERY; }
+export function saveRecoveredInbox(key: string, items: readonly InboxItem[], recovery: RecoveryMetadata): void {
+  metadata.set(key, recovery); saveInbox(key, items);
+}
+function parseRecovery(raw: string | null): RecoveryMetadata {
+  try {
+    const value = JSON.parse(raw ?? '{}').recovery;
+    return { cursor: typeof value?.cursor === 'string' ? value.cursor : null, seen: Array.isArray(value?.seen) ? value.seen.filter((s: unknown) => typeof s === 'string').slice(-2000) : [] };
+  } catch { return EMPTY_RECOVERY; }
 }
 
 /** Accepts only what `serializeInbox` writes; drops malformed and repeated items. */
@@ -169,6 +185,10 @@ function parseItem(value: unknown): InboxItem | null {
     at,
     read,
     needsInput: needsInput === true,
+    ...(typeof value.resolvedAt === 'number' && Number.isFinite(value.resolvedAt) ? { resolvedAt: value.resolvedAt } : {}),
+    ...(typeof value.snoozedUntil === 'number' && Number.isFinite(value.snoozedUntil) ? { snoozedUntil: value.snoozedUntil } : {}),
+    ...(typeof value.reminderId === 'string' ? { reminderId: value.reminderId } : {}),
+    ...Object.fromEntries(['sourceId', 'threadId', 'taskId', 'requestId', 'turnId'].flatMap((key) => typeof value[key] === 'string' ? [[key, value[key]]] : [])),
   };
 }
 

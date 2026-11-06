@@ -8,6 +8,7 @@ import { appStore, PairingError } from '../state/appStore';
 import { useAppState } from '../state/hooks';
 import { storageSupported } from '../state/pairingStorage';
 import { Icon } from '../ui/Icon';
+import { ConnectionGuide } from '../ui/ConnectionGuide';
 import { colors, fonts } from '../ui/theme';
 
 /** Re-scanning a code that just failed is ignored for this long. */
@@ -122,6 +123,7 @@ export default function PairScreen() {
       keyboardDismissMode="on-drag"
     >
       <Header title={title} presented={presented} />
+      <ConnectionGuide />
       <Text style={styles.body}>
         {repairing ? `「${repairing.name}」的配对已失效。在这台 Mac 上` : '在 Mac 上'}运行 <Text style={styles.code}>cmux-relay pair</Text>
         ，然后扫描它显示的二维码。

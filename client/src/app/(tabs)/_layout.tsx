@@ -1,4 +1,6 @@
-import { Tabs } from 'expo-router';
+import { Tabs, router, usePathname } from 'expo-router';
+import { useEffect } from 'react';
+import { appStore } from '../../state/appStore';
 
 import { useMachine, useStore } from '../../state/hooks';
 import { useLiveLinesPref } from '../../state/useLiveLinesPref';
@@ -14,7 +16,12 @@ import { colors } from '../../ui/theme';
  * ROUTE_NAMES_CHANGED warning. The tab bar sets the order on screen.
  */
 export default function TabsLayout() {
-  const { inbox, session } = useMachine();
+  const { inbox, session, computer } = useMachine();
+  const pathname = usePathname();
+  useEffect(() => {
+    const restore = appStore.takeRestoredRoute(computer?.id ?? null);
+    if (restore && pathname === '/') router.replace(restore);
+  }, [computer?.id, pathname]);
   const { unread } = useStore(inbox);
   // The layout lives as long as the connection, so the history-lines pref follows changes here.
   useLiveLinesPref(session);
@@ -24,12 +31,13 @@ export default function TabsLayout() {
       backBehavior="firstRoute"
       screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: colors.canvas } }}
       tabBar={(props) => (
-        <TabBar {...props} order={['index', 'terminal', 'inbox', 'settings']} hiddenOn={['terminal']} badges={{ inbox: unread }} />
+        <TabBar {...props} order={['index', 'sources', 'terminal', 'inbox', 'settings']} hiddenOn={['terminal']} badges={{ inbox: unread }} />
       )}
     >
       <Tabs.Screen name="index" options={{ title: '工作区' }} />
       <Tabs.Screen name="inbox" options={{ title: '收件箱' }} />
       <Tabs.Screen name="settings" options={{ title: '设置' }} />
+      <Tabs.Screen name="sources" options={{ title: '来源' }} />
       <Tabs.Screen name="terminal" options={{ title: '终端' }} />
     </Tabs>
   );

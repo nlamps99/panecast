@@ -109,8 +109,9 @@ public actor Routes {
         struct Payload: Decodable {
             let apnsToken: String
             let env: String
+            let preferences: NotificationPreferences?
             enum CodingKeys: String, CodingKey {
-                case apnsToken = "apns_token", env
+                case apnsToken = "apns_token", env, preferences
             }
         }
         guard let body,
@@ -121,9 +122,9 @@ public actor Routes {
         guard p.env == "prod" || p.env == "sandbox" else {
             return .init(.badRequest)
         }
-        try? deviceStore.setAPNsToken(deviceId: deviceId,
-                                      token: p.apnsToken, env: p.env)
-        return .init(.noContent)
+        do { try deviceStore.setAPNsToken(deviceId: deviceId, token: p.apnsToken, env: p.env, preferences: p.preferences) }
+        catch { return .init(.internalServerError) }
+        return p.preferences == nil ? .init(.noContent) : .init(.ok, body: Data(#"{"ok":true,"preferences_applied":true}"#.utf8))
     }
 
     private static func isAPNsToken(_ token: String) -> Bool {

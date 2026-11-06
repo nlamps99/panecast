@@ -7,6 +7,7 @@ import type { AppStoreState, Machine } from '../state/appStore';
 import type { StoredComputer } from '../state/computers';
 import { localNotificationData, localNotificationIdentifier, parseNotification, type NotificationInfo } from './payload';
 import { behaviorFor, permissionFrom, presentationFor, shouldPostLocal, type PermissionState } from './policy';
+import { notificationAllowed, notificationGroup, NotificationRulesStore } from './preferences';
 import {
   apnsEnvironment,
   brokerTarget,
@@ -21,7 +22,7 @@ import {
 /** One registration of the APNs token with one server. */
 export type RegistrationOutcome =
   | { state: 'pending' }
-  | { state: 'ok'; at: number; remembered?: boolean }
+  | { state: 'ok'; at: number; remembered?: boolean; forwarded?: boolean; pushEnabled?: boolean; preferencesApplied?: boolean }
   | { state: 'failed'; message: string };
 
 /** Per paired computer. `relay` is null when the computer has no LAN pairing (no relay token). */
@@ -49,6 +50,7 @@ export type PushSummary =
   | { kind: 'pending' }
   | { kind: 'token_failed'; message: string }
   | { kind: 'relay'; at: number; remembered: boolean }
+  | { kind: 'broker_relay'; configured: boolean }
   | { kind: 'broker_only'; lanFailed: string | null }
   | { kind: 'failed'; message: string };
 
@@ -59,6 +61,7 @@ export function pushSummary(state: NotificationState, os: string, computerId: st
   if (state.token.state === 'failed') return { kind: 'token_failed', message: state.token.message };
   const push = state.push[computerId];
   if (state.token.state !== 'ready' || !push) return { kind: 'pending' };
+  if (push.broker.state === 'ok' && push.broker.forwarded) return { kind: 'broker_relay', configured: push.broker.pushEnabled === true };
   if (push.relay?.state === 'ok') return { kind: 'relay', at: push.relay.at, remembered: push.relay.remembered === true };
   if (push.relay?.state === 'pending' || push.broker.state === 'pending') return { kind: 'pending' };
   if (push.broker.state === 'ok') return { kind: 'broker_only', lanFailed: push.relay?.state === 'failed' ? push.relay.message : null };
@@ -94,6 +97,7 @@ export type ControllerDeps = {
   confirm(title: string, message: string, buttons: ConfirmButton[]): void;
   openSettings(): Promise<void>;
   openSurface(machine: Machine, workspaceId: string, surfaceId: string): void;
+  openAgent?(sourceId: string, threadId: string): void;
   /** Navigate to a tab: `/` (workspaces) or `/inbox`. */
   navigate(path: '/' | '/inbox'): void;
   log?: (message: string) => void;
@@ -150,6 +154,25 @@ export class NotificationController {
   private route = '/';
   private offerPending = false;
   private started = false;
+  private rulesByComputer = new Map<string, NotificationRulesStore>();
+  private alertGroups = new Map<string, number>();
+  private reminders = new Set<string>();
+  private cancelledReminders = new Set<string>();
+
+  rules(computerId: string): NotificationRulesStore {
+    let store = this.rulesByComputer.get(computerId);
+    if (!store) {
+      store = new NotificationRulesStore(`panecast.notification-rules.v1.${computerId}`, this.deps.storage);
+      this.rulesByComputer.set(computerId, store);
+      store.subscribe(() => { if (this.started) { this.attempted.delete(computerId); this.syncComputers(); } });
+      void store.load();
+    }
+    return store;
+  }
+
+  allowsItem(item: InboxItem, computerId: string | null): boolean {
+    return !computerId || notificationAllowed(this.rules(computerId).getState().preferences, item);
+  }
 
   constructor(private readonly deps: ControllerDeps) {
     this.wasActive = deps.appState.currentState === 'active';
@@ -260,6 +283,50 @@ export class NotificationController {
     }
   }
 
+  async remindLater(item: InboxItem, computerId: string, minutes = 15): Promise<string> {
+    if (!this.supported || this.state.permission.status !== 'granted') throw new Error('请先在设置中开启通知权限');
+    await this.ensureChannel();
+    if (item.reminderId) await Notifications.cancelScheduledNotificationAsync(item.reminderId);
+    return Notifications.scheduleNotificationAsync({
+      identifier: `reminder.${computerId}.${item.id}`,
+      content: { title: `待处理：${item.title}`, body: item.body || '点按返回对应终端', sound: 'default', data: { ...localNotificationData(item, computerId), reminder: 'true' } },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: minutes * 60, channelId: ANDROID_CHANNEL },
+    });
+  }
+
+  async cancelReminder(id: string | null | undefined): Promise<void> {
+    if (id && this.supported) await Notifications.cancelScheduledNotificationAsync(id);
+  }
+
+  async testPush(): Promise<string> {
+    if (this.state.permission.status !== 'granted') throw new Error('请先开启通知权限');
+    if (this.deps.os === 'android') {
+      await this.ensureChannel();
+      await Notifications.scheduleNotificationAsync({
+        content: { title: 'Panecast 通知测试', body: '本机提醒可以正常显示。', data: { reminder: 'true' } },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 5, channelId: ANDROID_CHANNEL },
+      });
+      return '已安排 5 秒后的本机提醒，可以切到后台检查';
+    }
+    const computer = this.machine?.computer;
+    if (!computer) throw new Error('请先连接真实电脑');
+    const target = brokerTarget(computer);
+    if (!target) throw new Error('服务器地址无效');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const url = new URL(target.url);
+      url.pathname += '/test';
+      const response = await (this.deps.fetchImpl ?? fetch)(url.toString(), { method: 'POST', headers: { Authorization: `Bearer ${target.bearer}`, 'Content-Type': 'application/json' }, body: '{}', signal: controller.signal });
+      const result = await response.json().catch(() => ({ error: response.status === 404 ? 'not_found' : 'request_failed' }));
+      if (!response.ok || result.accepted !== true) throw new Error(pushTestError(result.error));
+      return 'Apple 已接收测试通知，请检查手机是否收到。接收成功后即可确认这条推送链路。';
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('测试超时，请检查服务器和电脑连接，并确认 relay 已升级');
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
   /** Registers again with the current computer (and retries the token if that failed). */
   retry(): void {
     if (this.state.token.state === 'failed') {
@@ -334,13 +401,14 @@ export class NotificationController {
   /** Changes when the token or any credential the registration uses changes. Memory only. */
   private signature(computer: StoredComputer): string {
     const { broker, lan } = computer;
-    return [this.token ?? '', this.env, broker.serverUrl, broker.relayId, broker.token, lan?.url ?? '', lan?.token ?? ''].join('\n');
+    return [this.token ?? '', this.env, broker.serverUrl, broker.relayId, broker.token, lan?.url ?? '', lan?.token ?? '', JSON.stringify(this.rules(computer.id).getState().preferences)].join('\n');
   }
 
   /** Registers the token with every paired computer that has not had this token and these credentials yet. */
   private syncComputers(): void {
     if (!this.token || this.deps.store.getState().phase === 'loading') return;
     for (const computer of this.computers) {
+      if (!this.rules(computer.id).getState().loaded) continue;
       if (this.attempted.get(computer.id) !== this.signature(computer)) this.register(computer);
     }
   }
@@ -363,7 +431,7 @@ export class NotificationController {
     const broker = brokerTarget(computer);
     const relay = relayTarget(computer);
     this.patchPush(computer.id, { env, broker: { state: 'pending' }, relay: relay ? { state: 'pending' } : null });
-    const options = { fetchImpl: this.deps.fetchImpl };
+    const options = { fetchImpl: this.deps.fetchImpl, preferences: this.rules(computer.id).getState().preferences };
     const brokerRun = broker ? registerApnsToken(broker, token, env, options) : null;
     // Off the Mac's Wi-Fi this cannot connect; do not hang on it.
     const relayRun = relay ? registerApnsToken(relay, token, env, { ...options, timeoutMs: 8_000 }) : null;
@@ -375,7 +443,7 @@ export class NotificationController {
     const brokerOutcome: RegistrationOutcome = brokerResult
       ? outcome(brokerResult, 'broker')
       : { state: 'failed', message: '服务器地址无效' };
-    const relayOutcome = relayResult ? this.relayOutcome(computer.id, relayResult, fingerprintOf(token, env)) : null;
+    const relayOutcome = relayResult ? this.relayOutcome(computer.id, relayResult, fingerprintOf(`${token}|${JSON.stringify(options.preferences)}`, env)) : null;
     this.log(`push registration for ${computer.name}: broker ${brokerOutcome.state}, relay ${relayOutcome?.state ?? 'none'}`);
     this.patchPush(computer.id, { env, broker: brokerOutcome, relay: relayOutcome });
   }
@@ -389,7 +457,7 @@ export class NotificationController {
     if (result.ok) {
       const at = Date.now();
       this.persist({ relay: { ...this.persisted.relay, [computerId]: { fingerprint, at } } });
-      return { state: 'ok', at };
+      return { state: 'ok', at, ...(result.preferencesApplied ? { preferencesApplied: true } : {}) };
     }
     const unreachable = result.reason === 'network' || result.reason === 'timeout';
     if (unreachable && record?.fingerprint === fingerprint) return { state: 'ok', at: record.at, remembered: true };
@@ -416,6 +484,14 @@ export class NotificationController {
   private prune(): void {
     if (!this.persistedLoaded) return;
     const ids = new Set(this.computers.map((c) => c.id));
+    void Notifications.getAllScheduledNotificationsAsync().then(async (requests) => {
+      for (const request of requests) {
+        const data = request.content.data;
+        if (request.identifier.startsWith('reminder.') && typeof data?.computer_id === 'string' && !ids.has(data.computer_id)) {
+          await Notifications.cancelScheduledNotificationAsync(request.identifier);
+        }
+      }
+    }).catch(() => {});
     for (const id of [...this.attempted.keys()]) if (!ids.has(id)) this.attempted.delete(id);
     const push = Object.fromEntries(Object.entries(this.state.push).filter(([id]) => ids.has(id)));
     if (Object.keys(push).length !== Object.keys(this.state.push).length) this.patchState({ push });
@@ -430,8 +506,10 @@ export class NotificationController {
     if (!machine) return;
     // Only items that arrive from now on are new.
     this.seen = new Set(machine.inbox.getState().items.map((item) => item.id));
+    this.reminders = new Set(machine.inbox.getState().items.flatMap((item) => item.reminderId && !item.resolvedAt ? [item.reminderId] : []));
     this.machineDisposers.push(
-      machine.inbox.subscribe(() => this.onInbox(machine)),
+      machine.inbox.subscribe(() => this.syncReminders(machine)),
+      machine.inbox.onNew((item) => this.onInbox(machine, [item])),
       machine.channel.onStatus((status) => {
         if (status.state === 'open') this.retryFailed(machine);
       }),
@@ -450,10 +528,23 @@ export class NotificationController {
 
   // MARK: Inbox → local notifications
 
-  private onInbox(machine: Machine): void {
+  private syncReminders(machine: Machine): void {
     if (machine !== this.machine) return;
     const { items } = machine.inbox.getState();
-    const fresh = items.filter((item) => !item.read && !this.seen.has(item.id));
+    const currentReminders = new Set(items.flatMap((item) => item.reminderId && !item.resolvedAt ? [item.reminderId] : []));
+    for (const id of currentReminders) this.cancelledReminders.delete(id);
+    for (const item of items) if (item.resolvedAt && item.reminderId && !this.cancelledReminders.has(item.reminderId)) {
+      this.cancelledReminders.add(item.reminderId);
+      void this.cancelReminder(item.reminderId).catch(() => { this.cancelledReminders.delete(item.reminderId!); });
+    }
+    for (const id of this.reminders) if (!currentReminders.has(id)) void this.cancelReminder(id).catch(() => {});
+    this.reminders = currentReminders;
+  }
+
+  private onInbox(machine: Machine, candidates: readonly InboxItem[]): void {
+    if (machine !== this.machine) return;
+    const { items } = machine.inbox.getState();
+    const fresh = candidates.filter((item) => !item.read && !item.resolvedAt);
     this.seen = new Set(items.map((item) => item.id));
     // The demo's sample notifications should neither prompt nor post.
     const computer = machine.computer;
@@ -467,10 +558,17 @@ export class NotificationController {
       os: this.deps.os,
       appActive: this.appActive,
       permission: this.state.permission.status,
-      relayPushes: this.state.push[computer.id]?.relay?.state === 'ok',
+      relayPushes: this.state.push[computer.id]?.relay?.state === 'ok' || brokerPushes(this.state.push[computer.id]),
     });
     if (!post) return;
-    for (const item of fresh.slice(0, LOCAL_BURST)) void this.postLocal(item, computer.id);
+    const rules = this.rules(computer.id).getState().preferences;
+    for (const [key, at] of this.alertGroups) if (Date.now() - at > 3600_000) this.alertGroups.delete(key);
+    for (const item of fresh.slice(0, LOCAL_BURST)) {
+      if (!notificationAllowed(rules, item)) continue;
+      const key = `${computer.id}:${notificationGroup(item)}`;
+      if (rules.dedupe_seconds && Date.now() - (this.alertGroups.get(key) ?? -Infinity) < rules.dedupe_seconds * 1000) continue;
+      this.alertGroups.set(key, Date.now()); void this.postLocal(item, computer.id);
+    }
   }
 
   private async postLocal(item: InboxItem, computerId: string): Promise<void> {
@@ -517,6 +615,7 @@ export class NotificationController {
     if (active === this.wasActive) return;
     this.wasActive = active;
     if (!active) return;
+    if (this.machine) void this.machine.inbox.sync();
     // The user may have changed it in system settings.
     void this.refreshPermission().then(() => this.maybeOffer());
   }
@@ -590,6 +689,7 @@ export class NotificationController {
       const item = machine.inbox.getState().items.find((i) => i.id === info.notificationId);
       if (item && !item.read) machine.inbox.markRead(item.id);
     }
+    if (info.sourceId && info.threadId && this.deps.openAgent) { this.deps.openAgent(info.sourceId, info.threadId); return; }
     const { workspaceId } = info;
     if (!workspaceId) {
       this.deps.navigate('/inbox');
@@ -639,6 +739,11 @@ export class NotificationController {
 
   private presentation(info: NotificationInfo) {
     const { machine } = this.deps.store.getState();
+    if (!info.reminder && machine?.computer) {
+      const item = machine.inbox.getState().items.find((item) => item.id === info.notificationId);
+      const rules = this.rules(machine.computer.id).getState().preferences;
+      if (!notificationAllowed(rules, item ?? { workspaceId: info.workspaceId, threadId: info.threadId, needsInput: info.needsInput === true })) return 'hide';
+    }
     return presentationFor(info, {
       appActive: this.appActive,
       route: this.route,
@@ -698,7 +803,23 @@ export class NotificationController {
 }
 
 function outcome(result: RegistrationResult, via: 'broker' | 'relay'): RegistrationOutcome {
-  return result.ok ? { state: 'ok', at: Date.now() } : { state: 'failed', message: describeRegistrationFailure(result, via) };
+  return result.ok ? { state: 'ok', at: Date.now(), ...(result.forwarded ? { forwarded: true, pushEnabled: result.pushEnabled } : {}), ...(result.preferencesApplied ? { preferencesApplied: true } : {}) } : { state: 'failed', message: describeRegistrationFailure(result, via) };
+}
+
+function brokerPushes(push: ComputerPush | undefined): boolean {
+  return push?.broker.state === 'ok' && push.broker.forwarded === true && push.broker.pushEnabled === true;
+}
+function pushTestError(code: unknown): string {
+  const messages: Record<string, string> = {
+    apns_not_configured: '电脑还没有配置 Apple 推送，请完成推送配置后重试',
+    push_not_registered: '请先点击「重新注册推送」，再测试',
+    invalid_push_token_or_topic: 'Apple 拒绝了推送令牌，请检查电脑上的 App 标识和推送环境后重新注册',
+    relay_offline: '电脑离线，请先恢复连接',
+    push_relay_timeout_or_upgrade_required: '电脑没有回复，请确认 relay 已升级并在线',
+    apns_request_failed_check_relay_config: '电脑无法发送到 Apple，请检查推送配置和网络',
+    not_found: '服务器尚不支持测试推送，请升级 broker 和 relay',
+  };
+  return typeof code === 'string' ? messages[code] ?? `推送失败：${code}` : '推送测试失败，请检查电脑端配置';
 }
 
 /** null: the notification names no computer (use the current one). undefined: it names one that is not paired. */

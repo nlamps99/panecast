@@ -14,11 +14,12 @@ public struct Device: Codable, Equatable, Sendable {
     public var tokenHash: String       // SHA256-hex of the raw bearer
     public var apnsToken: String?
     public var apnsEnv: String?
+    public var notificationPreferences: NotificationPreferences?
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id", loginName = "login_name", hostname,
              registeredAt = "registered_at", tokenHash = "token_hash",
-             apnsToken = "apns_token", apnsEnv = "apns_env"
+             apnsToken = "apns_token", apnsEnv = "apns_env", notificationPreferences = "notification_preferences"
     }
 }
 
@@ -79,11 +80,12 @@ public final class DeviceStore: @unchecked Sendable {
         }
     }
 
-    public func setAPNsToken(deviceId: String, token: String, env: String) throws {
+    public func setAPNsToken(deviceId: String, token: String, env: String, preferences: NotificationPreferences? = nil) throws {
         try queue.sync {
             guard var dev = devices[deviceId] else { throw RelayError.unknownDevice(deviceId) }
             dev.apnsToken = token
             dev.apnsEnv = env
+            if let preferences { dev.notificationPreferences = preferences }
             devices[deviceId] = dev
             try persist()
         }

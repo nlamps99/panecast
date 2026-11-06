@@ -4,13 +4,14 @@ import { StyleSheet } from 'react-native';
 import type { TerminalInputHandle, TerminalInputProps } from './TerminalInput.types';
 
 /**
- * Browser version: a plain <input> that uses composition events to hold back
+ * Browser version: an uncontrolled textarea that uses composition events to hold back
  * text the input method has not committed yet.
  */
 const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(function TerminalInputView(props, ref) {
   const { mode, placeholder, textColor, caretColor, fontFamily, fontSize, editable, style } = props;
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
+  const previousMode = useRef(mode);
   const latest = useRef(props);
   latest.current = props;
 
@@ -29,9 +30,21 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
       flushLive();
       report();
     },
+    getState: async () => ({ text: input.current?.value ?? '', composing: composing.current,
+      selectionStart: input.current?.selectionStart ?? 0, selectionEnd: input.current?.selectionEnd ?? 0 }),
+    applyEdit: async (expectedText, text, start, end) => {
+      const element = input.current;
+      if (!element || composing.current || latest.current.mode !== 'line' || element.value !== expectedText) return false;
+      element.value = text;
+      element.setSelectionRange(Math.max(0, Math.min(start, text.length)), Math.max(0, Math.min(end, text.length)));
+      report();
+      return true;
+    },
   }));
 
   useEffect(() => {
+    if (previousMode.current === mode) return;
+    previousMode.current = mode;
     if (input.current) input.current.value = '';
   }, [mode]);
 
@@ -51,16 +64,17 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
   const flat = (StyleSheet.flatten(style) ?? {}) as CSSProperties;
 
   return (
-    <input
+    <textarea
       ref={input}
-      type="text"
+      rows={1}
+      defaultValue={props.initialText ?? ''}
       autoCapitalize="off"
       autoComplete="off"
       autoCorrect="off"
       spellCheck={false}
       disabled={editable === false}
       placeholder={placeholder}
-      enterKeyHint={mode === 'live' ? 'enter' : 'send'}
+      enterKeyHint={mode === 'live' || props.submitOnEnter === false ? 'enter' : 'send'}
       style={{
         ...flat,
         border: 'none',
@@ -69,6 +83,9 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
         padding: 0,
         margin: 0,
         minWidth: 0,
+        resize: 'none',
+        display: 'block',
+        lineHeight: 1.3,
         color: textColor,
         caretColor,
         fontFamily,
@@ -92,6 +109,7 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
         if (event.nativeEvent.isComposing || event.keyCode === 229) return;
         const { mode: currentMode, onKeyAction, onSubmit } = latest.current;
         if (event.key === 'Enter') {
+          if (currentMode === 'line' && latest.current.submitOnEnter === false) return;
           event.preventDefault();
           if (currentMode === 'live') {
             flushLive();

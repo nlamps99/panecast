@@ -1,0 +1,14 @@
+{
+  "relays": [
+    {
+      "relay_id": "home-mac",
+      "relay_token": "REPLACE_WITH_HOME_MAC_RELAY_TOKEN",
+      "pairing_code": "REPLACE_WITH_HOME_MAC_PAIRING_CODE"
+    },
+    {
+      "relay_id": "linux-box",
+      "relay_token": "REPLACE_WITH_LINUX_RELAY_TOKEN",
+      "pairing_code": "REPLACE_WITH_LINUX_PAIRING_CODE"
+    }
+  ]
+}

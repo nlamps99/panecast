@@ -183,7 +183,7 @@ describe('DemoChannel terminals', () => {
   it('raises a notification for notification.create, like cmux', async () => {
     const channel = new DemoChannel();
     const inbox = new InboxStore(channel);
-    await rpc(channel, 'notification.create', { workspace_id: 'demo-ws-3', title: '测试通知', body: '从手机发出的测试通知' }, 100);
+    await rpc(channel, 'notification.create', { workspace_id: 'demo-ws-3', title: '测试通知', body: '从手机发出的测试通知', status: 'completed' }, 100);
     expect(inbox.getState().items).toEqual([
       expect.objectContaining({ id: 'demo-n-3', workspaceId: 'demo-ws-3', title: '测试通知', subtitle: '天气服务', body: '从手机发出的测试通知' }),
     ]);

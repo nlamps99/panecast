@@ -9,8 +9,12 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.nzx.panecast",
+      "buildNumber": "8",
       "supportsTablet": true,
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/panecast.icon",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "在同一个 Wi-Fi 下直接连接电脑上的 relay",
         "NSAppTransportSecurity": {
@@ -20,8 +24,9 @@
     },
     "android": {
       "package": "com.nzx.panecast",
+      "versionCode": 8,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#182335",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -37,9 +42,9 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#1a1b26",
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "imageWidth": 180
         }
       ],
       [
@@ -87,7 +92,8 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,

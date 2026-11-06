@@ -1,0 +1,11 @@
+{
+  "broker": {
+    "url": "https://relay.example.com",
+    "relay_id": "linux-tmux",
+    "relay_token": "REPLACE_WITH_BROKER_RELAY_TOKEN"
+  },
+  "snippets": [
+    { "label": "检查修改", "text": "git status --short" }
+  ],
+  "poll_ms": 250
+}

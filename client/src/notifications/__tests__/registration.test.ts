@@ -29,6 +29,12 @@ describe('registration targets', () => {
 });
 
 describe('registerApnsToken', () => {
+  it('distinguishes relay-confirmed forwarding from a legacy broker acknowledgement', async () => {
+    const target = brokerTarget(computer)!;
+    const fetchImpl = jest.fn(async () => ({ status: 200, json: async () => ({ ok: true, forwarded: true, push_enabled: false }) }) as Response);
+    expect(await registerApnsToken(target, 'aabb', 'prod', { fetchImpl })).toEqual({ ok: true, forwarded: true, pushEnabled: false });
+    expect(await registerApnsToken(target, 'aabb', 'prod', { fetchImpl: respond(204) })).toEqual({ ok: true });
+  });
   const target = { via: 'relay' as const, url: 'http://192.168.1.5:4399/v1/devices/me/apns', bearer: 'lan-secret' };
 
   it('posts the token and env with the bearer', async () => {

@@ -6,10 +6,14 @@ import type { InboxItem } from '../session/inboxStore';
  * What a notification points at. Remote pushes come from the relay's
  * `APNsProvider.payloadData` (top-level `workspace_id`, `surface_id`,
  * `notification_id`, `thread_id`); local ones are posted by this app and also
- * carry `computer_id`. `relay_id` is not sent by the relay today; it is read so
- * a relay that adds it lets a tap switch to the right computer.
+ * carry `computer_id`. Pushes registered through the broker include `relay_id`
+ * so a tap can switch computers; older/direct pushes fall back to workspace IDs.
  */
 export type NotificationInfo = {
+  reminder?: boolean;
+  sourceId?: string | null;
+  threadId?: string | null;
+  needsInput?: boolean;
   /** Posted by this app from the inbox, rather than pushed by a relay. */
   local: boolean;
   workspaceId: string | null;
@@ -28,6 +32,9 @@ export function localNotificationData(item: InboxItem, computerId: string): Reco
   const data: Record<string, string> = { source: LOCAL_SOURCE, computer_id: computerId, notification_id: item.id };
   if (item.workspaceId) data.workspace_id = item.workspaceId;
   if (item.surfaceId) data.surface_id = item.surfaceId;
+  if (item.sourceId) data.source_id = item.sourceId;
+  if (item.threadId) data.thread_id = item.threadId;
+  if (item.needsInput) data.needs_input = 'true';
   return data;
 }
 
@@ -45,6 +52,9 @@ export function localNotificationIdentifier(item: InboxItem, computerId: string)
 export function parseNotification(notification: Notification): NotificationInfo {
   const fields = { ...pushPayload(notification), ...asRecord(notification.request.content.data) };
   return {
+    ...(fields.reminder === 'true' ? { reminder: true } : {}),
+    ...(id(fields.source_id) ? { sourceId: id(fields.source_id), threadId: id(fields.thread_id) } : {}),
+    ...(fields.needs_input === true || fields.needs_input === 'true' ? { needsInput: true } : {}),
     local: fields.source === LOCAL_SOURCE,
     // The relay falls back to the literal "unknown" when cmux sent no workspace.
     workspaceId: id(fields.workspace_id, 'unknown'),

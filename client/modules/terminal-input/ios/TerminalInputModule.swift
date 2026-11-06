@@ -10,6 +10,12 @@ public class TerminalInputModule: Module {
       Prop("mode") { (view: TerminalInputView, mode: String) in
         view.setMode(mode == "live" ? .live : .line)
       }
+      Prop("initialText") { (view: TerminalInputView, text: String?) in
+        if let text { view.setInitialText(text) }
+      }
+      Prop("submitOnEnter") { (view: TerminalInputView, submit: Bool?) in
+        view.setSubmitOnEnter(submit ?? true)
+      }
       Prop("placeholder") { (view: TerminalInputView, text: String?) in
         view.setPlaceholder(text ?? "")
       }
@@ -43,6 +49,12 @@ public class TerminalInputModule: Module {
       }
       AsyncFunction("insertText") { (view: TerminalInputView, text: String) in
         view.insertText(text)
+      }
+      AsyncFunction("getState") { (view: TerminalInputView) in
+        view.snapshot()
+      }
+      AsyncFunction("applyEdit") { (view: TerminalInputView, expected: String, text: String, start: Int, end: Int) in
+        view.applyEdit(expected: expected, text: text, start: start, end: end)
       }
     }
   }

@@ -11,6 +11,9 @@ export type TerminalInputMode = 'line' | 'live';
 
 export type TerminalInputKey = 'enter' | 'backspace';
 
+/** UTF-16 selection offsets, matching UITextView, Android Editable, and textarea. */
+export type TerminalInputSnapshot = { text: string; composing: boolean; selectionStart: number; selectionEnd: number };
+
 export type TerminalInputHandle = {
   focus(): Promise<void>;
   blur(): Promise<void>;
@@ -21,10 +24,18 @@ export type TerminalInputHandle = {
    * live mode. Text still being composed is committed first.
    */
   insertText(text: string): Promise<void>;
+  /** Reads the native edit and composition state at the moment an action is pressed. */
+  getState(): Promise<TerminalInputSnapshot>;
+  /** Applies a selection edit only if text still matches and no input method is composing. */
+  applyEdit(expectedText: string, text: string, selectionStart: number, selectionEnd: number): Promise<boolean>;
 };
 
 export type TerminalInputProps = {
   mode: TerminalInputMode;
+  /** Applied once when a new native view mounts; never controls ongoing composition. */
+  initialText?: string;
+  /** False in the expanded editor: Return inserts a newline, and the Send button submits. */
+  submitOnEnter?: boolean;
   placeholder?: string;
   placeholderColor?: string;
   textColor?: string;

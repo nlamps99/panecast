@@ -5,10 +5,9 @@ English · [简体中文](README.md)
 View and drive the terminals on your computer from your phone.
 
 > **Early stage.** Panecast grew out of
-> [cmux Remote](https://github.com/NewTurn2017/cmux-remote). The only terminal
-> backend today is [cmux](https://github.com/manaflow-ai/cmux). The phone app
-> is being rewritten in Expo so that iOS, Android and the web share one
-> codebase.
+> [cmux Remote](https://github.com/NewTurn2017/cmux-remote). It supports
+> [cmux](https://github.com/manaflow-ai/cmux) and tmux. The Expo client shares
+> one codebase between iOS, Android and a web demo.
 
 ## How it works
 
@@ -32,11 +31,26 @@ directly. Elsewhere, traffic goes through the broker.
 |---|---|
 | `client/` | Expo phone app |
 | `relay/` | Mac relay (Swift) |
+| `relay-tmux/` | tmux relay (Node, macOS / Linux) |
 | `broker/` | VPS broker (Node) |
 | `docs/specs/` | Protocol design and sample cmux payloads |
 | `legacy/` | The original cmux Remote native iOS and Android clients and old docs, to be deleted once the new app reaches parity |
 
 ## Quick start
+
+**[Download and install Panecast](https://ningzx.cn/panecast/)** for Android APKs,
+the Mac installer, Homebrew, npm packages, and release notes.
+
+```sh
+brew tap panecast/tap https://ningzx.cn/panecast/homebrew-tap.git
+brew install panecast/tap/panecast
+panecast setup
+panecast start
+panecast pair
+```
+
+See the [Mac setup guide](docs/MAC-SETUP.md) to connect another person's Mac,
+and the [Android guide](client/ANDROID.md) for signed APK builds and downloads.
 
 The relay needs macOS and Swift 5.10+, and must be installed from a terminal
 running inside cmux:
@@ -47,6 +61,16 @@ cd relay
 ```
 
 To deploy the broker, see [`broker/README.md`](broker/README.md).
+For tmux on macOS or Linux, see [`relay-tmux/README.md`](relay-tmux/README.md).
+
+To manage cmux, tmux, and Codex through one pairing, use the
+[unified hub](relay-tmux/HUB.md). Sources have host-controlled read or control
+permissions. Codex supports stored history and App Server conversations;
+controlling an existing desktop task requires access to that task's server.
+
+The client includes per-terminal drafts, send receipts, saved and recent input,
+Ctrl + Up, output search and copying, pending/resolved inbox items and reminders,
+project previews and downloads, Git diff, and connection diagnostics.
 
 Client:
 
@@ -63,14 +87,14 @@ troubleshooting) still lives in
 ## Roadmap
 
 - [x] Split the repository and scaffold the Expo client
-- [ ] Prototype: terminal screen, input (including CJK input methods), broker
+- [x] Prototype: terminal screen, input (including CJK input methods), broker
       QR pairing
-- [ ] Reach parity with the native apps: workspaces and surfaces, multiple
+- [x] Workspaces and surfaces, multiple
       computers, automatic LAN/broker switching, inbox and push, image
       attachments, demo mode
-- [ ] Support terminal backends beyond cmux, such as tmux
-- [ ] Ship to the App Store, publish Android APKs, and deliver small changes as
-      OTA updates
+- [x] tmux backend on macOS and Linux
+- [x] Publish Android APKs: [download the latest build](https://ningzx.cn/static/panecast/panecast-latest.apk)
+- [ ] Ship to the App Store and deliver small changes as OTA updates
 
 ## Origin and license
 

@@ -14,7 +14,7 @@ import { Section, Stepper, settingsStyles as s } from './Section';
 
 /** Terminal display and input preferences. */
 export function TerminalSection() {
-  const { fontSize, historyLines, keyHaptics, extraKeyRow } = usePrefs();
+  const { fontSize, historyLines, keyHaptics, extraKeyRow, terminalWrap, tabletSidebar } = usePrefs();
   return (
     <Section title="终端" footnote="也可以在终端上双指捏合调整字号。">
       <View style={s.row}>
@@ -43,6 +43,8 @@ export function TerminalSection() {
         />
       </View>
       <SwitchRow title="按键震动" value={keyHaptics} onChange={(value) => setPrefs({ keyHaptics: value })} />
+      <SwitchRow title="自动折行" detail="关闭后保留原始列宽，左右滑动查看表格和终端界面" value={terminalWrap} onChange={(value) => setPrefs({ terminalWrap: value })} />
+      <SwitchRow title="宽屏工作区侧栏" detail="宽度足够时并排显示工作区和终端；缩小窗口后自动收起" value={tabletSidebar} onChange={(value) => setPrefs({ tabletSidebar: value })} />
       <SwitchRow
         title="第二排按键"
         detail="ctrl、/ | ~ - _ `、翻页、行首行尾。点一下 ctrl，下一个键就带 Ctrl 发送"

@@ -5,6 +5,8 @@ import type { RpcChannel } from '../session/terminalSession';
 import { profileFor, seedNewShell, WINDOW_SEEDS } from './demoContent';
 import { batterySnapshot, uploadResult } from './demoHost';
 import { CHECK_TOTAL } from './demoPrograms';
+import { demoProject } from './demoProjects';
+import { DemoSources } from './demoSources';
 import { DemoTerminal, type InputRequest, type ShellProfile } from './demoTerminal';
 import { absolutePath } from './demoText';
 
@@ -74,6 +76,7 @@ export class DemoChannel implements RpcChannel {
   readonly status: ConnectionStatus = { state: 'open' };
 
   private readonly startedAt = Date.now();
+  private readonly sources = new DemoSources();
   private readonly windows = new Map<string, DemoWindow>();
   private readonly workspaces = new Map<string, DemoWorkspace>();
   private readonly terminals = new Map<string, DemoTerminal>();
@@ -134,7 +137,16 @@ export class DemoChannel implements RpcChannel {
   }
 
   private handle(method: string, params: Params): unknown {
+    if (method === 'source.list' || method.startsWith('agent.')) return this.sources.handle(method, params);
+    if (method.startsWith('project.')) {
+      this.terminalById(params.surface_id);
+      return demoProject(method, params.path);
+    }
     switch (method) {
+      case 'relay.diagnostics':
+        return { backend: 'demo', backend_ready: true, project_access: true };
+      case 'relay.snippets':
+        return { snippets: [{ label: '检查修改', text: 'git status --short' }, { label: '继续任务', text: '请继续，并在完成后说明验证结果。' }] };
       case 'window.list':
         return this.listWindows();
       case 'workspace.list':
@@ -559,6 +571,8 @@ export class DemoChannel implements RpcChannel {
       title,
       subtitle: optionalString(params, 'subtitle') ?? workspace.title,
       body: optionalString(params, 'body') ?? '',
+      ...(typeof params.status === 'string' ? { status: params.status } : {}),
+      ...(params.needs_input === true ? { needs_input: true } : {}),
       ts: nowSeconds(),
     };
     const surfaceId = optionalString(params, 'surface_id');
@@ -592,6 +606,7 @@ export class DemoChannel implements RpcChannel {
         workspace_id: 'demo-ws-2',
         surface_id: 'demo-sf-3',
         title: '需要你确认',
+        needs_input: true,
         subtitle: 'notes',
         body: '是否继续？回到终端里按 ↵ 确认。',
         ts: now - 30,

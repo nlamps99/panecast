@@ -73,6 +73,7 @@ export function fromCurrentComputer(info: NotificationInfo, ctx: PresentationCon
  *   show it normally.
  */
 export function presentationFor(info: NotificationInfo, ctx: PresentationContext): Presentation {
+  if (info.reminder) return 'show';
   if (info.local) return ctx.appActive ? 'hide' : 'show';
   if (!ctx.appActive) return 'show';
   if (!ctx.connected || !fromCurrentComputer(info, ctx)) return 'show';

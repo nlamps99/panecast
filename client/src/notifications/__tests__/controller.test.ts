@@ -32,6 +32,9 @@ jest.mock('expo-notifications', () => ({
   requestPermissionsAsync: jest.fn(),
   getDevicePushTokenAsync: jest.fn(),
   scheduleNotificationAsync: jest.fn(async () => 'id'),
+  getAllScheduledNotificationsAsync: jest.fn(async () => []),
+  cancelScheduledNotificationAsync: jest.fn(async () => {}),
+  SchedulableTriggerInputTypes: { TIME_INTERVAL: 'timeInterval' },
   setNotificationChannelAsync: jest.fn(async () => null),
 }));
 
@@ -199,7 +202,7 @@ async function settle() {
 }
 
 function event(payload: Record<string, unknown>) {
-  return { type: 'event' as const, category: 'notification', name: 'notification.created', payload };
+  return { type: 'event' as const, category: 'notification', name: 'notification.created', payload: { state: payload.title === 'needs input' ? 'needs input' : 'completed', ...payload } };
 }
 
 function remote(payload: Record<string, unknown>, identifier = 'apns-1') {
@@ -226,6 +229,25 @@ beforeEach(() => {
 });
 
 describe('APNs registration (iOS)', () => {
+  it('recognizes broker forwarding and tests the authenticated end-to-end push route', async () => {
+    const fetchImpl = jest.fn(async (url: string) => ({ status: 200, ok: true, json: async () => url.includes('/apns/test') ? { ok: true, accepted: true } : { ok: true, forwarded: true, push_enabled: true } }) as Response);
+    const h = harness({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    h.store.ready([computer('c1', 'mac2')]); h.controller.start(); await settle();
+    expect(pushSummary(h.controller.getState(), 'ios', 'c1')).toEqual({ kind: 'broker_relay', configured: true });
+    await expect(h.controller.testPush()).resolves.toContain('Apple 已接收');
+    expect(fetchImpl.mock.calls.at(-1)?.[0]).toContain('/v1/devices/me/apns/test?relay_id=mac2');
+    h.controller.stop();
+  });
+  it('schedules a reminder with a stable ID and original terminal routing', async () => {
+    const h = harness(); const machine = h.store.ready([computer('c1', 'mac2')]);
+    h.controller.start(); await settle();
+    machine.inbox.ingest(event({ id: 'n', workspace_id: 'w', surface_id: 's', title: 'needs input' }));
+    await h.controller.remindLater(machine.inbox.getState().items[0], 'c1');
+    expect(api.scheduleNotificationAsync).toHaveBeenLastCalledWith(expect.objectContaining({ identifier: 'reminder.c1.n', content: expect.objectContaining({ data: expect.objectContaining({ workspace_id: 'w', surface_id: 's', reminder: 'true' }) }), trigger: expect.objectContaining({ seconds: 900 }) }));
+    await h.controller.cancelReminder('reminder.c1.n');
+    expect(api.cancelScheduledNotificationAsync).toHaveBeenCalledWith('reminder.c1.n');
+    h.controller.stop();
+  });
   it('registers the token with the broker; without a LAN pairing push stays broker-only', async () => {
     const h = harness();
     const mac = computer('c1', 'mac2');
@@ -234,7 +256,7 @@ describe('APNs registration (iOS)', () => {
     await settle();
     expect(fetchedUrls(h.fetch)).toEqual([BROKER_URL]);
     const [, init] = h.fetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ apns_token: TOKEN, env: 'sandbox' });
+    expect(JSON.parse(init.body as string)).toMatchObject({ apns_token: TOKEN, env: 'sandbox', preferences: { needs_input_only: false, muted_workspaces: [] } });
     expect(pushSummary(h.controller.getState(), 'ios', 'c1')).toEqual({ kind: 'broker_only', lanFailed: null });
     h.controller.stop();
   });
@@ -390,6 +412,27 @@ describe('asking for permission', () => {
 });
 
 describe('local notifications for the inbox', () => {
+  it('posts a question and one completion, while ignoring progress and resolved approvals', async () => {
+    api.getPermissionsAsync.mockResolvedValue(androidGranted as never);
+    const h = harness({ os: 'android' });
+    const machine = h.store.ready([computer('c1', 'mac2')]);
+    h.controller.start(); await settle(); h.appState.set('background');
+    machine.inbox.ingest(event({ id: 'noise', state: 'running', title: 'Working' }));
+    machine.inbox.ingest({ type: 'event', category: 'agent', name: 'item/completed', payload: { status: 'completed' } });
+    machine.inbox.ingest(event({ id: 'question', state: 'needs input', needs_input: true, title: '确认执行', task_id: 'task' }));
+    await settle();
+    const completed = { type: 'event' as const, category: 'agent', name: 'task.completed', payload: { task_id: 'task', title: '确认执行' } };
+    machine.inbox.ingest(completed);
+    machine.inbox.ingest(completed);
+    machine.inbox.ingest({ type: 'event', category: 'notification', name: 'notification.resolved', payload: { notification_id: 'question' } });
+    await settle();
+    expect(api.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
+    expect(machine.inbox.getState().items).toHaveLength(2);
+    expect(machine.inbox.getState().pending).toBe(0);
+    expect(api.scheduleNotificationAsync.mock.calls[1][0].content.data?.notification_id).toBe('task-event:::task:completed');
+    h.controller.stop();
+  });
+
   it('Android: no APNs; posts new inbox items only while in the background', async () => {
     api.getPermissionsAsync.mockResolvedValue(androidGranted as never);
     const h = harness({ os: 'android' });

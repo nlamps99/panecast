@@ -353,6 +353,33 @@ describe('AutoChannel under auto: moving from the broker to LAN', () => {
     h.latest('lan').open();
     expect(h.channel.transport).toBe('lan');
   });
+
+  it('honors a cellular report after foreground wake silently discovered Wi-Fi', async () => {
+    const h = setup({ kind: 'cellular' });
+    await onBroker(h);
+    h.setQuietly('lan'); h.channel.wake(); await flush();
+    h.latest('lan').open();
+    expect(h.channel.transport).toBe('lan');
+    h.report('cellular'); await advance(750);
+    expect(h.channel.transport).toBe('broker');
+    expect(h.latest('lan').closed).not.toBeNull();
+  });
+
+  it('does not let an older wake read override a newer OS network report', async () => {
+    let report!: (kind: NetworkKind) => void;
+    let finishRead!: (kind: NetworkKind) => void;
+    const current = jest.fn<Promise<NetworkKind>, []>()
+      .mockResolvedValueOnce('lan')
+      .mockImplementation(() => new Promise((resolve) => { finishRead = resolve; }));
+    const h = setup({ network: { current, watch: (listener) => { report = listener; return () => {}; } } });
+    await onLan(h);
+    h.channel.wake();
+    report('cellular'); await advance(750);
+    expect(h.channel.transport).toBe('broker');
+    finishRead('lan'); await flush();
+    expect(h.channel.transport).toBe('broker');
+    expect(h.of('lan')).toHaveLength(1);
+  });
 });
 
 describe('AutoChannel under auto: when LAN fails', () => {

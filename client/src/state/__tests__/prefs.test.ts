@@ -39,6 +39,8 @@ describe('sanitizePrefs', () => {
       historyLines: 120,
       keyHaptics: true,
       extraKeyRow: false,
+      terminalWrap: true,
+      tabletSidebar: true,
     });
   });
 

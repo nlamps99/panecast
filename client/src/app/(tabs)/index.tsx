@@ -6,7 +6,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { windowLabel, type SurfaceInfo, type WorkspaceInfo } from '../../session/surfaces';
 import { actionErrorText, workspaceActionsFor } from '../../session/workspaceActions';
 import { useConnectionStatus, useMachine, useStore } from '../../state/hooks';
-import { openSurface } from '../../state/navigation';
+import { openRecentSurface, openSurface } from '../../state/navigation';
+import { sessionMemory, useSessionMemory } from '../../state/sessionMemory';
 import { Icon } from '../../ui/Icon';
 import { ComputerSwitcher } from '../../ui/ComputerSwitcher';
 import { NameDialog } from '../../ui/NameDialog';
@@ -22,19 +23,22 @@ type MenuState = { key: number; workspace: WorkspaceInfo; stage: WorkspaceMenuSt
 export default function WorkspacesScreen() {
   const insets = useSafeAreaInsets();
   const machine = useMachine();
+  const computerId = machine.computer?.id ?? 'demo';
+  const memory = useSessionMemory(computerId);
+  const [recentError, setRecentError] = useState<string | null>(null);
   const status = useConnectionStatus(machine.channel);
   const { workspaces, surfaces, windows, selectedWindowId, loaded, error } = useStore(machine.workspaces);
   const actions = workspaceActionsFor(machine);
   const { creating, pending, error: actionError } = useStore(actions);
   const { target } = useStore(machine.session);
-  const { unreadByWorkspace } = useStore(machine.inbox);
+  const { unreadByWorkspace, pendingByWorkspace } = useStore(machine.inbox);
   const [query, setQuery] = useState('');
   // Only a pull shows the spinner; refreshes on focus and on cmux events stay quiet.
   const [pulling, setPulling] = useState(false);
   const [createDialog, setCreateDialog] = useState<{ key: number; open: boolean } | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const banner = statusBanner(status);
-  const canCreate = status.state === 'open' && !creating;
+  const canCreate = status.state === 'open' && !creating && windows.find((w) => w.id === selectedWindowId)?.access !== 'read';
 
   useFocusEffect(
     useCallback(() => {
@@ -43,20 +47,20 @@ export default function WorkspacesScreen() {
   );
 
   const needle = query.trim().toLowerCase();
-  const shown = needle
+  const shown = [...(needle
     ? workspaces.filter(
         (w) =>
           w.title.toLowerCase().includes(needle) ||
           (surfaces[w.id] ?? []).some((s) => s.title.toLowerCase().includes(needle)),
       )
-    : workspaces;
+    : workspaces)].sort((a, b) => Number(memory.pinned.includes(b.id)) - Number(memory.pinned.includes(a.id)) || a.index - b.index);
 
   // An error goes on its workspace's card; one for a workspace not shown (or for 新建) goes up top.
   const errorOnCard = actionError?.workspaceId && shown.some((w) => w.id === actionError.workspaceId) ? actionError.workspaceId : null;
   const selectedWindow = windows.length > 1 ? windows.find((w) => w.id === selectedWindowId) : undefined;
 
   const openMenu = (workspace: WorkspaceInfo, stage: WorkspaceMenuStage = 'menu') => {
-    if (pending[workspace.id]) return;
+    if (pending[workspace.id] || workspace.access === 'read') return;
     setMenu((m) => ({ key: (m?.key ?? 0) + 1, workspace, stage, open: true }));
   };
   const dismissMenu = () => setMenu((m) => (m ? { ...m, open: false } : m));
@@ -99,6 +103,17 @@ export default function WorkspacesScreen() {
       </View>
 
       {banner ? <Text style={styles.banner}>{banner}</Text> : null}
+      {memory.recent.length > 0 ? <View style={styles.recentBlock}>
+        <Text style={styles.recentTitle}>最近访问</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentList}>
+          {memory.recent.slice(0, 8).map((entry) => <Pressable key={`${entry.workspaceId}:${entry.surfaceId}`} disabled={status.state !== 'open'} style={styles.recentCard}
+            accessibilityRole="button" accessibilityLabel={`继续 ${entry.workspaceTitle} 的 ${entry.title}`} onPress={() => {
+              setRecentError(null);
+              void openRecentSurface(machine, entry).catch((failure: unknown) => setRecentError(failure instanceof Error ? failure.message : '无法打开这个终端'));
+            }}><Text style={styles.recentName} numberOfLines={1}>{entry.title}</Text><Text style={styles.recentMeta} numberOfLines={1}>{entry.workspaceTitle}</Text></Pressable>)}
+        </ScrollView>
+        {recentError ? <Text style={styles.error}>{recentError}</Text> : null}
+      </View> : null}
 
       <WindowChips windows={windows} selectedId={selectedWindowId} onSelect={(id) => void machine.workspaces.selectWindow(id)} />
 
@@ -125,6 +140,9 @@ export default function WorkspacesScreen() {
           workspace={workspace}
           surfaces={surfaces[workspace.id] ?? []}
           unread={unreadByWorkspace[workspace.id] ?? 0}
+          needsAttention={pendingByWorkspace[workspace.id] ?? 0}
+          pinned={memory.pinned.includes(workspace.id)}
+          onPin={() => sessionMemory.pin(computerId, workspace.id)}
           currentSurfaceId={target?.workspaceId === workspace.id ? target.surfaceId : null}
           busy={pending[workspace.id] ?? null}
           error={actionError && errorOnCard === workspace.id ? actionErrorText(actionError) : null}
@@ -138,7 +156,7 @@ export default function WorkspacesScreen() {
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>{selectedWindow ? `${windowLabel(selectedWindow)}里没有工作区` : '没有工作区'}</Text>
           <Text style={styles.emptyText}>
-            {canCreate ? '点右上角的 + 新建一个，或者确认 Mac 上的 cmux 已经打开，然后下拉刷新。' : '确认 Mac 上的 cmux 已经打开，然后下拉刷新。'}
+            {canCreate ? '点右上角的 + 新建一个，或者确认电脑上的终端已经打开，然后下拉刷新。' : '确认电脑上的终端已经打开，或从来源页面检查连接和授权。'}
           </Text>
         </View>
       ) : null}
@@ -151,7 +169,7 @@ export default function WorkspacesScreen() {
           key={createDialog.key}
           visible={createDialog.open}
           title="新建工作区"
-          message={selectedWindow ? `会建在 cmux 的${windowLabel(selectedWindow)}里。` : undefined}
+          message={selectedWindow ? `会建在${windowLabel(selectedWindow)}里。` : undefined}
           placeholder="工作区名称"
           confirmLabel="新建"
           onCancel={dismissCreate}
@@ -196,6 +214,9 @@ type CardProps = {
   workspace: WorkspaceInfo;
   surfaces: readonly SurfaceInfo[];
   unread: number;
+  needsAttention: number;
+  pinned: boolean;
+  onPin: () => void;
   currentSurfaceId: string | null;
   /** A rename or close running on this workspace; the card is disabled meanwhile. */
   busy: 'rename' | 'close' | null;
@@ -205,10 +226,10 @@ type CardProps = {
   onDismissError: () => void;
 };
 
-function WorkspaceCard({ workspace, surfaces, unread, currentSurfaceId, busy, error, onOpen, onMenu, onDismissError }: CardProps) {
+function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, onPin, currentSurfaceId, busy, error, onOpen, onMenu, onDismissError }: CardProps) {
   const primary = surfaces.find((s) => s.id === currentSurfaceId) ?? surfaces.find((s) => s.focused) ?? surfaces[0];
   const isCurrent = currentSurfaceId !== null;
-  const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.selected ? ' · 电脑上正在用' : ''}`;
+  const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.access === 'read' ? ' · 只读' : ''}${workspace.selected ? ' · 电脑上正在用' : ''}`;
   return (
     <View style={[styles.card, isCurrent && styles.cardCurrent, busy && styles.cardBusy]}>
       <Pressable
@@ -217,7 +238,7 @@ function WorkspaceCard({ workspace, surfaces, unread, currentSurfaceId, busy, er
         disabled={busy !== null}
         style={({ pressed }) => [styles.cardHeader, pressed && styles.pressed]}
         accessibilityRole="button"
-        accessibilityLabel={`${workspace.title}，${surfaces.length} 个终端`}
+        accessibilityLabel={`${workspace.title}，${surfaces.length} 个终端${needsAttention ? `，${needsAttention} 项待处理` : ''}`}
         accessibilityHint="长按可以重命名或关闭"
         accessibilityState={{ disabled: busy !== null, busy: busy !== null }}
         accessibilityActions={[
@@ -238,9 +259,12 @@ function WorkspaceCard({ workspace, surfaces, unread, currentSurfaceId, busy, er
             {workspace.title}
           </Text>
           <Text style={styles.cardMeta} numberOfLines={1}>
-            {meta}
+            {needsAttention ? <Text style={{ color: colors.yellow }}>{needsAttention} 项待处理 · </Text> : null}{meta}
           </Text>
         </View>
+        <Pressable onPress={(event) => { event.stopPropagation(); onPin(); }} hitSlop={6} style={styles.pin} accessibilityRole="button" accessibilityLabel={`${pinned ? '取消置顶' : '置顶'} ${workspace.title}`}>
+          <Text style={[styles.pinText, pinned && styles.pinActive]}>{pinned ? '★' : '☆'}</Text>
+        </Pressable>
         {unread > 0 ? (
           <View style={styles.unread}>
             <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
@@ -284,6 +308,8 @@ function WorkspaceCard({ workspace, surfaces, unread, currentSurfaceId, busy, er
 }
 
 const styles = StyleSheet.create({
+  recentBlock: { gap: 8 }, recentTitle: { color: colors.inkDim, fontSize: 13 }, recentList: { gap: 8 }, recentCard: { width: 160, borderRadius: 8, backgroundColor: colors.surface, padding: 10, gap: 4 }, recentName: { color: colors.ink, fontSize: 13 }, recentMeta: { color: colors.muted, fontSize: 11 },
+  pin: { padding: 5 }, pinText: { color: colors.mutedDim, fontSize: 20 }, pinActive: { color: colors.yellow },
   screen: { flex: 1, backgroundColor: colors.canvas },
   content: { paddingBottom: 24, gap: 12 },
   header: { gap: 6, marginBottom: 4 },

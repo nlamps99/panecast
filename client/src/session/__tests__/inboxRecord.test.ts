@@ -1,7 +1,11 @@
 import type { EventFrame } from '../../protocol/frames';
 import { isInboxEvent, parseInboxEvent, requiresUserInput, syntheticNeedsInputId } from '../inboxRecord';
 
-const event = (category: string, name: string, payload: unknown): EventFrame => ({ type: 'event', category, name, payload });
+// Field-decoding fixtures are explicit completion notifications. Filtering
+// generic/progress payloads is covered without defaults in notificationSignal.test.ts.
+const event = (category: string, name: string, payload: unknown): EventFrame => ({ type: 'event', category, name,
+  payload: category === 'notification' && name === 'notification.created' && payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? { state: 'completed', ...payload } : payload });
 
 let localIds = 0;
 const newLocalId = () => `local-${++localIds}`;
@@ -22,7 +26,7 @@ describe('SharedKit InboxNotification parity', () => {
       idSource: 'payload',
       workspaceId: 'w1',
       surfaceId: null,
-      title: 'cmux 通知',
+      title: '任务已完成',
       subtitle: null,
       body: '새 알림이 도착했습니다.',
       ts: null,
@@ -176,12 +180,12 @@ describe('field fallbacks', () => {
         reason: 'the reason',
       }),
     );
-    expect(record).toMatchObject({ id: 'e1', workspaceId: 'snake', title: 'cmux 通知', body: 'the reason' });
+    expect(record).toMatchObject({ id: 'e1', workspaceId: 'snake', title: '任务已完成', body: 'the reason' });
   });
 
   it('walks the body fallbacks down to details.body', () => {
     const at = (payload: Record<string, unknown>) =>
-      parse(event('notification', 'notification.created', { id: 'x', ...payload }))?.body;
+      parse(event('notification', 'notification.created', { id: 'x', state: 'needs input', needs_input: true, ...payload }))?.body;
     expect(at({ status: 's', prompt: 'p' })).toBe('s');
     expect(at({ prompt: 'p' })).toBe('p');
     expect(at({ details: { message: 'm', body: 'b' } })).toBe('m');
@@ -215,8 +219,8 @@ describe('field fallbacks', () => {
     expect(parse(event('notification', 'notification.created', { id: 'x', title: 'Done', body: 'Done' }))?.body).toBe('');
   });
 
-  it('uses the event name as the title of other notification events', () => {
-    expect(parse(event('notification', 'notification.cleared', { id: 'x' }))?.title).toBe('notification.cleared');
+  it('ignores notification bookkeeping', () => {
+    expect(parse(event('notification', 'notification.cleared', { id: 'x' }))).toBeNull();
   });
 
   it('needs an object payload', () => {
@@ -247,17 +251,17 @@ describe('field fallbacks', () => {
 describe('needs-input detection', () => {
   const needs = (category: string, name: string, payload: unknown) => requiresUserInput(event(category, name, payload));
 
-  it('needs both a phrase and a known agent, unless the event says needs input outright', () => {
-    expect(needs('agent', 'tool.used', { source: 'claude', message: 'approval required' })).toBe(true);
+  it('uses explicit requests and short hook messages, not tool activity', () => {
+    expect(needs('agent', 'tool.used', { source: 'claude', message: 'approval required' })).toBe(false);
     expect(needs('agent', 'tool.used', { message: 'approval required' })).toBe(false);
-    expect(needs('agent', 'tool.used', { message: 'needs input' })).toBe(true);
+    expect(needs('agent', 'tool.used', { message: 'needs input' })).toBe(false);
     expect(needs('hook', 'x.needs_input', { message: 'needs your approval' })).toBe(true);
     expect(needs('hook', 'x', { model: 'gpt-codex', message: 'waiting-for-your-input' })).toBe(true);
     expect(needs('hook', 'x', { message: 'Permission_Prompt', agent: 'OpenAI' })).toBe(true);
   });
 
-  it('searches nested string leaves', () => {
-    expect(needs('agent', 'tick', { meta: [{ who: 'Claude' }], deep: { deeper: { text: 'Needs your attention' } } })).toBe(true);
+  it('does not search arbitrary nested string leaves', () => {
+    expect(needs('agent', 'tick', { meta: [{ who: 'Claude' }], deep: { deeper: { text: 'Needs your attention' } } })).toBe(false);
   });
 
   it('names the agent in the title', () => {

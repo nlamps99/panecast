@@ -29,6 +29,8 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
     blur: async () => nativeRef.current?.blur(),
     clear: async () => nativeRef.current?.clear(),
     insertText: async (text: string) => nativeRef.current?.insertText(text),
+    getState: async () => nativeRef.current?.getState() ?? { text: '', composing: false, selectionStart: 0, selectionEnd: 0 },
+    applyEdit: async (expectedText, text, start, end) => nativeRef.current?.applyEdit(expectedText, text, start, end) ?? false,
   }));
   return (
     <NativeView

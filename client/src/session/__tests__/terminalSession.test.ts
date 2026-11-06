@@ -1,7 +1,8 @@
 import { RpcCallError, type ConnectionStatus } from '../../protocol/connection';
 import type { PushFrame } from '../../protocol/frames';
 import { screenHash } from '../../protocol/screen';
-import { stitchFirstPage, TerminalSession, type RpcChannel } from '../terminalSession';
+import { parseHistoryPage, stitchFirstPage, TerminalSession, type RpcChannel } from '../terminalSession';
+import { readingAnchor } from '../readingPosition';
 
 type Call = { method: string; params: Record<string, unknown>; resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
@@ -57,6 +58,42 @@ function firstTick(rows: string[], rev = 1): PushFrame {
 }
 
 describe('TerminalSession subscription', () => {
+  it('requests a fresh screen when a non-snapshot diff skips a revision', async () => {
+    const channel = new FakeChannel(), session = new TerminalSession(channel);
+    session.setTarget(target); await flush(); channel.push(firstTick(['first', 'second'], 1));
+    channel.push({ type: 'screen.diff', surfaceId: 's1', rev: 3, ops: [{ op: 'row', y: 1, text: 'new second' }] });
+    await flush();
+    expect(channel.methods().filter((method) => method === 'surface.subscribe')).toHaveLength(2);
+    expect(session.getState().screen.rows).toEqual(['first', 'second']);
+    channel.push(firstTick(['new first', 'new second'], 10));
+    expect(session.getState().screen.rows).toEqual(['new first', 'new second']);
+    session.dispose();
+  });
+  it('restores an older reading position from history without storing terminal content', async () => {
+    const channel = new FakeChannel();
+    const rows = Array.from({ length: 20 }, (_, index) => `line ${index}`);
+    const position = { anchor: readingAnchor(rows, 4), rowFromBottom: 15, segmentFromBottom: 0, horizontalColumns: 8 };
+    const session = new TerminalSession(channel, { readingForTarget: () => position });
+    session.setTarget(target); await flush();
+    channel.push(firstTick(rows.slice(-5)));
+    const call = channel.calls.find((c) => c.method === 'surface.history')!;
+    expect(call).toBeDefined();
+    call.resolve({ rows: rows.slice(0, -5), anchor_rows: rows.slice(-5), next_cursor: null });
+    await flush();
+    expect(session.getState()).toMatchObject({ restoringReading: false, restoredReading: position });
+    session.dispose();
+  });
+  it('cancels in-flight reading recovery when the user returns to live output', async () => {
+    const channel = new FakeChannel(), saveReading = jest.fn();
+    const session = new TerminalSession(channel, { readingForTarget: () => ({ anchor: 'a'.repeat(64), rowFromBottom: 100, segmentFromBottom: 0, horizontalColumns: 0 }), saveReading });
+    session.setTarget(target); await flush(); channel.push(firstTick(['latest']));
+    const call = channel.calls.find((c) => c.method === 'surface.history')!;
+    session.resumeLive();
+    call.resolve({ rows: ['old'], anchor_rows: ['latest'], next_cursor: null }); await flush();
+    expect(session.getState()).toMatchObject({ browse: null, restoredReading: null, restoringReading: false });
+    expect(saveReading).toHaveBeenCalledWith(target, null);
+    session.dispose();
+  });
   it('subscribes to the target and applies diffs for it only', async () => {
     const channel = new FakeChannel();
     const session = new TerminalSession(channel, { liveLines: 120 });
@@ -225,6 +262,109 @@ describe('TerminalSession history', () => {
     expect(channel.methods().filter((m) => m === 'surface.history')).toHaveLength(1);
   });
 
+  it('restarts from a new snapshot when retrying an expired cursor', async () => {
+    const { channel, session } = await browsing(['live']);
+    let request = session.loadOlder();
+    channel.calls.at(-1)!.resolve({ rows: ['old'], anchor_rows: ['live'], next_cursor: 'expired.1' }); await request;
+    request = session.loadOlder(); channel.calls.at(-1)!.reject(new RpcCallError('history_unavailable', 'terminal history cursor expired')); await request;
+    request = session.loadOlder({ retry: true });
+    expect(channel.calls.at(-1)!.params.cursor).toBeUndefined();
+    channel.calls.at(-1)!.resolve({ rows: ['old'], anchor_rows: ['live'], next_cursor: 'fresh.1' }); await request;
+    expect(session.getState().browse).toMatchObject({ olderRows: ['old'], cursor: 'fresh.1', error: null });
+    session.dispose();
+  });
+
+  it('rejects a cursor that repeats instead of duplicating the same history page', async () => {
+    const { channel, session } = await browsing(['live']);
+    let request = session.loadOlder(); channel.calls.at(-1)!.resolve({ rows: ['old'], anchor_rows: ['live'], next_cursor: 'snapshot.1' }); await request;
+    request = session.loadOlder(); channel.calls.at(-1)!.resolve({ rows: ['old'], next_cursor: 'snapshot.1' }); await request;
+    expect(session.getState().browse?.olderRows).toEqual(['old']);
+    expect(session.getState().browse?.error).toMatch(/前进|重复/);
+    session.dispose();
+  });
+
+  it('does not mistake a malformed cursor field for the beginning of history', () => {
+    expect(() => parseHistoryPage({ rows: ['older'] })).toThrow();
+    expect(() => parseHistoryPage({ rows: ['older'], next_cursor: 3 })).toThrow();
+  });
+
+  it('keeps legitimate repeated lines instead of guessing an ambiguous frozen-screen seam', async () => {
+    const { channel, session } = await browsing(['same', 'same']);
+    const request = session.loadOlder();
+    channel.calls.at(-1)!.resolve({ rows: ['old', 'same', 'same'], anchor_rows: ['same', 'same'], next_cursor: 'snap.1' }); await request;
+    expect(session.getState().browse).toMatchObject({ olderRows: ['old', 'same', 'same'], frozenRows: ['same', 'same'] });
+    expect(session.getState().readingNotice).toMatch(/快照/);
+    expect(channel.methods().filter((m) => m === 'surface.history')).toHaveLength(1);
+    session.dispose();
+  });
+
+  it('preserves the frozen output if the terminal was cleared, until an explicit reload', async () => {
+    const { channel, session } = await browsing(['important result', 'old prompt']);
+    let request = session.loadOlder();
+    channel.calls.at(-1)!.resolve({ rows: ['different history'], anchor_rows: ['new prompt'], next_cursor: null }); await request;
+    expect(session.getState().browse).toMatchObject({ frozenRows: ['important result', 'old prompt'], olderRows: [], exhausted: false, restartRequired: true });
+    channel.push(firstTick(['new prompt'], 2));
+    request = session.loadOlder({ retry: true });
+    channel.calls.at(-1)!.resolve({ rows: ['different history'], anchor_rows: ['new prompt'], next_cursor: null }); await request;
+    expect(session.getState().browse).toMatchObject({ frozenRows: ['new prompt'], olderRows: ['different history'], exhausted: true, error: null });
+    session.dispose();
+  });
+
+  it('rejects a cursor cycle across pages without corrupting the rows already loaded', async () => {
+    const { channel, session } = await browsing(['live']);
+    let request = session.loadOlder(); channel.calls.at(-1)!.resolve({ rows: ['p2'], anchor_rows: ['live'], next_cursor: 'snap.2' }); await request;
+    request = session.loadOlder(); channel.calls.at(-1)!.resolve({ rows: ['p1'], next_cursor: 'snap.1' }); await request;
+    request = session.loadOlder(); channel.calls.at(-1)!.resolve({ rows: ['p2'], next_cursor: 'snap.2' }); await request;
+    expect(session.getState().browse).toMatchObject({ olderRows: ['p1', 'p2'], restartRequired: true, exhausted: false });
+    session.dispose();
+  });
+
+  it('returns the exact chronological transcript across many pages while the snapshot is far ahead', async () => {
+    const snapshot = Array.from({ length: 1400 }, (_, i) => `line ${i}`), frozen = snapshot.slice(780, 800);
+    class PagedChannel extends FakeChannel {
+      pages = 0;
+      override call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+        if (method !== 'surface.history') return super.call<T>(method, params);
+        this.pages++;
+        const end = params.cursor ? Number(String(params.cursor).split('.')[1]) : snapshot.length - Number(params.tail_lines);
+        const start = Math.max(0, end - Number(params.limit));
+        return Promise.resolve({ rows: snapshot.slice(start, end), next_cursor: start ? `snap.${start}` : null, ...(!params.cursor ? { anchor_rows: snapshot.slice(end) } : {}) } as T);
+      }
+    }
+    const channel = new PagedChannel(), session = new TerminalSession(channel, { historyPageLines: 50 });
+    session.setTarget(target); await flush(); channel.push(firstTick(frozen)); session.startBrowsing();
+    for (let i = 0; i < 40 && !session.getState().browse?.exhausted; i++) await session.loadOlder();
+    const browse = session.getState().browse!;
+    expect(browse.error).toBeNull(); expect(browse.exhausted).toBe(true);
+    expect([...browse.olderRows, ...browse.frozenRows]).toEqual(snapshot.slice(0, 800));
+    expect(channel.pages).toBeGreaterThan(10);
+    session.dispose();
+  });
+
+  it('can join a prewarmed snapshot that is older than the frozen live screen', async () => {
+    const { channel, session } = await browsing(['c', 'd', 'e', 'f']);
+    const request = session.loadOlder();
+    channel.calls.at(-1)!.resolve({ rows: ['old1', 'old2'], anchor_rows: ['a', 'b', 'c', 'd'], next_cursor: null }); await request;
+    expect(session.getState().browse).toMatchObject({ olderRows: ['old1', 'old2', 'a', 'b'], frozenRows: ['c', 'd', 'e', 'f'], exhausted: true });
+    session.dispose();
+  });
+
+  it('walks past newer output until it can attach history to the frozen screen', async () => {
+    const { channel, session } = await browsing(['f1', 'f2']);
+    const request = session.loadOlder();
+    channel.calls.at(-1)!.resolve({ rows: ['new1', 'new2'], anchor_rows: ['new3', 'new4'], next_cursor: 'snapshot.4' });
+    await flush();
+    expect(session.getState().browse?.olderRows).toEqual([]);
+    expect(channel.calls.at(-1)!.params.cursor).toBe('snapshot.4');
+    channel.calls.at(-1)!.resolve({ rows: ['f1', 'f2'], next_cursor: 'snapshot.2' }); await flush();
+    // The found prefix has no older rows yet, so fetch the preceding page too.
+    expect(channel.calls.at(-1)!.params.cursor).toBe('snapshot.2');
+    channel.calls.at(-1)!.resolve({ rows: ['old1', 'old2'], next_cursor: null });
+    await request;
+    expect(session.getState().browse).toMatchObject({ olderRows: ['old1', 'old2'], frozenRows: ['f1', 'f2'], exhausted: true });
+    session.dispose();
+  });
+
   it('discards a page that arrives after returning to live', async () => {
     const { channel, session } = await browsing(['p1']);
     const load = session.loadOlder();
@@ -236,6 +376,9 @@ describe('TerminalSession history', () => {
 });
 
 describe('stitchFirstPage', () => {
+  it('matches the visible lines when ANSI or terminal-width padding changed', () => {
+    expect(stitchFirstPage(['\u001b[31ma\u001b[0m   ', 'b   ', 'c   '], ['old1', 'old2', 'a', 'b'], ['c', 'new1', 'new2'])).toEqual(['old1', 'old2']);
+  });
   it('keeps everything above the frozen rows when nothing changed', () => {
     expect(stitchFirstPage(['a', 'b'], ['h1', 'h2'], ['a', 'b'])).toEqual(['h1', 'h2']);
   });
@@ -392,6 +535,40 @@ describe('TerminalSession live lines', () => {
 });
 
 describe('TerminalSession input', () => {
+  it('does not send a key when focusing its target fails', async () => {
+    const channel = new FakeChannel();
+    channel.autoReply.delete('surface.focus');
+    const session = new TerminalSession(channel); session.setTarget(target); await flush();
+    session.sendKey({ name: 'up', modifiers: ['ctrl'] });
+    channel.calls.find((c) => c.method === 'surface.focus')!.reject(new RpcCallError('not_found', 'closed pane'));
+    await flush();
+    expect(channel.calls.some((c) => c.method === 'surface.send_key')).toBe(false);
+    expect(session.getState().input.error).not.toBeNull();
+  });
+  it('reports uncertain delivery without replaying a timed-out command', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel);
+    session.setTarget(target);
+    await flush();
+    channel.autoReply.delete('surface.send_key');
+    const receipt = session.submitLine('deploy');
+    await flush();
+    channel.calls.find((c) => c.method === 'surface.send_key')!.reject(new RpcCallError('timeout', 'timeout'));
+    await expect(receipt).resolves.toMatchObject({ status: 'unknown' });
+    expect(channel.calls.filter((c) => c.method === 'surface.send_text')).toHaveLength(1);
+  });
+  it('does not finish a submitted command in a different terminal after switching', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel);
+    session.setTarget(target);
+    await flush();
+    channel.autoReply.delete('surface.send_text');
+    const receipt = session.submitLine('deploy');
+    session.setTarget({ workspaceId: 'w2', surfaceId: 's2' });
+    channel.calls.find((c) => c.method === 'surface.send_text')!.resolve({});
+    await expect(receipt).resolves.toMatchObject({ status: 'unknown' });
+    expect(channel.calls.some((c) => c.method === 'surface.send_key')).toBe(false);
+  });
   it('sends input in order, one request at a time, coalescing text', async () => {
     const channel = new FakeChannel();
     channel.autoReply.delete('surface.send_text');
@@ -438,6 +615,27 @@ describe('TerminalSession input', () => {
     session.sendKey({ name: 'c', modifiers: ['ctrl'] });
     await flush();
     expect(channel.calls.find((c) => c.method === 'surface.send_key')?.params.key).toBe('ctrl-c');
+  });
+
+  it('cancels a saved reading restoration when Ctrl + Up is sent before the first screen arrives', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel, { readingForTarget: () => ({ anchor: 'a'.repeat(64), rowFromBottom: 100, segmentFromBottom: 0, horizontalColumns: 0 }) });
+    session.setTarget(target); await flush();
+    session.sendKey({ name: 'up', modifiers: ['ctrl'] }); await flush();
+    channel.push(firstTick(['prompt changed by Ctrl + Up'])); await flush();
+    expect(session.getState()).toMatchObject({ browse: null, restoringReading: false, inputRevision: 1 });
+    expect(channel.methods()).not.toContain('surface.history');
+    session.dispose();
+  });
+
+  it('keeps the reading position when an offline shortcut cannot be delivered', async () => {
+    const channel = new FakeChannel(), session = new TerminalSession(channel);
+    session.setTarget(target); await flush(); channel.push(firstTick(['saved output']));
+    session.startBrowsing(); channel.status({ state: 'idle' });
+    session.sendKey({ name: 'up', modifiers: ['ctrl'] }); await flush();
+    expect(session.getState().browse?.frozenRows).toEqual(['saved output']);
+    expect(session.getState().inputRevision ?? 0).toBe(0);
+    session.dispose();
   });
 
   it('drops queued input and reports the error when a send fails', async () => {

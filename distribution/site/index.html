@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#131722">
+  <meta name="description" content="下载 Panecast Android App，安装 Mac 终端网关。在手机上继续电脑上的终端工作。">
+  <title>下载 Panecast · 把终端带在身边</title>
+  <link rel="icon" href="./icon.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <header class="site-header wrap">
+    <a class="brand" href="#" aria-label="Panecast 首页"><img src="./icon.png" alt="" width="36" height="36"><span>panecast<span class="brand-dot">.</span></span></a>
+    <nav aria-label="主导航"><a href="#downloads">下载与安装</a><a href="#connect">开始使用</a><a href="#releases">版本记录</a></nav>
+    <span class="preview-label"><span></span>公开预览版</span>
+  </header>
+
+  <main class="wrap">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="tiny-line"></span> YOUR TERMINAL. WITH YOU.</p>
+        <h1 id="hero-title">离开桌面，<br>工作依然<span>在手边。</span></h1>
+        <p class="hero-description">在手机上查看终端输出、输入指令，接着处理电脑上的工作。<br class="desktop-break">安装手机 App，再连接属于你的 Mac。</p>
+        <div class="hero-facts"><span><i class="dot green"></i>支持 cmux / tmux</span><span><i class="dot gold"></i>连接 Codex 会话</span></div>
+      </div>
+      <div class="terminal-art" aria-hidden="true">
+        <div class="terminal-title"><span class="window-dots"><i></i><i></i><i></i></span><span>my-mac / workspace</span><span class="terminal-live">● LIVE</span></div>
+        <div class="terminal-body"><p><span class="prompt">~</span> panecast start</p><p class="muted">后台服务已启动</p><p><span class="prompt">~</span> panecast pair</p><div class="terminal-pair"><div class="connection-symbol"><span>⌘</span><i></i><span>↗</span></div><div><strong>电脑 → 手机</strong><small>扫描二维码，继续工作</small></div></div><p class="terminal-status"><span class="prompt">›</span> 随时查看，随手回应<span class="cursor"></span></p></div>
+        <div class="floating-note"><span class="dot green"></span>你的工作，留在自己的电脑上</div>
+      </div>
+    </section>
+
+    <section id="downloads" aria-labelledby="downloads-title">
+      <div class="section-heading"><div><p class="eyebrow">01 / DOWNLOAD</p><h2 id="downloads-title">两端就位，即可出发。</h2></div><span class="quiet-label">手机 App + 电脑网关</span></div>
+      <div class="download-grid">
+        <article class="download-card android-card">
+          <div class="card-top"><div class="platform-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 9h16v17H8zM11 5h10v4H11zM12 29v-3m8 3v-3M5 12v10m22-10v10M11 2l2 3m8-3-2 3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">手机端</span></div>
+          <h3>Android</h3><p class="card-description">你的随身终端。扫码连接电脑，查看输出、输入指令和处理待办。</p>
+          <div class="version-row"><strong id="android-version">正在读取版本…</strong><span id="android-size"></span></div>
+          <a class="download-button" id="android-download" href="./panecast-latest.apk" download><span>下载 Android APK</span><span aria-hidden="true">↓</span></a>
+          <p class="requirement">Android 7.0 及以上 · ARM64 · 无需 Google Play 服务</p>
+          <div class="card-divider"></div>
+          <div class="fine-links"><a id="android-checksum" href="./panecast-0.1.0-6-arm64.apk.sha256">SHA-256 校验文件 ↗</a><a href="#releases">查看更新记录 ↗</a></div>
+          <p class="small-note">首次安装时，请允许浏览器安装应用。装过旧开发版的用户需要先卸载旧版，再重新配对。</p>
+        </article>
+
+        <article class="download-card mac-card">
+          <div class="card-top"><div class="platform-icon mac-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><rect x="4" y="5" width="24" height="17" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 28h8m-4-6v6M10 11l3 3-3 3m6 0h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">电脑端</span></div>
+          <div class="mac-title"><h3>macOS</h3><span id="mac-version" class="version-pill">CLI</span></div>
+          <p class="card-description">安装轻量的 Panecast 网关，让手机访问这台 Mac 上授权的来源。</p>
+          <div class="install-tabs" role="tablist" aria-label="Mac 安装方式">
+            <button id="tab-brew" role="tab" aria-selected="true" aria-controls="install-panel" data-method="brew">Homebrew <span>推荐</span></button>
+            <button id="tab-script" role="tab" aria-selected="false" aria-controls="install-panel" data-method="script" tabindex="-1">一条命令</button>
+            <button id="tab-npm" role="tab" aria-selected="false" aria-controls="install-panel" data-method="npm" tabindex="-1">npm</button>
+          </div>
+          <div id="install-panel" role="tabpanel" aria-labelledby="tab-brew" class="install-panel">
+            <div class="code-top"><span>TERMINAL</span><button class="copy-button" id="copy-install" aria-label="复制安装命令">复制 <span aria-hidden="true">⧉</span></button></div>
+            <pre><code id="install-command">正在读取安装命令…</code></pre>
+          </div>
+          <p class="requirement" id="install-note">Homebrew 自动安装 Node.js 和 tmux，支持 Apple Silicon 与 Intel。</p>
+          <div class="card-divider"></div>
+          <div class="fine-links"><a href="#connect">安装后如何连接 ↗</a><a href="#manage">升级与卸载 ↗</a></div>
+          <p class="small-note">安装工具不会自动接入你的终端。首次运行 <code>panecast setup</code>，选择要授权的来源。</p>
+        </article>
+      </div>
+      <p id="load-error" class="load-error" hidden>暂时无法读取版本信息，请刷新页面。Android 下载链接仍可使用。</p>
+      <p id="copy-status" class="sr-only" aria-live="polite"></p>
+    </section>
+
+    <section id="connect" class="connect-section" aria-labelledby="connect-title">
+      <div class="section-heading"><div><p class="eyebrow">02 / GET CONNECTED</p><h2 id="connect-title">装好以后，三步连接。</h2></div></div>
+      <div class="steps">
+        <article><span class="step-number">01</span><h3>配置这台电脑</h3><code>panecast setup</code><p>填写管理员分配的中转地址、电脑 ID 和连接密钥，选择允许访问的来源。</p></article>
+        <article><span class="step-number">02</span><h3>启动后台网关</h3><code>panecast start</code><p>后台运行，登录后自动启动。tmux 任务在 <code>tmux new -s work</code> 中开始。</p></article>
+        <article><span class="step-number">03</span><h3>手机扫码配对</h3><code>panecast pair</code><p>输入这台电脑的配对码，再用手机 App 扫描终端里显示的二维码。</p></article>
+      </div>
+      <div class="connection-note"><span aria-hidden="true">↳</span><p>目前通过邀请接入中转，每台电脑使用独立凭据。安装器方式在当前终端可使用 <code>~/.local/bin/panecast</code>；新终端中直接运行 <code>panecast</code>。</p></div>
+    </section>
+
+    <div class="details-grid">
+      <section id="manage" aria-labelledby="manage-title"><p class="eyebrow">03 / KEEP IT RUNNING</p><h2 id="manage-title">日常管理，几条命令。</h2>
+        <dl class="command-list"><div><dt>查看运行状态</dt><dd><code>panecast status</code></dd></div><div><dt>查看日志</dt><dd><code>panecast logs</code></dd></div><div><dt>重启 / 停止</dt><dd><code>panecast restart / stop</code></dd></div><div><dt>Homebrew 升级</dt><dd><code>brew update<br>brew upgrade panecast/tap/panecast</code></dd></div></dl>
+        <details><summary>升级或卸载会影响配对吗？</summary><p>配置和配对数据保存在 <code>~/.cmuxremote/</code>，升级和卸载软件时保留。升级后运行 <code>panecast restart</code>。</p><p>Homebrew 用户先运行 <code>panecast stop</code>，再运行 <code>brew uninstall panecast</code>。独立安装器用户重新运行安装命令即可升级；卸载时运行：</p><pre>curl -fsSL https://ningzx.cn/panecast/install.sh | bash -s -- --uninstall</pre><p>npm 用户使用本页最新的 npm 安装命令升级，卸载使用 <code>npm uninstall -g panecast-cli</code>。</p></details>
+        <details><summary>cmux 和 Codex 怎么连接？</summary><p>tmux 可直接由网关访问；cmux 需要本地 Swift relay 提供接口。Codex 可授权为只读历史，或按实际服务配置启用会话控制。每个来源都在电脑端单独授权，安装网关不会自动授权全部来源。</p><p><code>panecast sources list</code> 查看来源；<code>panecast desktop prepare</code> 准备实验性的桌面桥接。</p></details>
+        <details><summary>需要一直开着电脑吗？</summary><p>需要。网关运行在你的电脑上，Mac 关机或休眠时手机无法操作终端。公网模式下，手机和 Mac 都主动连接中转服务器；配置局域网后，同一可信 Wi-Fi 下可以自动直连。</p></details>
+      </section>
+      <section id="releases" aria-labelledby="releases-title"><p class="eyebrow">04 / RELEASE NOTES</p><h2 id="releases-title">每次更新，都在这里。</h2><div id="release-list" class="release-list"><p class="small-note">正在读取版本记录…</p></div><a class="manifest-link" href="./releases.json">查看完整版本清单 ↗</a><div class="privacy-note"><strong>连接说明</strong><p>公网连接使用 HTTPS/WSS；目前中转并非端到端加密，请使用信任的服务器。局域网直连使用 HTTP，仅在可信网络启用。</p></div></section>
+    </div>
+  </main>
+  <footer class="wrap"><a class="brand" href="#"><img src="./icon.png" alt="" width="25" height="25"><span>panecast.</span></a><p>终端在电脑上，掌控在手边。</p><span>© 2026 Panecast · MIT License</span></footer>
+</body>
+</html>

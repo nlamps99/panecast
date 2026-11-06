@@ -11,6 +11,8 @@ export type Prefs = {
   keyHaptics: boolean;
   /** The second key row: Ctrl, symbols, PgUp/PgDn, Home/End. */
   extraKeyRow: boolean;
+  terminalWrap: boolean;
+  tabletSidebar: boolean;
 };
 
 export const FONT_SIZE_MIN = 9;
@@ -26,6 +28,8 @@ export const DEFAULT_PREFS: Prefs = {
   historyLines: 120,
   keyHaptics: true,
   extraKeyRow: false,
+  terminalWrap: true,
+  tabletSidebar: true,
 };
 const KEY = 'panecast.prefs.v1';
 
@@ -56,6 +60,8 @@ export function sanitizePrefs(value: unknown): Prefs {
     historyLines: typeof v.historyLines === 'number' ? clampHistoryLines(v.historyLines) : DEFAULT_PREFS.historyLines,
     keyHaptics: typeof v.keyHaptics === 'boolean' ? v.keyHaptics : DEFAULT_PREFS.keyHaptics,
     extraKeyRow: typeof v.extraKeyRow === 'boolean' ? v.extraKeyRow : DEFAULT_PREFS.extraKeyRow,
+    terminalWrap: typeof v.terminalWrap === 'boolean' ? v.terminalWrap : DEFAULT_PREFS.terminalWrap,
+    tabletSidebar: typeof v.tabletSidebar === 'boolean' ? v.tabletSidebar : DEFAULT_PREFS.tabletSidebar,
   };
 }
 

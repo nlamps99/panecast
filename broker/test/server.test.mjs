@@ -3,12 +3,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { once } from "node:events";
 import { WebSocket } from "ws";
 import { createBrokerServer, DeviceStore } from "../src/server.mjs";
 
 const silentLogger = { error() {} };
 
-async function fixture() {
+async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "cmux-broker-"));
   const broker = await createBrokerServer({
     host: "127.0.0.1",
@@ -20,6 +21,7 @@ async function fixture() {
     trustProxy: false,
     heartbeatMs: 60_000,
     logger: silentLogger,
+    ...options,
   });
   const address = await broker.listen();
   const baseURL = `http://127.0.0.1:${address.port}`;
@@ -57,7 +59,12 @@ function openWebSocket(url, options = {}) {
 
 function nextMessage(socket) {
   return new Promise((resolve, reject) => {
-    socket.once("message", (data) => resolve(data.toString()));
+    const receive = (data) => {
+      if (JSON.parse(data.toString()).type === 'push.sync') return;
+      socket.off('message', receive);
+      resolve(data.toString());
+    };
+    socket.on("message", receive);
     socket.once("error", reject);
   });
 }
@@ -91,6 +98,42 @@ test("health reports whether the Mac relay is online", async () => {
   } finally {
     await fx.close();
   }
+});
+
+test('push registration reaches the authenticated relay and waits for its confirmation', async () => {
+  const fx = await fixture();
+  try {
+    const credentials = await (await register(fx.baseURL)).json();
+    const relay = await openWebSocket(fx.baseURL.replace('http', 'ws') + '/v1/relay/ws?relay_id=home-mac', { headers: { authorization: 'Bearer relay-token' } });
+    let forwarded;
+    relay.on('message', (raw) => {
+      const envelope = JSON.parse(raw);
+      if (envelope.type !== 'push.register' && envelope.type !== 'push.test') return;
+      forwarded = envelope;
+      relay.send(JSON.stringify({ type: 'push.result', session_id: envelope.session_id, text: JSON.stringify({ ok: true, forwarded: true, push_enabled: true, accepted: envelope.type === 'push.test' }) }));
+    });
+    const token = 'aabbccddeeff0011';
+    const response = await fetch(`${fx.baseURL}/v1/devices/me/apns`, { method: 'POST', headers: { authorization: `Bearer ${credentials.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ apns_token: token, env: 'prod', device_id: 'spoofed' }) });
+    assert.equal(response.status, 200); assert.equal((await response.json()).forwarded, true);
+    assert.equal(forwarded.device_id, credentials.device_id);
+    assert.equal(JSON.parse(forwarded.text).apns_token, token);
+    assert.equal((await readFile(join(fx.directory, 'devices.json'), 'utf8')).includes(token), false);
+    const testResponse = await fetch(`${fx.baseURL}/v1/devices/me/apns/test`, { method: 'POST', headers: { authorization: `Bearer ${credentials.token}` }, body: '{}' });
+    assert.equal((await testResponse.json()).accepted, true);
+    relay.close();
+  } finally { await fx.close(); }
+});
+
+test('an old or unresponsive relay does not produce a false successful push registration', async () => {
+  const fx = await fixture({ pushTimeoutMs: 30 });
+  try {
+    const credentials = await (await register(fx.baseURL)).json();
+    const relay = await openWebSocket(fx.baseURL.replace('http', 'ws') + '/v1/relay/ws?relay_id=home-mac', { headers: { authorization: 'Bearer relay-token' } });
+    const response = await fetch(`${fx.baseURL}/v1/devices/me/apns`, { method: 'POST', headers: { authorization: `Bearer ${credentials.token}` }, body: JSON.stringify({ apns_token: 'aabb', env: 'prod' }) });
+    assert.equal(response.status, 504);
+    assert.match((await response.json()).error, /upgrade/);
+    relay.close();
+  } finally { await fx.close(); }
 });
 
 test("pairing rejects a wrong code and stores only a token hash", async () => {
@@ -222,4 +265,23 @@ test("concurrent registrations persist every device", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("revocation closes already connected phones and their relay sessions", async () => {
+  const fx = await fixture({ pushSyncMs: 20 });
+  try {
+    const credentials = await (await register(fx.baseURL)).json();
+    const relay = await openWebSocket(fx.baseURL.replace('http', 'ws') + '/v1/relay/ws?relay_id=home-mac', { headers: { authorization: 'Bearer relay-token' } });
+    const opened = nextMessage(relay);
+    const phone = await openWebSocket(fx.baseURL.replace('http', 'ws') + '/v1/ws?relay_id=home-mac', { headers: { authorization: `Bearer ${credentials.token}` } });
+    const session = JSON.parse(await opened);
+    const closed = once(phone, 'close', { signal: AbortSignal.timeout(3000) });
+    const relayClosed = nextMessage(relay);
+    const externalStore = new DeviceStore(join(fx.directory, 'devices.json'));
+    await externalStore.load(); await externalStore.revoke(credentials.device_id);
+    assert.equal((await closed)[0], 4003);
+    const event = JSON.parse(await relayClosed);
+    assert.equal(event.type, 'session.close'); assert.equal(event.session_id, session.session_id);
+    relay.close();
+  } finally { await fx.close(); }
 });

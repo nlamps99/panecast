@@ -8,6 +8,7 @@ final class InboxNotificationTests: XCTestCase {
             name: "notification.created",
             payload: .object([
                 "id": .string("n-partial"),
+                "status": .string("completed"),
                 "workspace_id": .string("w1"),
                 "message": .string("새 알림이 도착했습니다."),
             ])
@@ -17,7 +18,7 @@ final class InboxNotificationTests: XCTestCase {
 
         XCTAssertEqual(record?.id, "n-partial")
         XCTAssertEqual(record?.workspaceId, "w1")
-        XCTAssertEqual(record?.title, "cmux 알림")
+        XCTAssertEqual(record?.title, "Task completed")
         XCTAssertEqual(record?.body, "새 알림이 도착했습니다.")
         XCTAssertEqual(record?.threadId, "workspace-w1")
     }

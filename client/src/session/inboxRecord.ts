@@ -1,4 +1,5 @@
 import type { EventFrame } from '../protocol/frames';
+import { lifecycleNotificationId, notificationSignal } from './notificationSignal';
 
 /**
  * Which cmux events belong in the inbox, and what they say. A port of
@@ -29,32 +30,14 @@ export type InboxRecord = {
   body: string;
   /** `ts` as sent, normally seconds since the epoch. */
   ts: number | null;
-  /** An agent (Claude Code, Codex, ...) is waiting for approval or an answer. */
+  /** A question, approval request, failure or blocker needs attention. */
   needsInput: boolean;
 };
 
 /** `EventCategory` raw values; SharedKit decodes anything else as `unknown`. */
 const KNOWN_CATEGORIES = new Set(['workspace', 'surface', 'notification', 'system', 'agent', 'hook']);
 
-const SEARCH_KEYS = [
-  'app', 'source', 'kind', 'type', 'status', 'state', 'reason',
-  'title', 'subtitle', 'body', 'message', 'text', 'summary',
-  'workspace_title', 'workspaceTitle', 'surface_title', 'surfaceTitle',
-  'agent', 'model', 'role',
-];
-
-const NEEDS_HUMAN_PHRASES = [
-  'needs input',
-  'waiting for your input',
-  'needs your attention',
-  'needs your approval',
-  'approval required',
-  'permission prompt',
-];
-
 const SYNTHETIC_SLUG_LENGTH = 96;
-/** Deep enough for any real payload; stops a pathological one from blowing the stack. */
-const MAX_LEAF_DEPTH = 32;
 
 type Source = 'Codex' | 'OpenAI' | 'Claude Code' | 'cmux hook' | 'Agent' | 'cmux';
 
@@ -69,7 +52,7 @@ const SOURCE_LABEL: Record<Source, string> = {
 
 type Signals = { category: string; text: string; notification: boolean; needsInput: boolean };
 
-/** `InboxNotification.isInboxEvent`: a cmux notification, or an agent waiting for the user. */
+/** Questions/problems and explicit task completion, shared with relay push filtering. */
 export function isInboxEvent(event: EventFrame): boolean {
   const signals = classify(event);
   return signals.notification || signals.needsInput;
@@ -130,6 +113,7 @@ export function parseInboxEvent(event: EventFrame, newLocalId: () => string): In
     stringValue(payload, 'surface');
   const payloadId =
     stringValue(payload, 'id') ??
+    lifecycleNotificationId(event) ??
     stringValue(payload, 'notification_id') ??
     stringValue(payload, 'notificationId') ??
     stringValue(payload, 'event_id') ??
@@ -194,38 +178,26 @@ export function syntheticNeedsInputId(
 function classify(event: EventFrame): Signals {
   const category = KNOWN_CATEGORIES.has(event.category) ? event.category : 'unknown';
   const text = searchText(event, category);
-  const needsHuman = NEEDS_HUMAN_PHRASES.some((phrase) => text.includes(phrase));
-  const knownAgent = text.includes('claude') || text.includes('codex') || text.includes('openai');
-  const direct = text.includes('needs input') || normalize(event.name).includes('needs input');
+  const signal = notificationSignal(event);
   return {
     category,
     text,
-    notification: category === 'notification' || event.name === 'notification.created',
-    needsInput: needsHuman && (knownAgent || direct),
+    notification: signal !== null,
+    needsInput: signal === 'attention',
   };
 }
 
 function searchText(event: EventFrame, category: string): string {
   const values = [category, event.name];
   if (isObject(event.payload)) {
-    for (const key of SEARCH_KEYS) {
+    for (const key of ['app', 'source', 'agent', 'model', 'title', 'message', 'body']) {
       const value = stringValue(event.payload, key);
       if (value) values.push(value);
     }
-    appendStringLeaves(event.payload, values, 0);
+    const detail = nestedStringValue(event.payload, ['details', 'message']);
+    if (detail) values.push(detail);
   }
   return normalize(values.join(' '));
-}
-
-function appendStringLeaves(value: unknown, values: string[], depth: number): void {
-  if (depth > MAX_LEAF_DEPTH) return;
-  if (typeof value === 'string') {
-    if (value.length > 0) values.push(value);
-  } else if (Array.isArray(value)) {
-    for (const element of value) appendStringLeaves(element, values, depth + 1);
-  } else if (isObject(value)) {
-    for (const element of Object.values(value)) appendStringLeaves(element, values, depth + 1);
-  }
 }
 
 function normalize(text: string): string {
@@ -251,6 +223,7 @@ function fallbackTitle(event: EventFrame, signals: Signals, flavor: 'sharedKit' 
     // A space between Latin and Chinese text, none between Chinese words.
     return /[A-Za-z0-9]$/.test(label) ? `${label} 需要你回应` : `${label}需要你回应`;
   }
+  if (notificationSignal(event) === 'completed') return flavor === 'sharedKit' ? 'Task completed' : '任务已完成';
   if (event.name === 'notification.created') return flavor === 'sharedKit' ? 'cmux 알림' : 'cmux 通知';
   return event.name;
 }

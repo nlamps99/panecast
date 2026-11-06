@@ -390,6 +390,9 @@ const AUTH_STATUSES = new Set([401, 403, 404]);
  * "Expected HTTP 101 response but was '401 Unauthorized'".
  */
 export function classifyClose(opened: boolean, code?: number, reason?: string): CloseReason {
+  // The broker can revoke an already connected phone without waiting for its
+  // next HTTP upgrade. Stop immediately even when the platform omits reason.
+  if (code === 4003) return 'auth_failed';
   if (code === 1013) return 'relay_offline';
   if (!opened) {
     const status = httpStatusIn(reason ?? '');

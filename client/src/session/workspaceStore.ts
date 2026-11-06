@@ -33,7 +33,7 @@ export type WorkspaceState = {
 };
 
 /** Workspace and surface changes from cmux; `agent` and `hook` events fire far too often to refetch on. */
-const REFRESH_CATEGORIES = new Set(['workspace', 'surface']);
+const REFRESH_CATEGORIES = new Set(['workspace', 'surface', 'source']);
 const EVENT_DEBOUNCE_MS = 1_500;
 
 /**
@@ -73,7 +73,8 @@ export class WorkspaceStore {
   /** Bumped when the listed window changes; a load started before that is dropped. */
   private generation = 0;
 
-  constructor(private readonly channel: RpcChannel) {
+  constructor(private readonly channel: RpcChannel, initialWindowId: string | null = null) {
+    this.state = { ...this.state, selectedWindowId: initialWindowId };
     this.disposers.push(
       channel.onStatus((status: ConnectionStatus) => {
         if (status.state === 'open') void this.refresh();

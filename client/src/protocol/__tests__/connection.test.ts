@@ -161,6 +161,15 @@ describe('RelayConnection', () => {
     expect(sockets).toHaveLength(1);
   });
 
+  it('stops immediately when an already connected device is revoked', () => {
+    const { connection, sockets, latest } = setup();
+    connection.start(); latest().open();
+    latest().serverClose(4003, '');
+    expect(connection.status).toEqual({ state: 'auth_failed' });
+    jest.advanceTimersByTime(120_000);
+    expect(sockets).toHaveLength(1);
+  });
+
   it('keeps retrying while the Mac relay is offline', () => {
     const { connection, sockets, latest } = setup();
     connection.start();
@@ -243,6 +252,7 @@ describe('classifyClose', () => {
     [false, 1006, 'failed to connect to /192.168.1.5 (port 4399)', 'network'],
     [false, 1006, 'The Internet connection appears to be offline.', 'network'],
     [true, 1013, 'Mac relay offline', 'relay_offline'],
+    [true, 4003, '', 'auth_failed'],
     [true, 1000, 'closed by relay', 'closed_by_server'],
     [true, 1006, '', 'network'],
   ] as const)('opened=%s code=%s %s', (opened, code, reason, expected) => {

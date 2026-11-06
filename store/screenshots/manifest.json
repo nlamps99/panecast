@@ -1,0 +1,41 @@
+{
+  "locale": "zh-Hans",
+  "groups": [
+    {
+      "displayClass": "IPHONE_DYNAMIC_ISLAND_MEDIUM_DISPLAY",
+      "platform": "IPHONE_APP_STORE",
+      "width": 1206,
+      "height": 2622,
+      "files": [
+        "store/screenshots/zh-Hans/iphone/panecast-01-terminal.png",
+        "store/screenshots/zh-Hans/iphone/panecast-02-workspaces.png",
+        "store/screenshots/zh-Hans/iphone/panecast-03-inbox.png",
+        "store/screenshots/zh-Hans/iphone/panecast-04-settings.png"
+      ]
+    },
+    {
+      "displayClass": "IPHONE_DYNAMIC_ISLAND_LARGE_DISPLAY",
+      "platform": "IPHONE_APP_STORE",
+      "width": 1320,
+      "height": 2868,
+      "files": [
+        "store/screenshots/zh-Hans/iphone-large/panecast-01-terminal.png",
+        "store/screenshots/zh-Hans/iphone-large/panecast-02-workspaces.png",
+        "store/screenshots/zh-Hans/iphone-large/panecast-03-inbox.png",
+        "store/screenshots/zh-Hans/iphone-large/panecast-04-settings.png"
+      ]
+    },
+    {
+      "displayClass": "IPAD_13_DISPLAY",
+      "platform": "IPAD_APP_STORE",
+      "width": 2064,
+      "height": 2752,
+      "files": [
+        "store/screenshots/zh-Hans/ipad/panecast-01-terminal.png",
+        "store/screenshots/zh-Hans/ipad/panecast-02-workspaces.png",
+        "store/screenshots/zh-Hans/ipad/panecast-03-inbox.png",
+        "store/screenshots/zh-Hans/ipad/panecast-04-settings.png"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,8 @@
-# cmux Remote 自建中转服务器
+# Panecast 自建中转服务器
 
 这个目录提供可自托管的 VPS Broker。使用它以后，Mac 和 iPhone 都只需
 主动连接服务器，不需要在手机安装 Tailscale，也不需要给 Mac 开放入站端口。
+同一个 broker 和域名可以连接多台 Mac、Linux 电脑，每台电脑分别配对和鉴权。
 
 ```text
 iPhone -- HTTPS/WSS --> VPS Broker <-- WSS -- Mac cmux-relay --> cmux Unix socket
@@ -84,8 +85,10 @@ Direct 模式原本靠 `tailscaled whois` 验证来访者身份，这只对经�
 - **当前不是端到端加密。** VPS Broker 会转发明文终端帧，因此控制 VPS 的人
   理论上可以读取终端内容。只应部署在自己控制的服务器上。E2E 加密需要作为
   独立协议升级实现，不能把 TLS 等同于 E2E。
-- Server 模式目前不代发 APNs。App 活跃且 WebSocket 在线时，Inbox 和本地
-  通知正常；App 被系统彻底终止后不会由 VPS 补发通知。
+- 新版 broker 会通过已认证的隧道把 APNs 登记转给电脑，收到电脑确认后才报告成功。
+  Apple 签名密钥和原始推送令牌保存在电脑；VPS 只保存令牌哈希。需要同时升级
+  broker 和 relay，并在电脑配置 APNs。手机「设置 → 通知」可以发送测试推送。
+  电脑离线或旧 relay 不支持转发时会明确报错，不会显示虚假的登记成功。
 
 ## 1. 准备 VPS 与域名
 
@@ -137,6 +140,72 @@ curl https://relay.example.com/v1/health
 
 此时 `relay_online:false` 是正常的，表示 Mac 还没有连接。
 
+### 一个域名连接多台电脑
+
+原有 `CMUX_RELAY_ID`、`CMUX_RELAY_TOKEN`、`CMUX_PAIRING_CODE` 配置继续有效。
+要加入第二台电脑，使用独立的 JSON 配置：
+
+```bash
+cp relays.example.json relays.json
+chmod 600 relays.json
+```
+
+为每台电脑分别生成 relay token 和 pairing code，四个值都应不同，然后填写：
+
+```json
+{
+  "relays": [
+    {
+      "relay_id": "home-mac",
+      "relay_token": "<Mac 的 relay token>",
+      "pairing_code": "<Mac 的配对码>"
+    },
+    {
+      "relay_id": "linux-box",
+      "relay_token": "<Linux 的 relay token>",
+      "pairing_code": "<Linux 的配对码>"
+    }
+  ]
+}
+```
+
+`relays.json` 已加入 gitignore，不要提交该文件。原有电脑保留同一个 relay ID 和凭据，
+已有手机配对就可以继续使用；不要更换 broker 数据卷。每台电脑的 relay token 和配对码
+必须独立；配置中的重复 ID、重复密钥和空字段会在 broker 启动时被拒绝。
+
+Docker 使用只读配置文件覆盖层：
+
+```bash
+# Linux 上，容器里的 node 用户为 UID/GID 1000，需要能读取配置。
+sudo chgrp 1000 relays.json
+chmod 640 relays.json
+docker compose -f docker-compose.yml -f docker-compose.multi.yml up -d --build
+```
+
+如使用已有 nginx 网络，把第一个文件替换为 `docker-compose.note.yml`。现有 Caddyfile
+无需修改：所有电脑仍使用同一个 HTTPS 域名，由 `relay_id` 选择电脑。覆盖层不会把 broker
+端口直接开放到公网。宿主机仅应让管理者和容器的 GID 1000 读取配置。
+
+不使用 Docker 时，运行 broker 的用户应拥有配置文件并保持权限 `600`：
+
+```bash
+CMUX_RELAYS_FILE=/absolute/path/relays.json npm start
+```
+
+也可以由进程管理器通过 `CMUX_RELAYS_JSON` 注入相同 JSON 对象。两个配置源不能同时设置。
+选择任一多电脑配置源后，三个旧的单电脑变量被忽略，不会隐式合并。配置在启动时读取，
+增加、删除电脑或更新凭据后需重启 broker。
+
+Mac 的 `relay.json` 中设 `broker.relay_id` 为 `home-mac`，Linux tmux relay 的配置设为
+`linux-box`，分别使用对应的 `relay_token`；两者的 `broker.url` 都是
+`https://relay.example.com`。各电脑生成配对二维码时输入它自己的配对码，手机分别扫码，
+就会出现两台电脑。tmux 的配置和配对命令见 [`../relay-tmux/README.md`](../relay-tmux/README.md)。
+
+多电脑模式的 `GET /v1/health` 只返回 broker 服务状态，不显示电脑清单、数量或在线状态。
+手机的连接诊断使用 `GET /v1/health?relay_id=home-mac`，携带这台电脑对应的手机 bearer
+token，才能得到该电脑的 `relay_online`。其他电脑的令牌和未认证请求统一返回 401。
+单电脑部署不带查询参数的健康检查仍保留原来的 `relay_online` 字段。
+
 ## 3. 配置 Mac Relay
 
 先从 **cmux 内的终端** 安装 relay：
@@ -180,18 +249,13 @@ launchctl kickstart -k "gui/$(id -u)/com.genie.cmuxremote"
 tail -f ~/.cmuxremote/log/stderr.log
 ```
 
-应看到 `broker transport enabled` 和 `connecting to broker`。再次访问健康接口时，
-`relay_online` 应变为 `true`。
+应看到 `broker transport enabled` 和 `connecting to broker`。单电脑部署再次访问健康接口时，
+`relay_online` 应变为 `true`；多电脑部署可在手机中运行对应电脑的连接诊断。
 
 ## 4. 配对 iPhone
 
-在 App 的 Settings 中：
-
-1. Connection Mode 选择 `SERVER`。
-2. Server URL 填 `https://relay.example.com`。
-3. Relay ID 填 `home-mac`。
-4. Pairing Code 填 VPS 的 `CMUX_PAIRING_CODE`。
-5. 点击 `SAVE & RECONNECT`。
+在 Mac 运行 `cmux-relay pair`，输入服务器的配对码。手机打开「添加电脑」扫描二维码，
+也可以粘贴配对链接。完成后可在设置中选择自动、仅服务器或仅局域网，并运行连接自检。
 
 第一次配对成功后，App 会把独立设备 token 存入 iOS Keychain，并清除本机
 `UserDefaults` 中的 Pairing Code。修改 Server URL 或 Relay ID 时，旧 token 会
@@ -205,15 +269,35 @@ tail -f ~/.cmuxremote/log/stderr.log
 docker compose exec broker npm run devices -- list
 ```
 
+多电脑部署可按 relay ID 筛选；使用同一组 Compose 文件运行命令，例如：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.multi.yml exec broker npm run devices -- list --relay home-mac
+```
+
 撤销某台手机：
 
 ```bash
 docker compose exec broker npm run devices -- revoke <device-id>
 ```
 
-撤销后，已建立的连接最迟会在下次重连时失效。若怀疑 Mac relay token 泄露，
+也可加 `--relay home-mac`，仅当设备属于这台电脑时才撤销。同一手机配对不同电脑会获得
+独立设备 ID 和令牌；撤销其中一台电脑的配对，不会影响另一台电脑。
+
+撤销会使新的 HTTP/WebSocket 鉴权立即失效，已有连接最迟在下一次设备同步时关闭
+（默认 15 秒）。手机主动解除配对时同步立即执行。若怀疑 Mac relay token 泄露，
 同时修改 VPS `.env` 和 Mac `relay.json` 中的值并重启两端。若只想禁止新手机
 配对，修改 `CMUX_PAIRING_CODE` 并重启 Broker；已配对设备不受影响。
+多电脑配置则修改 `relays.json` 中对应项。某台电脑的 relay 隧道被新连接替换时，只会让
+该电脑的手机连接重新握手；其他电脑保持连接。启动时移除某个 relay 配置后，它原有的
+手机令牌不能再访问该 relay；磁盘上的设备记录可通过管理命令清理。
+
+后台推送使用设备授权列表：broker 每 15 秒同步一次，relay 的授权最长有效 45 秒。
+撤销或隧道断开后，过期的设备记录不会继续作为推送授权。新的
+`POST /v1/devices/me/apns/test` 使用手机自身的 bearer token，只向这台手机发送测试。
+多电脑模式的 APNs 登记、测试与 `DELETE /v1/devices/me` 都需要 `?relay_id=…`。
+通知偏好随登记请求转发到对应 relay；broker 保留 relay 回复的 `preferences_applied` 等
+确认字段。每台电脑独立限制待处理推送请求，某台电脑超时不会占满另一台电脑的额度。
 
 ## 排查
 

@@ -1,6 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { TerminalInputHandle } from '../../modules/terminal-input';
@@ -12,13 +12,16 @@ import { describeError } from '../session/terminalSession';
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { backToWorkspaces } from '../state/navigation';
 import { setPrefs, usePrefs } from '../state/prefs';
+import { sessionMemory } from '../state/sessionMemory';
 import { BatteryBadge } from './BatteryBadge';
 import { Icon } from './Icon';
 import { InputBar } from './InputBar';
+import { ProjectBrowser } from './ProjectBrowser';
 import { statusBanner, statusColor, statusLabel } from './status';
 import { TerminalView } from './TerminalView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
+import { WorkspaceSidebar } from './WorkspaceSidebar';
 
 /**
  * The terminal tab. Top to bottom: back to the list, the workspace and its
@@ -29,16 +32,28 @@ import { useKeyboardVisible } from './useKeyboardVisible';
  * closes one on the Mac. The title row shows the Mac's battery.
  */
 export function TerminalScreen() {
+  const { width, height } = useWindowDimensions();
+  const { tabletSidebar } = usePrefs();
+  const insets = useSafeAreaInsets();
+  const split = tabletSidebar && width >= 850 && Math.min(width, height) >= 600;
+  return <View style={styles.layout}>
+    {split ? <View style={{ paddingTop: insets.top, paddingBottom: insets.bottom, backgroundColor: colors.surfaceSunken }}><WorkspaceSidebar /></View> : null}
+    <TerminalPane />
+  </View>;
+}
+
+function TerminalPane() {
   const insets = useSafeAreaInsets();
   const machine = useMachine();
   const { channel, session } = machine;
   const status = useConnectionStatus(channel);
   const state = useStore(session);
   const { workspaces, surfaces, known } = useStore(machine.workspaces);
-  const { fontSize } = usePrefs();
+  const { fontSize, inputMode } = usePrefs();
   const inputRef = useRef<TerminalInputHandle>(null);
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
+  const [projectOpen, setProjectOpen] = useState(false);
   const target = state.target;
   const isOpen = status.state === 'open';
   const actions = useMemo(() => new SurfaceActions(machine), [machine]);
@@ -50,8 +65,13 @@ export function TerminalScreen() {
   useFocusEffect(
     useCallback(() => {
       host.start();
+      const current = machine.session.getState().target;
+      if (machine.computer && current) {
+        const previous = sessionMemory.computer(machine.computer.id).recent.find((entry) => entry.workspaceId === current.workspaceId && entry.surfaceId === current.surfaceId);
+        if (previous) sessionMemory.visit(machine.computer.id, previous);
+      }
       return () => host.stop();
-    }, [host]),
+    }, [host, machine]),
   );
 
   // An action's error belongs to the workspace it was made in.
@@ -63,10 +83,11 @@ export function TerminalScreen() {
   // Opened from the tab bar before choosing a terminal: follow whatever cmux has focused.
   useEffect(() => {
     if (!isOpen || session.getState().target) return;
+    const intent = session.selectionVersion;
     let cancelled = false;
     pickDefaultTarget(channel)
       .then((picked) => {
-        if (cancelled) return;
+        if (cancelled || session.getState().target || session.selectionVersion !== intent) return;
         if (picked) {
           setTargetError(null);
           session.setTarget(picked);
@@ -75,7 +96,7 @@ export function TerminalScreen() {
         }
       })
       .catch((error: unknown) => {
-        if (!cancelled) setTargetError(describeError(error));
+        if (!cancelled && !session.getState().target && session.selectionVersion === intent) setTargetError(describeError(error));
       });
     return () => {
       cancelled = true;
@@ -84,6 +105,7 @@ export function TerminalScreen() {
 
   // The list may show another cmux window; the open terminal keeps its own titles.
   const workspace = workspaces.find((w) => w.id === target?.workspaceId) ?? (target ? known.workspaces[target.workspaceId] : undefined);
+  const readOnly = workspace?.access === 'read';
   const siblings = target ? (surfaces[target.workspaceId] ?? known.surfaces[target.workspaceId] ?? []) : [];
   const surface = siblings.find((s) => s.id === target?.surfaceId);
   const banner = statusBanner(status) ?? state.subscriptionError ?? targetError;
@@ -116,6 +138,7 @@ export function TerminalScreen() {
               </Text>
             </View>
           </View>
+          {target ? <Pressable onPress={() => setProjectOpen(true)} style={styles.back} accessibilityRole="button" accessibilityLabel="查看项目文件与 Git 改动"><Text style={{ color: colors.blue, fontSize: 13 }}>文件</Text></Pressable> : null}
           {showBattery || machine.mode === 'demo' ? (
             <View style={styles.badges}>
               {showBattery ? <BatteryBadge battery={battery} onPress={() => void host.refresh()} /> : null}
@@ -128,7 +151,7 @@ export function TerminalScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
-                const closable = canCloseSurface(siblings);
+                const closable = !readOnly && canCloseSurface(siblings);
                 return (
                   <Pressable
                     key={item.id}
@@ -137,6 +160,7 @@ export function TerminalScreen() {
                       session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id });
                     }}
                     onLongPress={() => {
+                      if (readOnly) return;
                       if (!closable) actions.refuseLastClose();
                       else confirmClose(item, () => void actions.close(target.workspaceId, item.id));
                     }}
@@ -154,11 +178,11 @@ export function TerminalScreen() {
               })}
               <Pressable
                 onPress={() => void actions.create(target.workspaceId)}
-                disabled={running !== null}
+                disabled={running !== null || readOnly}
                 style={({ pressed }) => [styles.chip, styles.newChip, pressed && styles.newChipPressed, running === 'close' && styles.chipBusy]}
                 accessibilityRole="button"
                 accessibilityLabel="新建终端"
-                accessibilityState={{ disabled: running !== null, busy: running === 'create' }}
+                accessibilityState={{ disabled: running !== null || readOnly, busy: running === 'create' }}
               >
                 <View style={styles.newChipIcon}>
                   {running === 'create' ? (
@@ -181,6 +205,8 @@ export function TerminalScreen() {
       {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
       <View style={[styles.terminal, side]}>
         <TerminalView
+          readOnly={readOnly}
+          key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}`}
           session={session}
           state={state}
           fontSize={fontSize}
@@ -190,8 +216,10 @@ export function TerminalScreen() {
         />
       </View>
       <View style={[styles.bottom, side, { paddingBottom: keyboardVisible ? 0 : Math.max(insets.bottom - 10, 0) }]}>
-        <InputBar session={session} disabled={!target} error={state.input.error} inputRef={inputRef} />
+        {readOnly ? <Text style={{ color: colors.yellow, padding: 12 }}>这个连接源只允许读取</Text> : null}
+        <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef} />
       </View>
+      {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
     </KeyboardAvoidingView>
   );
 }
@@ -222,6 +250,7 @@ function placeholderFor(status: ConnectionStatus, hasTarget: boolean): string | 
 }
 
 const styles = StyleSheet.create({
+  layout: { flex: 1, flexDirection: 'row', backgroundColor: colors.canvas },
   screen: { flex: 1, backgroundColor: colors.canvas },
   header: {
     backgroundColor: colors.surfaceSunken,

@@ -1,0 +1,15 @@
+{
+  "broker": {
+    "url": "https://relay.example.com",
+    "relay_id": "panecast-hub",
+    "relay_token": "REPLACE_WITH_BROKER_RELAY_TOKEN"
+  },
+  "host": "127.0.0.1",
+  "port": 4400,
+  "sources": [
+    { "id": "tmux", "name": "tmux", "type": "tmux", "enabled": false, "access": "read" },
+    { "id": "cmux", "name": "cmux", "type": "cmux", "enabled": false, "access": "read",
+      "url": "ws://127.0.0.1:4399/v1/ws", "device_id": "REPLACE_WITH_REGISTERED_DEVICE_ID", "token": "REPLACE_WITH_REGISTERED_DEVICE_TOKEN" },
+    { "id": "codex", "name": "Codex 历史", "type": "codex", "enabled": false, "access": "read", "mode": "history" }
+  ]
+}

@@ -1,0 +1,13 @@
+# Overlay for docker-compose.yml or docker-compose.note.yml.
+# Both computers use the same existing HTTPS domain and Caddy/nginx route.
+services:
+  broker:
+    environment:
+      CMUX_RELAYS_FILE: /etc/panecast/relays.json
+    volumes:
+      - type: bind
+        source: ./relays.json
+        target: /etc/panecast/relays.json
+        read_only: true
+        bind:
+          create_host_path: false

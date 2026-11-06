@@ -5,6 +5,7 @@ import RelayCore
 import CMUXClient
 import SharedKit
 import Logging
+import Crypto
 
 /// `cmux-relay` CLI entry point. Spec section 6.4, plan task 12.
 ///
@@ -167,7 +168,8 @@ struct Serve: AsyncParsableCommand {
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         let conn = CmuxConnection(group: group)
-        let facade = CMUXFacadeImpl(connection: conn)
+        let inbox = InboxJournal(url: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cmuxremote/inbox-events.json"))
+        let facade = HostFacade(backend: CMUXFacadeImpl(connection: conn), inbox: inbox, config: { store.current })
         let historyFacade = CMUXFacadeImpl(connection: conn, lane: .history)
         let history = SurfaceHistoryService(cmux: historyFacade)
         let reader = CmuxSurfaceReader(connection: conn)
@@ -176,6 +178,12 @@ struct Serve: AsyncParsableCommand {
                                      idleFps: store.current.idleFps)
         let deviceStore = try DeviceStore(url: URL(fileURLWithPath: devicesStorePath()))
         let apnsProvider = APNsProviderClient(config: { store.current.apns })
+        let brokerPush: BrokerPushService?
+        if let broker = store.current.broker, store.current.transport.enablesBroker {
+            let identity = SHA256.hash(data: Data("\(broker.url)|\(broker.relayId)".utf8)).map { String(format: "%02x", $0) }.joined()
+            let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cmuxremote/broker-push-\(identity).json")
+            brokerPush = BrokerPushService(url: url, relayId: broker.relayId, sender: apnsProvider, config: { store.current.apns })
+        } else { brokerPush = nil }
         let apnsFanout = InboxPushFanout(
             deviceStore: deviceStore,
             sender: apnsProvider,
@@ -184,6 +192,7 @@ struct Serve: AsyncParsableCommand {
         conn.onReset = {
             Task { await manager.broadcastReset() }
         }
+        let inboxEvents = InboxEventQueue()
         Task {
             var policy = ReconnectPolicy()
             while !Task.isCancelled {
@@ -195,8 +204,24 @@ struct Serve: AsyncParsableCommand {
                         {
                             conn.observe(bootInfo: boot)
                         }
-                        Task { await manager.broadcastToAll(frame: .event(event)) }
-                        Task { await apnsFanout.deliver(event: event) }
+                        inboxEvents.enqueue {
+                            do {
+                                let retained = try await inbox.append(event)
+                                let published = retained ?? event
+                                await manager.broadcastToAll(frame: .event(published))
+                                if InboxNotification.isInboxEvent(published) {
+                                    // APNs latency must not block the journal or live
+                                    // stream behind an earlier event's network request.
+                                    Task {
+                                        let accepted = await brokerPush?.deliver(event: published) ?? []
+                                        await apnsFanout.deliver(event: published, excluding: accepted)
+                                    }
+                                }
+                            } catch {
+                                logger.error("could not persist inbox event; live delivery continues")
+                                await manager.broadcastToAll(frame: .event(event))
+                            }
+                        }
                     }
                     await stream.start(categories: EventCategory.allCases)
                     logger.info("cmux event stream attached")
@@ -242,9 +267,18 @@ struct Serve: AsyncParsableCommand {
                 await tunnel.send(envelope)
             }
             await tunnel.setOnEnvelope { envelope in
+                if envelope.type == .pushSync || envelope.type == .pushRegister {
+                    if let response = await brokerPush?.receive(envelope) { await tunnel.send(response) }
+                    return
+                }
+                if envelope.type == .pushTest {
+                    Task { if let response = await brokerPush?.receive(envelope) { await tunnel.send(response) } }
+                    return
+                }
                 await bridge.receive(envelope)
             }
             await tunnel.setOnDisconnect {
+                await brokerPush?.suspend()
                 await bridge.disconnectAll()
             }
             brokerRunner = Task { await tunnel.runForever() }

@@ -1,9 +1,9 @@
 import type { RpcChannel, SurfaceTarget } from './terminalSession';
 
-export type WorkspaceInfo = { id: string; title: string; index: number; selected: boolean };
+export type WorkspaceInfo = { id: string; title: string; index: number; selected: boolean; sourceId?: string; access?: 'read' | 'control' };
 export type SurfaceInfo = { id: string; title: string; index: number; focused: boolean; type: string };
 /** A cmux window. `key` is cmux's key (frontmost) window. */
-export type WindowInfo = { id: string; ref: string; index: number; workspaceCount: number | null; key: boolean };
+export type WindowInfo = { id: string; ref: string; index: number; workspaceCount: number | null; key: boolean; sourceId?: string; access?: 'read' | 'control' };
 /** One window's workspaces; `windowId` is the window cmux says it listed, when it says. */
 export type WorkspaceListing = { windowId: string | null; workspaces: WorkspaceInfo[] };
 
@@ -25,6 +25,8 @@ export async function listWindows(channel: RpcChannel): Promise<WindowInfo[]> {
         workspaceCount: numberField(item, 'workspace_count') ?? numberField(item, 'workspaceCount') ?? null,
         // cmux calls it `key`, as in key window, not `is_key`.
         key: item.key === true,
+        ...(typeof item.source_id === 'string' ? { sourceId: item.source_id } : {}),
+        ...(item.access === 'read' || item.access === 'control' ? { access: item.access } : {}),
       };
     })
     .filter((w): w is WindowInfo => w !== null)
@@ -67,6 +69,8 @@ function parseWorkspaces(result: unknown): WorkspaceInfo[] {
         title: stringField(item, 'title') ?? stringField(item, 'name') ?? id,
         index: numberField(item, 'index') ?? position,
         selected: item.selected === true,
+        ...(typeof item.source_id === 'string' ? { sourceId: item.source_id } : {}),
+        ...(item.access === 'read' || item.access === 'control' ? { access: item.access } : {}),
       };
     })
     .filter((w): w is WorkspaceInfo => w !== null)

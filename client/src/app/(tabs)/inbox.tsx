@@ -1,15 +1,17 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { router } from 'expo-router';
 import { Alert, FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { inboxTarget } from '../../session/inboxRouting';
-import type { InboxItem } from '../../session/inboxStore';
+import { isPending, type InboxItem } from '../../session/inboxStore';
+import { notifications } from '../../notifications/instance';
 import { useMachine, useStore } from '../../state/hooks';
 import { openSurface } from '../../state/navigation';
 import { colors } from '../../ui/theme';
 
-type Filter = 'all' | 'unread';
+type Filter = 'all' | 'unread' | 'pending' | 'resolved';
 
 type OpenRow = { id: string; methods: SwipeableMethods };
 
@@ -20,17 +22,36 @@ type OpenRow = { id: string; methods: SwipeableMethods };
 export default function InboxScreen() {
   const insets = useSafeAreaInsets();
   const machine = useMachine();
-  const { items, unread } = useStore(machine.inbox);
+  const { items, unread, pending, sync } = useStore(machine.inbox);
   const { workspaces, surfaces } = useStore(machine.workspaces);
   const [filter, setFilter] = useState<Filter>('all');
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   const openRow = useRef<OpenRow | null>(null);
 
-  const shown = filter === 'unread' ? items.filter((item) => !item.read) : items;
+  const shown = items.filter((item) => filter === 'unread' ? !item.read : filter === 'pending' ? isPending(item) : filter === 'resolved' ? Boolean(item.resolvedAt) : true);
+
+  const run = async (action: () => Promise<void>) => {
+    setError(null);
+    try { await action(); } catch (failure) { setError(failure instanceof Error ? failure.message : '操作失败，请重试'); }
+  };
+  const remove = (item: InboxItem) => void run(async () => { await notifications.cancelReminder(item.reminderId); machine.inbox.remove(item.id); });
+  const resolve = (item: InboxItem) => void run(async () => { await notifications.cancelReminder(item.reminderId); machine.inbox.resolve(item.id, !item.resolvedAt); });
+  const snooze = (item: InboxItem) => void run(async () => {
+    const id = await notifications.remindLater(item, machine.computer?.id ?? 'demo');
+    machine.inbox.snooze(item.id, Date.now() + 15 * 60_000, id);
+  });
 
   const open = (item: InboxItem) => {
-    machine.inbox.markRead(item.id);
+    if (item.sourceId && item.threadId) {
+      machine.inbox.markRead(item.id);
+      router.navigate({ pathname: '/sources', params: { sourceId: item.sourceId, threadId: item.threadId } });
+      return;
+    }
     const target = inboxTarget(item, surfaces);
-    if (target) openSurface(machine, target.workspaceId, target.surfaceId);
+    if (target) { machine.inbox.markRead(item.id); openSurface(machine, target.workspaceId, target.surfaceId); }
+    else setError('暂时找不到对应终端，可能已经关闭或还没连接。通知已保留。');
   };
 
   const rowOpened = (id: string, methods: SwipeableMethods) => {
@@ -55,7 +76,10 @@ export default function InboxScreen() {
           ) : null}
           {items.length > 0 ? (
             <Pressable
-              onPress={() => confirmClear(() => machine.inbox.clear())}
+              onPress={() => confirmClear(() => void run(async () => {
+                await Promise.all(items.map((item) => notifications.cancelReminder(item.reminderId)));
+                machine.inbox.clear();
+              }))}
               style={styles.action}
               accessibilityRole="button"
             >
@@ -65,12 +89,18 @@ export default function InboxScreen() {
         </View>
       </View>
       <View style={styles.filters} accessibilityRole="tablist">
+        <FilterChip label={`待处理 ${pending}`} active={filter === 'pending'} onPress={() => setFilter('pending')} />
         <FilterChip label={`全部 ${items.length}`} active={filter === 'all'} onPress={() => setFilter('all')} />
         <FilterChip label={`未读 ${unread}`} active={filter === 'unread'} onPress={() => setFilter('unread')} />
+        <FilterChip label="已处理" active={filter === 'resolved'} onPress={() => setFilter('resolved')} />
       </View>
       <Text style={styles.note}>
-        cmux 发出的通知和等你回应的智能体会出现在这里，左滑可以删除。目前只在 App 打开并连着电脑时收到，后台推送之后再做。
+        点按返回对应终端，处理完后标记「已处理」。也可以稍后提醒；阅读通知不会改变处理状态。
       </Text>
+      {error ? <Text style={[styles.note, styles.danger]}>{error}</Text> : null}
+      {sync ? <Pressable onPress={() => void machine.inbox.sync()} disabled={sync.status === 'syncing'} accessibilityRole="button"><Text style={[styles.note, (sync.status === 'error' || sync.gap) && styles.danger]}>
+        {sync.status === 'syncing' ? '正在补齐离线通知…' : sync.message ?? (sync.status === 'ready' ? '离线通知已同步 · 点按刷新' : '点按同步离线通知')}
+      </Text></Pressable> : null}
     </View>
   );
 
@@ -88,16 +118,19 @@ export default function InboxScreen() {
       ItemSeparatorComponent={Separator}
       ListEmptyComponent={
         <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>{filter === 'unread' && items.length > 0 ? '没有未读通知' : '还没有通知'}</Text>
+          <Text style={styles.emptyTitle}>{filter === 'pending' ? '没有待处理事项' : filter === 'resolved' ? '还没有已处理事项' : filter === 'unread' && items.length > 0 ? '没有未读通知' : '还没有通知'}</Text>
         </View>
       }
       onScrollBeginDrag={closeOpenRow}
       renderItem={({ item }) => (
         <InboxRow
           item={item}
+          now={now}
           workspaceTitle={workspaces.find((w) => w.id === item.workspaceId)?.title ?? null}
           onOpen={() => open(item)}
-          onDelete={() => machine.inbox.remove(item.id)}
+          onDelete={() => remove(item)}
+          onResolve={() => resolve(item)}
+          onSnooze={() => snooze(item)}
           onMarkRead={() => machine.inbox.markRead(item.id)}
           onSwipeOpen={rowOpened}
         />
@@ -108,17 +141,23 @@ export default function InboxScreen() {
 
 function InboxRow({
   item,
+  now,
   workspaceTitle,
   onOpen,
   onDelete,
   onMarkRead,
+  onResolve,
+  onSnooze,
   onSwipeOpen,
 }: {
   item: InboxItem;
+  now: number;
   workspaceTitle: string | null;
   onOpen: () => void;
   onDelete: () => void;
   onMarkRead: () => void;
+  onResolve: () => void;
+  onSnooze: () => void;
   onSwipeOpen: (id: string, methods: SwipeableMethods) => void;
 }) {
   const swipeable = useRef<SwipeableMethods>(null);
@@ -149,9 +188,9 @@ function InboxRow({
       <Pressable
         onPress={onOpen}
         onLongPress={() => swipeable.current?.openRight()}
-        style={({ pressed }) => [styles.item, item.needsInput && styles.itemNeedsInput, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.item, isPending(item) && styles.itemNeedsInput, pressed && styles.pressed]}
         accessibilityRole="button"
-        accessibilityLabel={[item.read ? null : '未读', item.needsInput ? '待回应' : null, item.title, subtitle, body]
+        accessibilityLabel={[item.read ? null : '未读', item.resolvedAt ? '已处理' : item.needsInput ? '待回应' : null, item.title, subtitle, body]
           .filter(Boolean)
           .join('，')}
         accessibilityActions={accessibilityActions}
@@ -163,7 +202,7 @@ function InboxRow({
         <View style={[styles.unreadDot, item.needsInput && styles.unreadDotNeedsInput, item.read && styles.readDot]} />
         <View style={styles.itemText}>
           <View style={styles.itemTop}>
-            {item.needsInput ? <Text style={styles.chip}>待回应</Text> : null}
+            {item.resolvedAt ? <Text style={styles.handled}>已处理</Text> : item.needsInput ? <Text style={styles.chip}>待回应</Text> : null}
             <Text style={[styles.itemTitle, item.read && styles.itemTitleRead]} numberOfLines={1}>
               {item.title}
             </Text>
@@ -179,6 +218,11 @@ function InboxRow({
               {body}
             </Text>
           ) : null}
+          {item.snoozedUntil && item.snoozedUntil > now ? <Text style={styles.note}>{formatTime(item.snoozedUntil)} 再提醒</Text> : null}
+          {item.needsInput ? <View style={styles.rowActions}>
+            <Pressable style={styles.action} onPress={(event) => { event.stopPropagation(); onResolve(); }} accessibilityRole="button"><Text style={styles.actionText}>{item.resolvedAt ? '重新打开' : '标为已处理'}</Text></Pressable>
+            {!item.resolvedAt ? <Pressable style={styles.action} onPress={(event) => { event.stopPropagation(); onSnooze(); }} accessibilityRole="button"><Text style={styles.actionText}>15 分钟后提醒</Text></Pressable> : null}
+          </View> : null}
         </View>
       </Pressable>
     </Swipeable>
@@ -233,7 +277,9 @@ const styles = StyleSheet.create({
   action: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: colors.surface },
   actionText: { color: colors.blue, fontSize: 14 },
   danger: { color: colors.red },
-  filters: { flexDirection: 'row', gap: 8 },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  handled: { color: colors.green, fontSize: 11 },
   filter: {
     paddingHorizontal: 12,
     paddingVertical: 5,

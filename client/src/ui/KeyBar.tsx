@@ -1,10 +1,14 @@
 import * as Haptics from 'expo-haptics';
 import { useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ctrl, Keys, symbolAction, withModifiers, type Key, type KeyAction } from '../protocol/keys';
 import type { TerminalSession } from '../session/terminalSession';
 import { usePrefs } from '../state/prefs';
+import { useMachine } from '../state/hooks';
+import { selectedKeyboardProfile, shortcutAction, shortcutsFor, useKeyboardProfiles } from '../input/keyboardProfiles';
+import { KeyboardProfileEditor } from './KeyboardProfileEditor';
+import { useSheet } from './Sheet';
 import { colors, fonts } from './theme';
 
 /** `action` gets whether the sticky Ctrl was on when the key went down. */
@@ -21,17 +25,6 @@ type KeySpec = {
 function namedKey(k: Key) {
   return (withCtrl: boolean): KeyAction => ({ kind: 'key', key: withCtrl ? withModifiers(k, ['ctrl']) : k });
 }
-
-const MAIN_ROW: KeySpec[] = [
-  { label: 'esc', a11y: 'Esc', action: namedKey(Keys.escape) },
-  { label: '^C', a11y: 'Ctrl C', action: namedKey(Keys.ctrlC) },
-  { label: 'tab', a11y: 'Tab', action: namedKey(Keys.tab) },
-  { label: '←', a11y: '左', action: namedKey(Keys.left), repeat: true },
-  { label: '↑', a11y: '上', action: namedKey(Keys.up), repeat: true },
-  { label: '↓', a11y: '下', action: namedKey(Keys.down), repeat: true },
-  { label: '→', a11y: '右', action: namedKey(Keys.right), repeat: true },
-  { label: '↵', a11y: '回车', action: namedKey(Keys.enter), accent: true },
-];
 
 /** Follows the Ctrl toggle. Symbols a phone keyboard hides on a second page, then paging keys. */
 const EXTRA_ROW: KeySpec[] = [
@@ -62,8 +55,14 @@ const REPEAT_INTERVAL_MS = 90;
  * Ctrl: tap it, then any key (or one of the Ctrl letters that appear) to send
  * that key with Ctrl.
  */
-export function KeyBar({ session }: { session: TerminalSession }) {
+export function KeyBar({ session, disabled = false }: { session: TerminalSession; disabled?: boolean }) {
   const { keyHaptics, extraKeyRow } = usePrefs();
+  const machine = useMachine();
+  const profiles = useKeyboardProfiles();
+  const editor = useSheet();
+  const computerId = machine.computer?.id ?? 'demo', workspaceId = session.getState().target?.workspaceId ?? null;
+  const profile = selectedKeyboardProfile(profiles, computerId, workspaceId);
+  const mainRow: KeySpec[] = shortcutsFor(profile).map((shortcut) => ({ ...shortcut, action: (withCtrl) => shortcutAction(shortcut, withCtrl) }));
   const [ctrlOn, setCtrlOn] = useState(false);
   const [shownExtraRow, setShownExtraRow] = useState(extraKeyRow);
   // Hiding the row hides the Ctrl toggle too; never leave Ctrl on out of sight.
@@ -80,16 +79,18 @@ export function KeyBar({ session }: { session: TerminalSession }) {
     return action;
   };
 
-  const row = (specs: KeySpec[]) =>
-    specs.map((spec) => <KeyButton key={spec.label} spec={spec} ctrlOn={ctrlOn} session={session} onPress={press} />);
+  const row = (specs: KeySpec[], fixed = false) =>
+    specs.map((spec) => <KeyButton key={spec.label} spec={spec} ctrlOn={ctrlOn} session={session} onPress={press} disabled={disabled} fixed={fixed} />);
 
   return (
     <View style={styles.bar}>
+      <Pressable onPress={editor.open} style={styles.profile} accessibilityRole="button" accessibilityLabel={`快捷键配置：${profile.name}，点按自定义`}><Text style={styles.profileText}>{profile.name} · 自定义按键 ›</Text></Pressable>
       {ctrlOn ? <View style={[styles.row, styles.rowDense]}>{row(CTRL_LETTERS)}</View> : null}
-      <View style={styles.row}>{row(MAIN_ROW)}</View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scrollingKeys} keyboardShouldPersistTaps="always">{row(mainRow, true)}</ScrollView>
       {extraKeyRow ? (
         <View style={[styles.row, styles.rowDense]}>
           <Pressable
+            disabled={disabled}
             onPressIn={() => {
               if (keyHaptics) tapHaptic();
               setCtrlOn((on) => !on);
@@ -105,6 +106,7 @@ export function KeyBar({ session }: { session: TerminalSession }) {
           {row(EXTRA_ROW)}
         </View>
       ) : null}
+      <KeyboardProfileEditor visible={editor.visible} onClose={() => editor.close()} onClosed={editor.onClosed} computerId={computerId} workspaceId={workspaceId} />
     </View>
   );
 }
@@ -115,13 +117,18 @@ function KeyButton({
   ctrlOn,
   session,
   onPress,
+  disabled,
+  fixed,
 }: {
   spec: KeySpec;
   ctrlOn: boolean;
   session: TerminalSession;
   onPress: (spec: KeySpec) => KeyAction;
+  disabled: boolean;
+  fixed: boolean;
 }) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const repeated = useRef(false);
 
   const stop = () => {
     if (timer.current) clearTimeout(timer.current);
@@ -129,9 +136,11 @@ function KeyButton({
   };
 
   useEffect(() => stop, []);
+  useEffect(() => { if (disabled) stop(); }, [disabled]);
 
   // Repeats the action chosen on touch-down, so a held Ctrl-← keeps its Ctrl.
   const tick = (action: KeyAction) => {
+    if (!session.isConnected) { stop(); return; }
     if (session.pendingInput <= 1) send(session, action);
     timer.current = setTimeout(() => tick(action), REPEAT_INTERVAL_MS);
   };
@@ -140,12 +149,25 @@ function KeyButton({
   const a11y = ctrlOn && !spec.a11y.startsWith('Ctrl') ? `Ctrl ${spec.a11y}` : spec.a11y;
   return (
     <Pressable
+      disabled={disabled}
       onPressIn={() => {
+        repeated.current = false;
+        // Scrollable profiles send on release, so swiping across Ctrl-C or
+        // Enter never accidentally sends that key. Holding still repeats.
+        if (fixed) {
+          if (spec.repeat) timer.current = setTimeout(() => {
+            repeated.current = true;
+            const action = onPress(spec);
+            timer.current = setTimeout(() => tick(action), REPEAT_INTERVAL_MS);
+          }, REPEAT_DELAY_MS);
+          return;
+        }
         const action = onPress(spec);
         if (spec.repeat) timer.current = setTimeout(() => tick(action), REPEAT_DELAY_MS);
       }}
       onPressOut={stop}
-      style={({ pressed }) => [styles.key, spec.word && styles.keyWide, spec.accent && styles.keyAccent, pressed && styles.keyPressed]}
+      onPress={() => { if (fixed && !repeated.current) onPress(spec); }}
+      style={({ pressed }) => [styles.key, spec.word && styles.keyWide, fixed && styles.fixedKey, fixed && spec.word && styles.fixedWideKey, spec.accent && styles.keyAccent, pressed && styles.keyPressed]}
       accessibilityRole="button"
       accessibilityLabel={`发送 ${a11y}`}
     >
@@ -172,6 +194,11 @@ function tapHaptic(): void {
 }
 
 const styles = StyleSheet.create({
+  profile: { alignSelf: 'flex-end', paddingVertical: 2 },
+  profileText: { color: colors.muted, fontSize: 11 },
+  scrollingKeys: { gap: 5, flexGrow: 1 },
+  fixedKey: { flexGrow: 1, flexShrink: 0, flexBasis: 34, minWidth: 34 },
+  fixedWideKey: { flexBasis: 45, minWidth: 45 },
   bar: { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4, gap: 5 },
   row: { flexDirection: 'row', gap: 5 },
   /** The 11-key rows fit a 375 pt phone with a little less gap. */

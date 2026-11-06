@@ -8,6 +8,10 @@ public struct BrokerEnvelope: Codable, Equatable, Sendable {
         case sessionOpen = "session.open"
         case sessionText = "session.text"
         case sessionClose = "session.close"
+        case pushRegister = "push.register"
+        case pushTest = "push.test"
+        case pushSync = "push.sync"
+        case pushResult = "push.result"
     }
 
     public var type: Kind

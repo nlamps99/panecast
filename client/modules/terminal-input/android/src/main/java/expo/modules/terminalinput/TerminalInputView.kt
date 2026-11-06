@@ -40,6 +40,8 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
   private val onContentSizeChange by EventDispatcher()
 
   private var mode = Mode.LINE
+  private var submitOnEnter = true
+  private var appliedInitialText = false
   private var batchDepth = 0
   private var flushPosted = false
   private var suppressWatcher = false
@@ -137,8 +139,11 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
       // or a raw Enter event); this field has no other action, so any of them
       // means Enter. Only the key-up half of a raw event is ignored.
       setOnEditorActionListener { _, _, event ->
-        if (event == null || event.action == KeyEvent.ACTION_DOWN) handleEnter()
-        true
+        if (mode == Mode.LINE && !submitOnEnter) false
+        else {
+          if (event == null || event.action == KeyEvent.ACTION_DOWN) handleEnter()
+          true
+        }
       }
       addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> reportContentHeight() }
       addTextChangedListener(object : TextWatcher {
@@ -162,9 +167,50 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
     if (next == mode) return
     if (mode == Mode.LIVE) flushLive()
     mode = next
-    editText.imeOptions = if (next == Mode.LIVE) EditorInfo.IME_ACTION_NONE else EditorInfo.IME_ACTION_SEND
+    updateInputOptions()
     clearText()
     restartInput()
+  }
+
+  fun setInitialText(text: String) {
+    if (appliedInitialText) return
+    appliedInitialText = true
+    if (editText.text.isNotEmpty() || isComposing()) return
+    editText.setText(text)
+    editText.setSelection(text.length)
+    emitState()
+  }
+
+  fun setSubmitOnEnter(submit: Boolean) {
+    if (submitOnEnter == submit) return
+    submitOnEnter = submit
+    updateInputOptions()
+    restartInput()
+  }
+
+  private fun updateInputOptions() {
+    if (mode == Mode.LINE && !submitOnEnter) editText.setSingleLine(false)
+    editText.setRawInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+      (if (mode == Mode.LINE && !submitOnEnter) InputType.TYPE_TEXT_FLAG_MULTI_LINE else 0))
+    editText.imeOptions = if (mode == Mode.LIVE || !submitOnEnter) EditorInfo.IME_ACTION_NONE else EditorInfo.IME_ACTION_SEND
+    editText.setHorizontallyScrolling(false)
+    editText.maxLines = Int.MAX_VALUE
+  }
+
+  fun snapshot(): Map<String, Any> {
+    val text = editText.text?.toString() ?: ""
+    val start = editText.selectionStart.coerceIn(0, text.length)
+    val end = editText.selectionEnd.coerceIn(0, text.length)
+    return mapOf("text" to text, "composing" to isComposing(), "selectionStart" to minOf(start, end), "selectionEnd" to maxOf(start, end))
+  }
+
+  fun applyEdit(expected: String, text: String, start: Int, end: Int): Boolean {
+    if (mode != Mode.LINE || isComposing() || editText.text?.toString() != expected) return false
+    editText.setText(text)
+    editText.setSelection(minOf(start, end).coerceIn(0, text.length), maxOf(start, end).coerceIn(0, text.length))
+    emitState()
+    reportContentHeight()
+    return true
   }
 
   fun setCaretColor(color: Int) {
@@ -262,7 +308,7 @@ class TerminalInputView(context: Context, appContext: AppContext) : ExpoView(con
   }
 
   private fun shouldConsumeKey(keyCode: Int): Boolean = when (keyCode) {
-    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> !isComposing()
+    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> !isComposing() && (mode == Mode.LIVE || submitOnEnter)
     KeyEvent.KEYCODE_DEL -> editText.text.isEmpty() && !isComposing()
     else -> false
   }

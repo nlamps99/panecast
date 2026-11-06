@@ -1,4 +1,6 @@
 import { DemoChannel } from '../demo/demoChannel';
+import { forgetInputs } from '../input/library';
+import { keyboardProfiles } from '../input/keyboardProfiles';
 import { parsePairingUrl } from '../protocol/pairing';
 import { forgetInbox, inboxStorageKey } from '../session/inboxPersistence';
 import { InboxStore } from '../session/inboxStore';
@@ -17,6 +19,9 @@ import {
 import { createComputerChannel, PairingError, registerComputer, type ComputerChannel } from './connect';
 import { loadComputers, saveComputers, storageSupported } from './pairingStorage';
 import { getPrefs } from './prefs';
+import { sessionMemory, surfaceMemoryKey } from './sessionMemory';
+import { listSurfaces } from '../session/surfaces';
+import { RpcCallError } from '../protocol/connection';
 
 export { PairingError } from './connect';
 
@@ -54,6 +59,8 @@ export class AppStore {
   private state: AppStoreState = { phase: 'loading', computers: EMPTY_COMPUTER_LIST, machine: null };
   private listeners = new Set<() => void>();
   private loaded = false;
+  private machineObservers: (() => void)[] = [];
+  private restoreNavigation: string | null = null;
 
   getState = (): AppStoreState => this.state;
 
@@ -67,6 +74,7 @@ export class AppStore {
   async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
+    await sessionMemory.load();
     let computers = EMPTY_COMPUTER_LIST;
     try {
       computers = await loadComputers();
@@ -106,6 +114,9 @@ export class AppStore {
     if (this.state.machine?.computer?.id === computerId) this.connect(computers);
     else this.setState({ ...this.state, computers });
     void forgetInbox(inboxStorageKey(computerId));
+    void forgetInputs(computerId).catch(() => {});
+    sessionMemory.forgetComputer(computerId);
+    void keyboardProfiles().forgetComputer(computerId);
   }
 
   /** Forgets the current computer. */
@@ -178,14 +189,22 @@ export class AppStore {
 
   /** The demo's inbox is not saved; a computer's inbox is, per computer. */
   private stores(channel: RpcChannel, computer: StoredComputer | null = null) {
+    const memory = computer ? sessionMemory.computer(computer.id) : null;
+    const session = new TerminalSession(channel, { liveLines: getPrefs().historyLines, log,
+      ...(computer ? { readingForTarget: (target) => sessionMemory.computer(computer.id).reading[surfaceMemoryKey(target)] ?? null,
+        saveReading: (target, position) => sessionMemory.rememberReading(computer.id, target, position) } : {}),
+    });
+    if (memory?.lastTarget) session.setTarget(memory.lastTarget);
     return {
-      session: new TerminalSession(channel, { liveLines: getPrefs().historyLines, log }),
-      workspaces: new WorkspaceStore(channel),
+      session,
+      workspaces: new WorkspaceStore(channel, memory?.windowId ?? null),
       inbox: new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {}),
     };
   }
 
   private activate(computers: ComputerList, machine: Machine | null): void {
+    for (const dispose of this.machineObservers) dispose();
+    this.machineObservers = [];
     const previous = this.state.machine;
     if (previous) {
       previous.session.setTarget(null);
@@ -195,8 +214,54 @@ export class AppStore {
       if (isComputerChannel(previous.channel)) previous.channel.stop();
     }
     this.setState({ phase: machine ? 'ready' : 'unpaired', computers, machine });
+    this.restoreNavigation = machine?.computer && (machine.session.getState().target || sessionMemory.computer(machine.computer.id).source) ? machine.computer.id : null;
+    if (machine?.computer) this.observeMachine(machine);
     if (machine && isComputerChannel(machine.channel)) machine.channel.start();
     else if (machine) void machine.workspaces.refresh();
+  }
+
+  /** Consumed once by the tab layout; explicit notification/deep-link navigation wins. */
+  takeRestoredRoute(computerId: string | null): '/terminal' | '/sources' | null {
+    if (!computerId || this.restoreNavigation !== computerId) return null;
+    this.restoreNavigation = null;
+    const memory = sessionMemory.computer(computerId);
+    return memory.lastView === 'source' && memory.source ? '/sources' : memory.lastTarget ? '/terminal' : null;
+  }
+
+  private observeMachine(machine: Machine): void {
+    const computerId = machine.computer!.id;
+    let lastTarget = machine.session.getState().target;
+    let validated = false;
+    const capture = () => {
+      const target = machine.session.getState().target, state = machine.workspaces.getState();
+      if (!target) { lastTarget = null; return; }
+      const changed = !lastTarget || surfaceMemoryKey(lastTarget) !== surfaceMemoryKey(target);
+      lastTarget = target;
+      const workspace = state.workspaces.find((w) => w.id === target.workspaceId) ?? state.known.workspaces[target.workspaceId];
+      const surface = (state.surfaces[target.workspaceId] ?? state.known.surfaces[target.workspaceId] ?? []).find((s) => s.id === target.surfaceId);
+      const previous = sessionMemory.computer(computerId).recent.find((r) => surfaceMemoryKey(r) === surfaceMemoryKey(target));
+      sessionMemory.visit(computerId, { ...target, title: surface?.title ?? previous?.title ?? '终端', workspaceTitle: workspace?.title ?? previous?.workspaceTitle ?? '工作区', windowId: state.workspaces.some((w) => w.id === target.workspaceId) ? state.selectedWindowId : previous?.windowId ?? null }, changed);
+    };
+    this.machineObservers.push(machine.session.subscribe(capture), machine.workspaces.subscribe(() => {
+      const state = machine.workspaces.getState();
+      if (state.loaded && !state.error && state.selectedWindowId) sessionMemory.rememberWindow(computerId, state.selectedWindowId);
+      capture();
+    }), machine.channel.onStatus((status) => {
+      if (status.state !== 'open' || validated) return;
+      validated = true;
+      const target = machine.session.getState().target;
+      if (!target) return;
+      void listSurfaces(machine.channel, target.workspaceId).then((surfaces) => {
+        if (surfaces.some((s) => s.id === target.surfaceId)) return;
+        if (this.state.machine === machine && machine.session.getState().target === target) {
+          sessionMemory.forgetTarget(computerId, target); machine.session.setTarget(null);
+        }
+      }).catch((error: unknown) => {
+        if (error instanceof RpcCallError && ['not_found', 'workspace_not_found', 'surface_not_found'].includes(error.code) && this.state.machine === machine && machine.session.getState().target === target) {
+          sessionMemory.forgetTarget(computerId, target); machine.session.setTarget(null);
+        }
+      });
+    }));
   }
 
   private setState(state: AppStoreState): void {

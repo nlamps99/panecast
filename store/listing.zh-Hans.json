@@ -1,0 +1,15 @@
+{
+  "locale": "zh-Hans",
+  "name": "Panecast",
+  "subtitle": "把 Mac 终端装进口袋",
+  "version": "0.1.0",
+  "copyright": "2026 Panecast contributors",
+  "promotionalText": "离开桌面，也能接着看进度、发命令。用 iPhone 和 iPad 连接 Mac 上的 cmux，切换工作区、输入中文、查看任务通知。内置离线演示，打开就能体验。",
+  "keywords": "终端,远程,开发者,命令行,工作区,Mac,cmux,日志,编程,自托管,terminal,console,developer",
+  "description": "离开桌面，也能接着看进度、发命令。\n\nPanecast 让你在 iPhone 和 iPad 上查看和操作 Mac 上的终端。打开一个工作区，跟进正在运行的任务；需要回应时，直接发送文字、命令或快捷键。\n\n随时回到你的终端\n• 查看终端内容，向上浏览历史记录，双指缩放调整字号。\n• 在多个工作区、终端和已配对的电脑之间切换。\n• 创建、重命名和关闭工作区，管理终端。\n\n为手机输入做好准备\n• 支持整行发送和逐字输入两种模式。\n• 支持中文输入法，组字确认后再发送。\n• 常用辅助键就在手边：Esc、Tab、方向键、Ctrl 和翻页键。\n• 选择图片或拍照，把图片发送到已连接的电脑。\n\n任务消息集中查看\n• 收件箱汇总 cmux 发出的通知和等待回应的任务。\n• 点按一条通知，即可回到对应终端。\n• 后台通知需要电脑上的 relay 配置 Apple 推送，并完成局域网登记；仅通过中转服务器配对时，通知需要保持 App 在线。\n\n连接方式由你掌握\n• 同一网络下可直连电脑；外网访问可使用你自己的中转服务器。\n• 自动模式优先尝试局域网，无法直连时使用中转连接。\n• 配对凭据保存在设备的安全存储中。中转连接使用 TLS，但并非端到端加密，中转服务器可以读取转发内容。\n\n先体验，再连接\n无需配置电脑，即可从连接页面进入离线演示，体验工作区、终端输入和通知收件箱。演示中的项目、输出和通知均为示例数据。\n\n使用要求\n真实连接需要一台运行 cmux 和 Panecast relay 的 Mac。电脑需要保持在线；外网连接还需要可访问的网络或自行部署的中转服务器。Panecast 当前支持的终端后端为 cmux。\n\nPanecast 是开源的独立社区项目，与 cmux / Manaflow 官方无关联。安装与连接指南可通过本页面的“App 支持”访问。",
+  "supportUrl": "https://github.com/nlamps99/panecast/blob/app-store-support/store/support.md",
+  "marketingUrl": "https://github.com/nlamps99/panecast",
+  "privacyPolicyUrl": "https://github.com/nlamps99/panecast/blob/app-store-support/store/privacy.md",
+  "betaDescription": "Panecast 让你在 iPhone 和 iPad 上查看和操作 Mac 上的 cmux 终端。\n\n第一次打开可以点“还没有电脑可连？先看看演示”，无需账号或电脑即可体验。真实连接需要在 Mac 上运行 cmux 和 Panecast relay，再扫描配对二维码。\n\n请重点体验：工作区与终端切换、中文输入、整行/逐字输入、历史记录、图片发送和通知收件箱。后台推送需另行配置 relay 的 APNs，并通过局域网登记。\n\n这是一款早期测试中的独立开源应用。连接与反馈指南：https://github.com/nlamps99/panecast/blob/app-store-support/store/support.md",
+  "whatToTest": "本次更新：Panecast 新图标与启动画面，修正收件箱的通知说明。\n\n请测试：\n1. 启动后的图标、启动画面和深色界面。\n2. 连接页的离线演示，以及工作区、终端、收件箱和设置。\n3. 真实配对后的中文输入、快捷键、历史记录、图片发送和重新连接。\n\n演示数据是虚构示例。真实连接需要 Mac 上的 cmux 与 relay，后台推送取决于 relay 的配置。"
+}

@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { join, dirname, resolve } from 'node:path';
+import { configPath, setup, lanAddress } from '../src/installation.mjs';
+import { service, clearStaleSocket } from '../src/service.mjs';
+
+const args = process.argv.slice(2);
+const command = args[0] ?? 'help';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const version = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version;
+
+async function main() {
+  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Panecast 需要 Node.js 22 或更新版本。');
+  if (['--version', '-v', 'version'].includes(command)) { console.log(version); return; }
+  if (['help', '--help', '-h'].includes(command)) {
+    console.log(`Panecast ${version} · Mac 终端网关
+
+  panecast setup                         首次配置（保留已有配置）
+  panecast start | stop | restart         管理 macOS 后台服务
+  panecast status                        查看运行状态
+  panecast logs                          持续查看错误日志
+  panecast pair                          显示手机配对二维码
+  panecast serve                         在前台运行
+  panecast sources list                  查看已配置来源
+  panecast sources grant tmux --access control
+  panecast sources revoke tmux
+  panecast desktop prepare | check       Codex 桌面桥接
+
+所有网关命令支持 --config /absolute/path/hub-relay.json。
+自动配置：setup --broker-url HTTPS_URL --relay-id ID --token-file PATH
+          [--source tmux|codex|none] [--lan]
+配对：pair [--lan-host PRIVATE_IP] [--url-only]
+安装与更新：https://ningzx.cn/panecast/`); return;
+  }
+  const path = configPath(args);
+  if (command === 'setup') { await setup(args.slice(1)); return; }
+  if (['start', 'stop', 'restart', 'status'].includes(command)) {
+    await service(command, path, process.env.PANECAST_LAUNCHER ?? resolve(process.argv[1])); return;
+  }
+  if (command === 'logs') {
+    const log = join(dirname(path), 'hub-log', 'stderr.log');
+    const child = spawn('tail', ['-n', '60', '-f', log], { stdio: 'inherit' });
+    child.once('error', () => { console.error('无法读取日志。请先运行 panecast start。'); process.exitCode = 1; });
+    child.once('exit', (code) => { process.exitCode = code ?? 0; }); return;
+  }
+  if (command === 'desktop') {
+    process.argv = [process.execPath, join(root, 'src/hub/desktop-setup.mjs'), ...args.slice(1)];
+    await import('../src/hub/desktop-setup.mjs'); return;
+  }
+  if (!['serve', 'pair', 'sources', 'notify'].includes(command)) throw new Error('未知命令。运行 panecast --help 查看用法。');
+  let config;
+  try { config = JSON.parse(await readFile(path, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') throw new Error('尚未配置。请先运行 panecast setup。'); throw error; }
+  if (command === 'serve') await clearStaleSocket(config);
+  const forwarded = [...args];
+  const configIndex = forwarded.indexOf('--config');
+  if (configIndex >= 0) forwarded.splice(configIndex, 2);
+  if (command === 'pair' && config.lan?.pairing_code && !args.includes('--lan-host')) {
+    const host = lanAddress(); if (host) forwarded.push('--lan-host', host);
+  }
+  process.argv = [process.execPath, join(root, 'src/hub/cli.mjs'), ...forwarded, '--config', path];
+  await import('../src/hub/cli.mjs');
+}
+
+main().catch((error) => { console.error(`Panecast: ${error.code === 'EEXIST' ? '配置已存在，未覆盖。' : error.message}`); process.exitCode = 1; });

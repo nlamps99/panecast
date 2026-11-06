@@ -16,10 +16,11 @@ export const EMPTY_LINE: VisualLine = { spans: [], plain: '' };
 const RULE_CHARS = new Set(['─', '━', '═', '╌', '╍', '┄', '┅', '┈', '┉', '-', '=']);
 
 /** Splits one terminal row into visual lines at most `columns` cells wide. */
-export function layoutRow(row: string, columns: number): VisualLine[] {
+export function layoutRow(row: string, columns: number, wrap = true): VisualLine[] {
   const limit = Math.max(2, Math.floor(columns));
   let cells = trimTrailingBlank(parseAnsiRow(row));
   if (cells.length === 0) return [EMPTY_LINE];
+  if (!wrap) return [toVisualLine(cells)];
   if (isRuleRow(cells)) cells = fitWidth(cells, limit);
   return wrapCells(cells, limit).map(toVisualLine);
 }
@@ -194,22 +195,28 @@ function mayPromoteToEmoji(cp: number): boolean {
 export class LayoutCache {
   private cache = new Map<string, VisualLine[]>();
   private columns = 0;
+  private wrap = true;
 
   constructor(private readonly maxEntries = 4_000) {}
 
-  get(row: string, columns: number): VisualLine[] {
-    if (columns !== this.columns) {
+  get(row: string, columns: number, wrap = true): VisualLine[] {
+    if (columns !== this.columns || wrap !== this.wrap) {
       this.cache.clear();
       this.columns = columns;
+      this.wrap = wrap;
     }
     let lines = this.cache.get(row);
     if (!lines) {
-      lines = layoutRow(row, columns);
+      lines = layoutRow(row, columns, wrap);
       if (this.cache.size >= this.maxEntries) this.cache.clear();
       this.cache.set(row, lines);
     }
     return lines;
   }
+}
+
+export function terminalRowColumns(row: string): number {
+  return trimTrailingBlank(parseAnsiRow(row)).reduce((columns, cell) => columns + cell.width, 0);
 }
 
 /**

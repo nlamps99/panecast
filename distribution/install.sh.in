@@ -1,0 +1,98 @@
+#!/bin/bash
+set -euo pipefail
+
+# Panecast installer. Credentials and user configuration are never bundled.
+PANECAST_VERSION='__CLI_VERSION__'
+PANECAST_PACKAGE='__CLI_FILE__'
+PANECAST_PACKAGE_SHA='__CLI_SHA__'
+PANECAST_NODE_VERSION='__NODE_VERSION__'
+PANECAST_BASE="${PANECAST_DOWNLOAD_BASE:-__BASE_URL__}"
+PANECAST_ROOT="${PANECAST_INSTALL_DIR:-$HOME/.local/share/panecast}"
+PANECAST_BIN="${PANECAST_BIN_DIR:-$HOME/.local/bin}"
+
+fail() { printf 'Panecast: %s\n' "$*" >&2; exit 1; }
+[[ "$(uname -s)" == Darwin ]] || fail '此安装器适用于 macOS。其他系统可以使用下载页中的 npm 安装命令。'
+[[ "$PANECAST_ROOT" == /* && "$PANECAST_BIN" == /* && "$PANECAST_ROOT" != / && "$PANECAST_ROOT" != "$HOME" ]] || fail '安装目录必须是独立的绝对路径。'
+
+if [[ "${1:-}" == --uninstall ]]; then
+  [[ -f "$PANECAST_ROOT/.panecast-install" ]] || fail '此目录不是由 Panecast 安装器管理的目录。'
+  if [[ -f "$PANECAST_BIN/panecast" ]] && grep -Fq '# Panecast installer launcher' "$PANECAST_BIN/panecast"; then
+    "$PANECAST_BIN/panecast" stop
+    rm "$PANECAST_BIN/panecast"
+  fi
+  rm -rf "$PANECAST_ROOT"
+  printf 'Panecast 已卸载。~/.cmuxremote 中的配置与配对数据已保留。\n'
+  exit 0
+fi
+[[ $# -eq 0 ]] || fail '用法：安装器 [--uninstall]'
+
+case "$(uname -m)" in
+  arm64) PANECAST_ARCH=arm64; PANECAST_NODE_SHA='__NODE_ARM64_SHA__' ;;
+  x86_64) PANECAST_ARCH=x64; PANECAST_NODE_SHA='__NODE_X64_SHA__' ;;
+  *) fail '支持 Apple Silicon 和 Intel Mac。' ;;
+esac
+PANECAST_NODE_FILE="node-v$PANECAST_NODE_VERSION-darwin-$PANECAST_ARCH.tar.gz"
+PANECAST_RELEASE="$PANECAST_ROOT/releases/$PANECAST_VERSION"
+if [[ -e "$PANECAST_ROOT" && ! -f "$PANECAST_ROOT/.panecast-install" ]]; then
+  fail "目录已存在且不属于此安装器：$PANECAST_ROOT"
+fi
+if [[ -e "$PANECAST_BIN/panecast" ]] && ! grep -Fq '# Panecast installer launcher' "$PANECAST_BIN/panecast"; then
+  fail "已有其他方式安装的命令：$PANECAST_BIN/panecast；请使用原包管理器升级。"
+fi
+if [[ -e "$PANECAST_ROOT/current" && ! -L "$PANECAST_ROOT/current" ]]; then
+  fail 'current 路径不是安装器管理的符号链接。'
+fi
+
+PANECAST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/panecast-install.XXXXXX")"
+trap 'rm -rf "$PANECAST_TMP"' EXIT
+fetch() { curl --fail --silent --show-error --location --retry 2 "$PANECAST_BASE/$1" -o "$PANECAST_TMP/$1"; }
+verify() {
+  local actual
+  actual="$(shasum -a 256 "$PANECAST_TMP/$1" | awk '{print $1}')"
+  [[ "$actual" == "$2" ]] || fail "文件校验失败：$1；安装已停止。"
+}
+
+printf '安装 Panecast %s（%s）…\n' "$PANECAST_VERSION" "$PANECAST_ARCH"
+if [[ ! -d "$PANECAST_RELEASE" ]]; then
+  fetch "$PANECAST_PACKAGE"
+  verify "$PANECAST_PACKAGE" "$PANECAST_PACKAGE_SHA"
+  fetch "$PANECAST_NODE_FILE"
+  verify "$PANECAST_NODE_FILE" "$PANECAST_NODE_SHA"
+  mkdir -p "$PANECAST_TMP/release/package" "$PANECAST_TMP/release/runtime"
+  tar -xzf "$PANECAST_TMP/$PANECAST_PACKAGE" --strip-components=1 -C "$PANECAST_TMP/release/package"
+  tar -xzf "$PANECAST_TMP/$PANECAST_NODE_FILE" --strip-components=1 -C "$PANECAST_TMP/release/runtime"
+  "$PANECAST_TMP/release/runtime/bin/node" "$PANECAST_TMP/release/package/bin/panecast.mjs" --version
+  printf '%s\n' "$PANECAST_PACKAGE_SHA" > "$PANECAST_TMP/release/.package-sha256"
+  mkdir -p "$PANECAST_ROOT/releases" "$PANECAST_BIN"
+  touch "$PANECAST_ROOT/.panecast-install"
+  mv "$PANECAST_TMP/release" "$PANECAST_RELEASE"
+else
+  [[ "$(cat "$PANECAST_RELEASE/.package-sha256")" == "$PANECAST_PACKAGE_SHA" ]] || fail '同版本的安装内容不一致，请联系发布者。'
+fi
+mkdir -p "$PANECAST_BIN"
+ln -sfn "$PANECAST_RELEASE" "$PANECAST_ROOT/current"
+{
+  printf '#!/bin/bash\n# Panecast installer launcher\nset -e\n'
+  printf 'PANECAST_ROOT=%q\n' "$PANECAST_ROOT"
+  printf 'export PANECAST_LAUNCHER=%q\n' "$PANECAST_BIN/panecast"
+  printf 'export PATH="$PANECAST_ROOT/current/runtime/bin:$PATH"\n'
+  printf 'exec "$PANECAST_ROOT/current/runtime/bin/node" "$PANECAST_ROOT/current/package/bin/panecast.mjs" "$@"\n'
+} > "$PANECAST_TMP/panecast"
+chmod 755 "$PANECAST_TMP/panecast"
+mv "$PANECAST_TMP/panecast" "$PANECAST_BIN/panecast"
+
+if [[ "${PANECAST_NO_PATH_UPDATE:-0}" != 1 ]]; then
+  case "${SHELL:-/bin/zsh}" in
+    */bash) PANECAST_PROFILE="$HOME/.bash_profile" ;;
+    *) PANECAST_PROFILE="$HOME/.zprofile" ;;
+  esac
+  if ! grep -Fq '# Panecast CLI PATH' "$PANECAST_PROFILE" 2>/dev/null; then
+    { printf '\n# Panecast CLI PATH\n'; printf 'export PATH=%q:"$PATH"\n' "$PANECAST_BIN"; } >> "$PANECAST_PROFILE"
+  fi
+fi
+printf '\n安装完成。新终端中可以直接使用 panecast。当前终端可运行：\n'
+printf '  %q setup\n  %q start\n  %q pair\n' "$PANECAST_BIN/panecast" "$PANECAST_BIN/panecast" "$PANECAST_BIN/panecast"
+if ! command -v tmux >/dev/null 2>&1; then
+  printf '\n如需连接 tmux，先安装它：brew install tmux\n'
+fi
+printf '\n已有后台服务升级后运行 panecast restart。配置与配对数据保持不变。\n'

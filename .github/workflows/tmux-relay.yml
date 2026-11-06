@@ -1,0 +1,31 @@
+name: tmux relay
+on:
+  push:
+    paths: ['relay-tmux/**', 'broker/**', '.github/workflows/tmux-relay.yml']
+  pull_request:
+    paths: ['relay-tmux/**', 'broker/**', '.github/workflows/tmux-relay.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - if: runner.os == 'macOS'
+        run: brew install tmux
+      - run: npm ci
+        working-directory: broker
+      - run: npm ci
+        working-directory: relay-tmux
+      - run: npm test
+        working-directory: broker
+      - run: npm test
+        working-directory: relay-tmux
