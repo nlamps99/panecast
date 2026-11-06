@@ -185,8 +185,8 @@ integration("real tunnels: offline events recover after reconnect and restart wi
   const before = await a.channel.call("inbox.sync");
   fx.proxy.cut("computer-0"); await until(() => !a.channel.isOpen && node.runtime.sessions.size === 0, "tunnel disconnected");
   assert.equal((await b.session.submitLine("printf 'other-computer-still-live\\n'")).status, "sent");
-  await node.runtime.notify({ id: "offline-1", ...node.ids, title: "offline result one" });
-  await node.runtime.notify({ id: "offline-2", ...node.ids, title: "offline result two" });
+  await node.runtime.notify({ id: "offline-1", ...node.ids, title: "offline result one", status: "completed" });
+  await node.runtime.notify({ id: "offline-2", ...node.ids, title: "offline result two", status: "completed" });
   await node.runtime.ingestEvent({ type: "event", category: "agent", name: "serverRequest/resolved", payload: { ...node.ids, request_id: "request-1", resolved: true } });
   fx.proxy.release("computer-0"); await fx.online(0, a.credentials);
   await until(() => a.channel.isOpen && a.inbox.getState().sync?.status === "ready" && a.inbox.getState().items.some((item) => item.id === "offline-2"), "recovered notifications");
@@ -292,7 +292,10 @@ integration("history pages stay ordered through a fast output burst and recover 
   assert.equal((await phone.session.submitLine(command(1, 300))).status, "sent");
   await until(() => phone.session.getState().screen.rows.some((row) => row.includes("HISTORY-0300")), "first history batch displayed");
   phone.session.startBrowsing();
-  assert.equal((await phone.session.submitLine(command(301, 900))).status, "sent");
+  // Output arrives from the host while the phone reads history. Sending from
+  // the phone intentionally returns to live output to reveal the input result.
+  await node.native.dispatch("surface.send_text", { ...node.ids, text: command(301, 900) });
+  await node.native.dispatch("surface.send_key", { ...node.ids, key: "enter" });
   await until(() => phone.session.getState().screen.rows.some((row) => row.includes("HISTORY-0900")), "newer burst displayed behind frozen history");
   for (let page = 0; page < 20 && !phone.session.getState().browse.exhausted; page++) await phone.session.loadOlder();
   let browse = phone.session.getState().browse;
