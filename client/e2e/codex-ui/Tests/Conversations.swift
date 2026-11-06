@@ -28,6 +28,18 @@ final class Smoke: XCTestCase {
   func snapshot(_ name: String) {
     let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = name; shot.lifetime = .keepAlways; add(shot)
   }
+  func fixture(_ values: [String: Any]? = nil) -> [String: Any] {
+    var request = URLRequest(url: URL(string: "http://127.0.0.1:4497/")!)
+    if let values { request.httpMethod = "POST"; request.httpBody = try! JSONSerialization.data(withJSONObject: values) }
+    let done = expectation(description: "Local history fixture")
+    var result: [String: Any] = [:]
+    URLSession.shared.dataTask(with: request) { data, _, _ in
+      if let data { result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:] }
+      done.fulfill()
+    }.resume()
+    wait(for: [done], timeout: 10)
+    return result
+  }
   func testConversationWorkflow() {
     openSources()
     for _ in 0..<3 {
@@ -108,5 +120,48 @@ final class Smoke: XCTestCase {
     XCTAssertTrue(tools.label.hasPrefix("展开工具调用"))
     XCTAssertFalse(details.exists)
     app.buttons["返回"].tap()
+  }
+  func testZCachedHistoryScrollsContinuouslyAndSurvivesAppRestart() {
+    _ = fixture(["delay": 0, "offline": false])
+    openSources()
+    let long = named("长会话回归测试")
+    XCTAssertTrue(long.waitForExistence(timeout: 10)); long.tap()
+    let latest = app.staticTexts["第 19 轮已经完成。"].firstMatch
+    XCTAssertTrue(latest.waitForExistence(timeout: 10)); XCTAssertTrue(latest.isHittable)
+    let oldest = app.staticTexts["第 0 轮已经完成。"].firstMatch
+    let list = app.descendants(matching: .any).matching(identifier: "codex-messages").firstMatch
+    for _ in 0..<24 {
+      if oldest.exists && oldest.isHittable { break }
+      list.swipeDown()
+    }
+    XCTAssertTrue(oldest.exists && oldest.isHittable)
+    XCTAssertFalse(app.buttons["更早的消息"].exists)
+    snapshot("Continuous older history, no page button")
+    let before = fixture()["reads"] as? [[String: Any]] ?? []
+    let olderBefore = before.filter { $0["threadId"] as? String == "qa-long" && $0["cursor"] is String }.count
+    _ = fixture(["delay": 4000, "offline": false])
+    app.buttons["返回"].tap()
+    XCTAssertTrue(long.waitForExistence(timeout: 10)); long.tap()
+    XCTAssertTrue(latest.waitForExistence(timeout: 1.5))
+    XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "已显示本机历史")).firstMatch.exists)
+    snapshot("Cached conversation before the network reply")
+    Thread.sleep(forTimeInterval: 1.5)
+    app.terminate()
+    _ = fixture(["delay": 0, "offline": true])
+    app.launch()
+    let tab = app.otherElements["来源"].firstMatch
+    XCTAssertTrue(tab.waitForExistence(timeout: 10)); tab.tap()
+    XCTAssertTrue(latest.waitForExistence(timeout: 5))
+    for _ in 0..<24 {
+      if oldest.exists && oldest.isHittable { break }
+      list.swipeDown()
+    }
+    XCTAssertTrue(oldest.exists && oldest.isHittable)
+    let after = fixture()["reads"] as? [[String: Any]] ?? []
+    let olderAfter = after.filter { $0["threadId"] as? String == "qa-long" && $0["cursor"] is String }.count
+    XCTAssertEqual(olderAfter, olderBefore, "Already read history must come from the phone")
+    XCTAssertFalse(app.buttons["继续对话"].isEnabled)
+    snapshot("Disk cache after app restart with history offline")
+    _ = fixture(["delay": 0, "offline": false])
   }
 }

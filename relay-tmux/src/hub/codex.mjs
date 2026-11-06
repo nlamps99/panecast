@@ -105,7 +105,8 @@ export class CodexSource {
       }
       const live = this.mode !== 'history' && (await this.loaded(peer)).has(threadId);
       try {
-        const page = await peer.call('thread/turns/list', { threadId, limit: 5, sortDirection: 'desc', itemsView: 'full', ...(p.cursor ? { cursor: text(p.cursor, 4096) } : {}) });
+        const limit = Number.isInteger(p.limit) ? Math.max(1, Math.min(20, p.limit)) : 5;
+        const page = await peer.call('thread/turns/list', { threadId, limit, sortDirection: 'desc', itemsView: 'full', ...(p.cursor ? { cursor: text(p.cursor, 4096) } : {}) });
         this.freshThreads.delete(threadId);
         const active = live && thread.status?.type === 'active' ? (page.data ?? []).find((turn) => turn.status === 'inProgress')?.id ?? null : null;
         return { thread: this.thread(thread, live), turns: [...(page.data ?? [])].reverse().map(mobileTurn), next_cursor: page.nextCursor ?? null,

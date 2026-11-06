@@ -1,4 +1,4 @@
-type Store = { selectSource(id: string): Promise<unknown>; openThread(id: string): Promise<unknown> };
+type Store = { selectSource(id: string, options?: { deferThreads?: boolean }): Promise<unknown>; openThread(id: string): Promise<unknown> };
 
 /** Only the latest visible route may finish navigation or consume its parameters. */
 export class SourceNavigation {
@@ -16,7 +16,7 @@ export class SourceNavigation {
     const token = ++this.generation;
     this.active = true;
     try {
-      await this.store.selectSource(sourceId);
+      await this.store.selectSource(sourceId, threadId ? { deferThreads: true } : undefined);
       if (token !== this.generation) return;
       if (threadId) await this.store.openThread(threadId);
       if (token !== this.generation) return;

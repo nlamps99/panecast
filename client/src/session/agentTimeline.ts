@@ -27,8 +27,10 @@ export function agentTimeline(turns: readonly AgentTurn[], expanded: ReadonlySet
       // do not reset a group's expansion or move it across an assistant reply.
       const key = JSON.stringify([turn.id, 'tools', anchor]);
       const open = expanded.has(key);
-      rows.push({ kind: 'tools', key, items: tools, expanded: open });
       if (open) tools.forEach(appendItem);
+      // Keep the toggle below its details, so expanding in a newest-first chat
+      // does not move the control off screen or disturb the visible reply.
+      rows.push({ kind: 'tools', key, items: tools, expanded: open });
       tools = [];
     };
     for (const item of turn.items) {

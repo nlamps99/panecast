@@ -1,5 +1,6 @@
 import { DemoChannel } from '../demo/demoChannel';
 import { forgetInputs } from '../input/library';
+import { forgetConversations } from '../session/conversationCache';
 import { keyboardProfiles } from '../input/keyboardProfiles';
 import { parsePairingUrl } from '../protocol/pairing';
 import { forgetInbox, inboxStorageKey } from '../session/inboxPersistence';
@@ -115,6 +116,7 @@ export class AppStore {
     else this.setState({ ...this.state, computers });
     void forgetInbox(inboxStorageKey(computerId));
     void forgetInputs(computerId).catch(() => {});
+    void forgetConversations(computerId).catch(() => {});
     sessionMemory.forgetComputer(computerId);
     void keyboardProfiles().forgetComputer(computerId);
   }

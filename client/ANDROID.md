@@ -32,11 +32,12 @@ Android 工程、构建 Release、进行 16 KB zip 对齐，再以独立发布�
 统一下载与版本记录页面：**https://ningzx.cn/panecast/**。后续对外分享此固定页面。
 
 [下载最新版 APK](https://ningzx.cn/static/panecast/panecast-latest.apk)。
-当前为 **0.1.0（build 8）**，约 43 MB，2026-11-06 发布。
-Codex 会话默认折叠连续工具调用，点击摘要即可展开，失败提示和待确认请求仍然可见。
+当前为 **0.1.0（build 9）**，约 43 MB，2026-11-06 发布。
+Codex 会话支持本机历史缓存、后台更新、连续上滑读取及下一段历史预取；重新打开时先显示已读内容。
+工具调用默认折叠，点击摘要即可展开，失败提示和待确认请求仍然可见。
 通知只保留需要处理的问题和任务完成，并合并重复事件。
-[固定版本](https://ningzx.cn/static/panecast/panecast-0.1.0-8-arm64.apk)、
-[SHA-256 校验文件](https://ningzx.cn/static/panecast/panecast-0.1.0-8-arm64.apk.sha256)和
+[固定版本](https://ningzx.cn/static/panecast/panecast-0.1.0-9-arm64.apk)、
+[SHA-256 校验文件](https://ningzx.cn/static/panecast/panecast-0.1.0-9-arm64.apk.sha256)和
 [版本信息](https://ningzx.cn/static/panecast/latest.json)均可公开访问。
 
 把 APK 和同名 `.sha256` 文件放入 HTTPS 静态目录，使用带版本号的文件名。

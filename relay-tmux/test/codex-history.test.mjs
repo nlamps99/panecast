@@ -53,3 +53,16 @@ test('new conversations use a selected host project and reject arbitrary directo
   assert.equal(result.thread.live, true); assert.equal(result.thread.name, '手机新对话');
   assert.equal(calls[0].p.cwd, projects[0].cwd);
 });
+
+test('mobile history can request larger bounded pages while old clients keep the default', async () => {
+  const limits = [];
+  const peer = { closed: false, connect: async () => {}, onMessage() {}, close() {}, async call(method, p) {
+    if (method === 'thread/read') return { thread: { id: p.threadId } };
+    if (method === 'thread/loaded/list') return { data: [] };
+    if (method === 'thread/turns/list') { limits.push(p.limit); return { data: [], nextCursor: null }; }
+    throw new Error('unexpected '+method);
+  } };
+  const source = new CodexSource({ id: 'codex', mode: 'attach', access: 'read' }, () => {}, () => peer);
+  for (const limit of [undefined, 10, 10000, -1]) await source.dispatch('agent.read', { thread_id: 'history', ...(limit === undefined ? {} : { limit }) });
+  assert.deepEqual(limits, [5, 10, 20, 1]); source.close();
+});

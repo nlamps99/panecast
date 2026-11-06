@@ -5,10 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mobileTurn } from '../../../relay-tmux/src/hub/codex-history.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
+import http from 'node:http';
 const directory=await mkdtemp(join(tmpdir(),'panecast-ui-'));
 let counter=1;
 const timers = new Set();
 const pendingSteers = new Set();
+const historyReads = [];
+let historyDelay = 0, historyOffline = false;
 const source={id:'qa-codex',name:'Codex 模拟器测试',type:'codex',enabled:true,access:'control',mode:'attach',status:'online',capabilities:{read:true,control:true,realtime:true,create:true,resume:true}};
 const threads=new Map([
  ['qa-long',{id:'qa-long',name:'长会话回归测试',cwd:directory,status:{type:'notLoaded'},live:false}],
@@ -37,9 +40,12 @@ class Session extends RelaySession {
    if(method==='agent.subscribe')return{thread};
    if(method==='agent.resume'){thread.live=true;thread.status={type:'idle'};return{thread};}
    if(method==='agent.read'){
-    let turns=history.get(thread.id);const normalized=(await mode())==='normalized';
-    if(normalized)turns=turns.slice(-5).map(mobileTurn);
-    const snapshot=structuredClone({thread,turns,next_cursor:null,active_turn_id:thread.status.type==='active'?'active-turn':null});
+    historyReads.push({ threadId: thread.id, cursor: p.cursor ?? null });
+    if(thread.id==='qa-long'&&historyOffline)throw Object.assign(new Error('QA history connection offline'),{code:'offline'});
+    let turns=history.get(thread.id),next=null;const normalized=(await mode())==='normalized';
+    if(normalized){const end=p.cursor?Number(p.cursor):turns.length,start=Math.max(0,end-Math.min(20,Number(p.limit??5)));turns=turns.slice(start,end).map(mobileTurn);next=start?String(start):null;}
+    const snapshot=structuredClone({thread,turns,next_cursor:next,active_turn_id:thread.status.type==='active'?'active-turn':null});
+    if(thread.id==='qa-long'&&!p.cursor&&historyDelay)await delay(historyDelay);
     if(pendingSteers.has(thread.id)) await delay(5000);
     return snapshot;
    }
@@ -71,5 +77,15 @@ class Session extends RelaySession {
 const broker=await createBrokerServer({host:'127.0.0.1',port:4498,relayId:'qa-mac',relayToken:'qa-relay-only',pairingCode:'qa-pair-only',dataFile:join(directory,'devices.json'),logger:{error(){}}});await broker.listen();
 const config={state_directory:join(directory,'hub'),broker:{url:'http://127.0.0.1:4498',relay_id:'qa-mac',relay_token:'qa-relay-only'}};
 const relay=await createTmuxRelay(config,{backend:{},createSession:({send,close,notify})=>new Session({},config,send,close,notify)});await relay.start();
+const control=http.createServer(async(request,response)=>{
+ try{
+  if(request.method==='POST'){
+   let text='';for await(const part of request)text+=part;
+   const value=JSON.parse(text||'{}');historyDelay=Math.min(10000,Math.max(0,Number(value.delay??0)));historyOffline=value.offline===true;
+  }
+  response.writeHead(200,{'content-type':'application/json'});response.end(JSON.stringify({reads:historyReads,delay:historyDelay,offline:historyOffline}));
+ }catch{response.writeHead(400);response.end('{}');}
+});
+await new Promise((resolve,reject)=>{control.once('error',reject);control.listen(4497,'127.0.0.1',resolve);});
 console.log('QA fixture ready on localhost:4498');
-const stop=async()=>{for(const timer of timers)clearTimeout(timer);await relay.close();await broker.close();await rm(directory,{recursive:true,force:true});process.exit(0);};process.once('SIGTERM',stop);process.once('SIGINT',stop);
+const stop=async()=>{for(const timer of timers)clearTimeout(timer);await relay.close();await broker.close();await new Promise(r=>control.close(r));await rm(directory,{recursive:true,force:true});process.exit(0);};process.once('SIGTERM',stop);process.once('SIGINT',stop);

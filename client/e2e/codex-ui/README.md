@@ -23,6 +23,8 @@ node client/e2e/codex-ui/fixture.mjs
 Port 4498 must be free. All fixture credentials are test-only and its listener is
 bound to loopback. `PANECAST_UI_RAW_HISTORY=1` exercises the phone's compatibility
 with older relays which send the full tool history.
+Port 4497 is a separate loopback control endpoint used to delay or fail history
+reads and count page requests in the cache regression test.
 
 With XcodeGen installed, generate and run the standalone UI test project:
 
@@ -47,3 +49,8 @@ are in `relay-tmux/test/desktop-bridge.test.mjs` and `codex-history.test.mjs`.
 conversation initially shows replies and a compact tool summary, that tapping
 the summary reveals the tool output, and that collapse and refresh keep the
 conversation readable. Screenshots of both states are retained in the result.
+
+`testZCachedHistoryScrollsContinuouslyAndSurvivesAppRestart` scrolls to the oldest
+message without page buttons, opens a cached conversation before a deliberately
+slow network response, then restarts the app with history reads unavailable. It
+verifies that already loaded pages stay readable without requesting them again.

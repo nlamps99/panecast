@@ -1,6 +1,6 @@
 import { router, useFocusEffect, useLocalSearchParams, usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputInstance } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextInputInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { SourceStore, type AgentRequest, type SourceInfo } from '../../session/sourceStore';
@@ -12,6 +12,7 @@ import { DialogModal, NameDialog } from '../../ui/NameDialog';
 import { colors, fonts } from '../../ui/theme';
 import { sessionMemory } from '../../state/sessionMemory';
 import { SourceNavigation } from '../../state/sourceNavigation';
+import { conversationCache } from '../../session/conversationCache';
 
 const modes = { terminal: '终端', history: '仅历史', attach: '共享会话服务', managed: '独立会话服务' };
 const statuses = { online: '在线', offline: '离线', revoked: '未授权', unknown: '检查中' };
@@ -23,7 +24,9 @@ export default function SourcesScreen() {
 
 function SourcesContent() {
   const machine = useMachine(), insets = useSafeAreaInsets();
-  const store = useMemo(() => new SourceStore(machine.channel), [machine.channel]);
+  const computerId = machine.computer?.id ?? 'demo';
+  const cache = useMemo(() => computerId === 'demo' ? undefined : conversationCache(computerId), [computerId]);
+  const store = useMemo(() => new SourceStore(machine.channel, { cache }), [machine.channel, cache]);
   const state = useStore(store);
   const connection = useConnectionStatus(machine.channel);
   const source = state.sources.find((s) => s.id === state.sourceId);
@@ -33,19 +36,22 @@ function SourcesContent() {
   const routeSourceId = typeof routeParams.sourceId === 'string' ? routeParams.sourceId : null;
   const routeThreadId = typeof routeParams.threadId === 'string' ? routeParams.threadId : null;
   const navigation = useMemo(() => new SourceNavigation(store), [store]);
-  const computerId = machine.computer?.id ?? 'demo';
   useEffect(() => () => { navigation.cancel(); store.dispose(); }, [store, navigation]);
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', (next) => { if (next !== 'active') void cache?.flush(); else void store.readThread(); });
+    return () => listener.remove();
+  }, [cache, store]);
   useFocusEffect(useCallback(() => { void store.refresh(); const timer = setInterval(() => void store.refresh(), 15_000); return () => clearInterval(timer); }, [store]));
 
   useEffect(() => {
-    if (pathname !== '/sources' || connection.state !== 'open' || state.supported !== true) return;
+    if (pathname !== '/sources' || state.supported !== true) return;
     const routeKey = `${computerId}:${routeSourceId ?? 'saved'}:${routeThreadId ?? ''}`;
     if (navigation.completed === routeKey) return;
     const saved = sessionMemory.computer(computerId).source;
     const sourceId = routeSourceId ?? saved?.sourceId;
     const threadId = routeSourceId ? routeThreadId : saved?.threadId;
     const found = state.sources.find((s) => s.id === sourceId);
-    if (!found?.enabled || found.status !== 'online') return;
+    if (!found?.enabled || (found.status !== 'online' && !store.hasCachedSource(found.id))) return;
     void navigation.open(found.id, threadId, () => {
       const current = store.getState();
       if (current.sourceId) sessionMemory.rememberSource(computerId, { sourceId: current.sourceId, threadId: current.thread?.id ?? null });
@@ -88,16 +94,16 @@ function SourcesContent() {
       <ComputerSwitcher />
       {connection.state !== 'open' ? <Text style={styles.warning}>正在连接电脑，恢复后才能操作</Text> : null}
       {state.error ? <Text style={styles.error}>{state.error}</Text> : null}
-      {state.loading ? <ActivityIndicator color={colors.green} style={{ marginVertical: 8 }} /> : null}
+      {state.loading && !state.turns.length ? <ActivityIndicator color={colors.green} style={{ marginVertical: 8 }} /> : null}
       {!source ? (
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.help}>一台电脑，一次配对。这里集中显示电脑端已配置的终端和 Codex 来源。</Text>
           {state.supported === false ? <Text style={styles.help}>当前连接使用单一终端 relay。安装统一网关后，这里会显示 cmux、tmux 和 Codex；已有终端仍可从工作区打开。</Text> : null}
           {state.supported && !state.sources.length ? <Text style={styles.help}>还没有配置连接源。请在电脑端添加并授权来源，然后刷新。</Text> : null}
           {state.sources.map((item) => (
-            <Pressable key={item.id} onPress={() => void open(item)} disabled={!item.enabled || item.status !== 'online'} style={styles.card} accessibilityRole="button" accessibilityLabel={`打开 ${item.name}`}>
-              <View style={styles.row}><Text style={styles.cardTitle}>{item.name}</Text><Text style={{ color: item.status === 'online' ? colors.green : colors.muted }}>{statuses[item.status]}</Text></View>
-              <Text style={styles.meta}>{item.type} · {modes[item.mode]} · {item.capabilities.control ? '可操作' : '只读'}</Text>
+            <Pressable key={item.id} onPress={() => void open(item)} disabled={!item.enabled || (item.status !== 'online' && !store.hasCachedSource(item.id))} style={styles.card} accessibilityRole="button" accessibilityLabel={`打开 ${item.name}`}>
+              <View style={styles.row}><Text style={styles.cardTitle}>{item.name}</Text><Text style={{ color: item.status === 'online' ? colors.green : colors.muted }}>{item.status !== 'online' && store.hasCachedSource(item.id) ? '本机记录' : statuses[item.status]}</Text></View>
+              <Text style={styles.meta}>{item.type} · {modes[item.mode]} · {item.capabilities.control && item.status === 'online' ? '可操作' : '只读'}</Text>
               {item.error ? <Text style={styles.error}>{item.error}</Text> : null}
             </Pressable>
           ))}
@@ -108,7 +114,7 @@ function SourcesContent() {
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.row}><Text style={styles.meta}>{modes[source.mode]} · {source.capabilities.control ? '可操作' : '只读'}</Text><Button label="刷新" onPress={() => void store.loadThreads()} /></View>
-          {source.capabilities.control ? <Button label="新建对话" disabled={state.busy || connection.state !== 'open'} onPress={() => { setNewConversation(true); void store.loadProjects(); }} /> : null}
+          {source.capabilities.control ? <Button label="新建对话" disabled={state.busy || connection.state !== 'open' || source.status !== 'online'} onPress={() => { setNewConversation(true); void store.loadProjects(); }} /> : null}
           {!state.loading && !state.threads.length ? <Text style={styles.help}>没有可显示的会话</Text> : null}
           {state.threads.map((thread) => <Pressable key={thread.id} style={styles.card} onPress={() => { navigation.cancel(); navigation.markCompleted(`${computerId}:saved:`); if (routeSourceId) router.setParams({ sourceId: undefined, threadId: undefined }); void store.openThread(thread.id); }} accessibilityRole="button"><Text style={styles.cardTitle}>{thread.name}</Text><Text style={styles.meta} numberOfLines={2}>{thread.cwd}</Text><Text style={styles.meta}>{thread.live === false || thread.status?.type === 'history' ? '已保存的历史' : thread.status?.type === 'active' ? '正在运行 · 已连接' : thread.live ? '已连接 · 可继续' : thread.status?.type ?? '已保存'}</Text></Pressable>)}
           {state.threadCursor ? <Button label="更多会话" disabled={state.loading} onPress={() => void store.loadThreads(true)} /> : null}
@@ -133,12 +139,13 @@ function Conversation({ source, store, connected }: { source: SourceInfo; store:
   const [expandedTools, setExpandedTools] = useState<ReadonlySet<string>>(() => new Set());
   const active = state.activeTurnId;
   const liveControl = source.capabilities.control && state.thread?.live !== false;
-  const canControl = connected && source.status === 'online' && liveControl && !state.busy && !state.loading;
-  const rows = useMemo(() => agentTimeline(state.turns, expandedTools, active), [state.turns, expandedTools, active]);
+  const canControl = connected && source.status === 'online' && liveControl && state.threadVerified && !state.busy && !state.loading;
+  const rows = useMemo(() => agentTimeline(state.turns, expandedTools, active).reverse(), [state.turns, expandedTools, active]);
   return (
     <View style={styles.conversation}>
       <Text style={styles.cardTitle}>{state.thread?.name}</Text>
       <Text style={styles.meta} numberOfLines={2}>{state.thread?.cwd}</Text>
+      {state.fromCache ? <Text style={styles.meta}>{state.loading && connected ? '已显示本机历史，正在更新最新消息…' : '当前显示本机历史'}</Text> : null}
       <View style={styles.row}>
         <Button label="刷新会话" onPress={() => void store.readThread()} disabled={!connected} />
         {source.capabilities.control ? <Button label="重命名" disabled={!canControl} onPress={() => setRenameOpen(true)} /> : null}
@@ -149,8 +156,15 @@ function Conversation({ source, store, connected }: { source: SourceInfo; store:
         ref={listRef}
         testID="codex-messages" style={{ flex: 1 }} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
         data={rows} keyExtractor={(row) => row.key} initialNumToRender={8} maxToRenderPerBatch={8} windowSize={5}
-        onContentSizeChange={() => { if (followInput.current) listRef.current?.scrollToEnd({ animated: false }); }}
-        ListHeaderComponent={state.historyCursor ? <Button label="更早的消息" onPress={() => void store.readThread(true)} disabled={!connected || state.loading} /> : undefined}
+        inverted maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 60 }}
+        onContentSizeChange={() => { if (followInput.current) listRef.current?.scrollToOffset({ offset: 0, animated: false }); }}
+        onEndReached={() => { if (!state.historyError) void store.loadOlder(); }} onEndReachedThreshold={1.5}
+        ListFooterComponent={<View style={styles.historyBoundary}>
+          {state.historyLoading ? <ActivityIndicator color={colors.green} /> : null}
+          {state.historyError ? <><Text style={styles.error}>{state.historyError}</Text><Button label="重试读取历史" disabled={!connected || state.historyLoading} onPress={() => void store.loadOlder()} /></>
+            : state.historyCursor ? <Text style={styles.meta}>{connected ? '继续上滑，自动读取更早消息' : '连接后可继续读取更早消息'}</Text>
+              : state.turns.length ? <Text style={styles.meta}>已到会话开头</Text> : null}
+        </View>}
         renderItem={({ item: row }) => row.kind === 'item' ? <AgentMessage item={row.item} /> : row.kind === 'tools' ? <AgentToolsSummary group={row} onToggle={() => setExpandedTools((current) => {
           const next = new Set(current);
           if (next.has(row.key)) next.delete(row.key); else next.add(row.key);
@@ -160,7 +174,7 @@ function Conversation({ source, store, connected }: { source: SourceInfo; store:
           {row.omitted > 0 ? <Text style={styles.meta}>还有 {row.omitted} 条较早的工具记录未加载，完整记录可在电脑查看。</Text> : null}
           {row.error ? <Text style={styles.error}>{row.error}</Text> : null}
         </View>}
-        ListFooterComponent={<View style={{ gap: 12 }}>
+        ListHeaderComponent={<View style={{ gap: 12 }}>
           {state.submissions.map((submission) => <View key={submission.id} style={[styles.message, styles.userMessage]}>
             <Text style={styles.meta}>你{submission.mode === 'steer' ? ' · 追加指令' : ''}</Text>
             <Text selectable style={styles.messageText}>{submission.text.slice(0, 4000)}</Text>
@@ -181,15 +195,15 @@ function Conversation({ source, store, connected }: { source: SourceInfo; store:
           if (followTimer.current) clearTimeout(followTimer.current);
           void store.action(active ? 'agent.steer' : 'agent.send', { text: sent, ...(active ? { turn_id: active } : {}) }).then((ok) => {
             if (ok && draftRef.current === sent) { inputRef.current?.clear(); draftRef.current = ''; setDraft(''); }
-            if (ok) listRef.current?.scrollToEnd({ animated: true });
+            if (ok) listRef.current?.scrollToOffset({ offset: 0, animated: true });
             followTimer.current = setTimeout(() => { followInput.current = false; }, 300);
           });
         }} />
       </View> : source.capabilities.control ? <View style={styles.resume}>
         <Text style={styles.help}>继续这条已保存的对话，或基于它的历史开始一条新对话。</Text>
         <View style={styles.row}>
-          <Button label={state.busy ? '正在连接…' : '继续对话'} disabled={!connected || state.busy || state.loading} onPress={() => void store.action('agent.resume')} />
-          <Button label="从历史新建" disabled={!connected || state.busy || state.loading} onPress={() => void store.action('agent.fork')} />
+          <Button label={state.busy ? '正在连接…' : '继续对话'} disabled={!connected || !state.threadVerified || state.busy || state.loading} onPress={() => void store.action('agent.resume')} />
+          <Button label="从历史新建" disabled={!connected || !state.threadVerified || state.busy || state.loading} onPress={() => void store.action('agent.fork')} />
         </View>
       </View> : <Text style={styles.help}>当前来源只读。请切换到已授权操作的 Codex 桌面来源来继续或新建对话。</Text>}
       {renameOpen ? <NameDialog visible title="重命名会话" initialValue={state.thread?.name} confirmLabel="保存" onCancel={() => setRenameOpen(false)} onSubmit={(name) => { setRenameOpen(false); void store.action('agent.rename', { name }); }} /> : null}
@@ -262,4 +276,5 @@ const styles = StyleSheet.create({
   composer: { flexDirection: 'row', gap: 8, alignItems: 'flex-end', paddingVertical: 8 }, input: { flex: 1, minHeight: 44, maxHeight: 140, color: colors.ink, backgroundColor: colors.surface, borderRadius: 10, padding: 12, fontSize: 14 },
   resume: { gap: 6, paddingBottom: 12 }, project: { padding: 10, gap: 5, borderRadius: 10, marginBottom: 6 }, projectSelected: { backgroundColor: colors.surfaceRaised, borderWidth: 1, borderColor: colors.green },
   delivery: { color: colors.inkDim, fontSize: 12, lineHeight: 18, paddingTop: 6 },
+  historyBoundary: { alignItems: 'center', gap: 8, paddingVertical: 12 },
 });
