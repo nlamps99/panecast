@@ -2,23 +2,59 @@
   "baseUrl": "https://ningzx.cn/panecast",
   "mac": {
     "date": "2026-11-05",
-    "notes": ["支持一条命令、Homebrew 与 npm 安装", "新增配置向导、扫码配对和 macOS 后台服务管理", "保留已有配置，独立授权 tmux、cmux 和 Codex 来源"]
+    "notes": [
+      "支持一条命令、Homebrew 与 npm 安装",
+      "新增配置向导、扫码配对和 macOS 后台服务管理",
+      "保留已有配置，独立授权 tmux、cmux 和 Codex 来源"
+    ]
   },
   "android": {
     "version": "0.1.0",
-    "versionCode": 6,
-    "file": "panecast-0.1.0-6-arm64.apk",
-    "size": 43225233,
-    "sha256": "0fee3570f47e29f7820d7b73cd49da1a20e38f308eb076273cc6ee54e5d8e576",
+    "versionCode": 8,
+    "file": "panecast-0.1.0-8-arm64.apk",
+    "size": 43253904,
+    "sha256": "3c345563511a64c99d44dac9f869457d3d24738fa33ff806f90875165d833091",
     "minimumAndroid": "7.0",
     "architecture": "ARM64",
-    "date": "2026-11-05",
-    "notes": ["独立签名的 Android 安装包", "终端、工作区、来源与收件箱", "支持扫码配对和局域网自动切换"]
+    "date": "2026-11-06",
+    "notes": [
+      "Codex 连续工具调用默认折叠，点按摘要展开或收起",
+      "优先显示对话正文，失败和审批请求保持可见",
+      "保留问题与任务完成通知规则，以及终端输入和历史浏览修复"
+    ]
   },
   "node": {
     "version": "22.23.4",
     "darwin-arm64": "c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428",
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
-  "history": []
+  "history": [
+    {
+      "platform": "Android",
+      "version": "0.1.0",
+      "versionCode": 7,
+      "file": "panecast-0.1.0-7-arm64.apk",
+      "date": "2026-11-05",
+      "notes": [
+        "只提醒需要处理的问题和任务完成",
+        "重复事件去重，支持通知补齐"
+      ]
+    },
+    {
+      "platform": "Android",
+      "version": "0.1.0",
+      "versionCode": 6,
+      "file": "panecast-0.1.0-6-arm64.apk",
+      "size": 43225233,
+      "sha256": "0fee3570f47e29f7820d7b73cd49da1a20e38f308eb076273cc6ee54e5d8e576",
+      "minimumAndroid": "7.0",
+      "architecture": "ARM64",
+      "date": "2026-11-05",
+      "notes": [
+        "独立签名的 Android 安装包",
+        "终端、工作区、来源与收件箱",
+        "支持扫码配对和局域网自动切换"
+      ]
+    }
+  ]
 }
