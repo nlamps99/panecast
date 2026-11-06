@@ -10,17 +10,17 @@
   },
   "android": {
     "version": "0.1.0",
-    "versionCode": 8,
-    "file": "panecast-0.1.0-8-arm64.apk",
-    "size": 43253904,
-    "sha256": "3c345563511a64c99d44dac9f869457d3d24738fa33ff806f90875165d833091",
+    "versionCode": 9,
+    "file": "panecast-0.1.0-9-arm64.apk",
+    "size": 43311248,
+    "sha256": "541ffea866b36fc527772d80bf0537b6e1105f5a517c98684e92d4cfe6f9e99e",
     "minimumAndroid": "7.0",
     "architecture": "ARM64",
     "date": "2026-11-06",
     "notes": [
-      "Codex 连续工具调用默认折叠，点按摘要展开或收起",
-      "优先显示对话正文，失败和审批请求保持可见",
-      "保留问题与任务完成通知规则，以及终端输入和历史浏览修复"
+      "会话历史保存到手机，重开先显示缓存并后台更新",
+      "连续上滑自动接续更早消息，并提前准备下一段",
+      "断网可读已保存历史，减少工具结束后的重复网络读取"
     ]
   },
   "node": {
@@ -29,6 +29,22 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "Android",
+      "version": "0.1.0",
+      "versionCode": 8,
+      "file": "panecast-0.1.0-8-arm64.apk",
+      "size": 43253904,
+      "sha256": "3c345563511a64c99d44dac9f869457d3d24738fa33ff806f90875165d833091",
+      "minimumAndroid": "7.0",
+      "architecture": "ARM64",
+      "date": "2026-11-06",
+      "notes": [
+        "Codex 连续工具调用默认折叠，点按摘要展开或收起",
+        "优先显示对话正文，失败和审批请求保持可见",
+        "保留问题与任务完成通知规则，以及终端输入和历史浏览修复"
+      ]
+    },
     {
       "platform": "Android",
       "version": "0.1.0",
