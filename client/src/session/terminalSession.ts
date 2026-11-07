@@ -476,7 +476,7 @@ export class TerminalSession {
   /** Keep captured application history in the same native list as the first screen. */
   startApplicationHistory(): void {
     if (!this.state.applicationScroll || this.state.browse || !this.state.screen.rows.length) return;
-    this.stopApplicationScroll();
+    this.stopApplicationScroll(true);
     this.applicationAnchor = this.state.screen.rows;
     this.update({ browse: { kind: 'application', frozenRows: this.state.screen.rows, olderRows: [],
       cursor: null, started: false, exhausted: false, loading: false, error: null, liveChanged: false } });

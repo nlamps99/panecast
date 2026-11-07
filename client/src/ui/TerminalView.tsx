@@ -272,6 +272,11 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
 
   const moveApplication = (lines: number) => {
     if (session.getState().browse?.kind === 'application') {
+      if (lines < 0 && lastFromBottom.current <= 2) {
+        session.resumeLive();
+        session.scrollApplication(lines);
+        return;
+      }
       const offset = Math.max(0, Math.min(scrollRange.current, lastFromBottom.current + lines * lineHeight));
       list.current?.scrollToOffset({ offset, animated: true });
     } else session.scrollApplication(lines);

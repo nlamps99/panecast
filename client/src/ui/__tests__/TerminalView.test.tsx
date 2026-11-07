@@ -249,8 +249,9 @@ const applicationRows = (start: number) => Array.from({ length: 47 }, (_, i) => 
 it.each([true, false])('appends application captures without replacing visible cells or stopping native momentum (wrapped=%s)', async (wrap) => {
   mockWrap = wrap;
   let acknowledge!: () => void;
-  channel.rpc.mockImplementation(async (method) => {
+  channel.rpc.mockImplementation(async (method, params) => {
     if (method === 'terminal.replay') return application;
+    if (method === 'terminal.scroll' && Number(params?.delta_lines) < 0) return {};
     if (method === 'terminal.scroll') return new Promise<void>((resolve) => { acknowledge = resolve; });
     return {};
   });
@@ -288,6 +289,9 @@ it.each([true, false])('appends application captures without replacing visible c
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
   expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(2);
   expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
+  await act(async () => callback('terminal-application-newer', 'onPress', undefined));
+  expect(session.getState().browse).toBeNull();
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(-2).map(([, p]) => p?.delta_lines)).toEqual([-14, -3]);
 });
 
 it('drops application prefetch and restores its viewport when an explicit key is sent', async () => {
