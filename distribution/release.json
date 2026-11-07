@@ -10,17 +10,17 @@
   },
   "android": {
     "version": "0.1.0",
-    "versionCode": 9,
-    "file": "panecast-0.1.0-9-arm64.apk",
-    "size": 43311248,
-    "sha256": "541ffea866b36fc527772d80bf0537b6e1105f5a517c98684e92d4cfe6f9e99e",
+    "versionCode": 10,
+    "file": "panecast-0.1.0-10-arm64.apk",
+    "size": 43311250,
+    "sha256": "c56e1a30a4bfcfc64f593cdc77d1c2422865884e678b690962245297465f6c8b",
     "minimumAndroid": "7.0",
     "architecture": "ARM64",
-    "date": "2026-11-06",
+    "date": "2026-11-07",
     "notes": [
-      "会话历史保存到手机，重开先显示缓存并后台更新",
-      "连续上滑自动接续更早消息，并提前准备下一段",
-      "断网可读已保存历史，减少工具结束后的重复网络读取"
+      "cmux 终端支持跨屏连续滑动和松手后的惯性滚动",
+      "慢网络下按小步连续发送滚动，减少整屏跳动",
+      "触摸、按键和切换终端时停止剩余滚动，保留工具折叠与通知规则"
     ]
   },
   "node": {
@@ -29,6 +29,22 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "Android",
+      "version": "0.1.0",
+      "versionCode": 9,
+      "file": "panecast-0.1.0-9-arm64.apk",
+      "size": 43311248,
+      "sha256": "541ffea866b36fc527772d80bf0537b6e1105f5a517c98684e92d4cfe6f9e99e",
+      "minimumAndroid": "7.0",
+      "architecture": "ARM64",
+      "date": "2026-11-06",
+      "notes": [
+        "会话历史保存到手机，重开先显示缓存并后台更新",
+        "连续上滑自动接续更早消息，并提前准备下一段",
+        "断网可读已保存历史，减少工具结束后的重复网络读取"
+      ]
+    },
     {
       "platform": "Android",
       "version": "0.1.0",
