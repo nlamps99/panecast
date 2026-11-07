@@ -10,17 +10,17 @@
   },
   "android": {
     "version": "0.1.0",
-    "versionCode": 10,
-    "file": "panecast-0.1.0-10-arm64.apk",
-    "size": 43311250,
-    "sha256": "c56e1a30a4bfcfc64f593cdc77d1c2422865884e678b690962245297465f6c8b",
+    "versionCode": 11,
+    "file": "panecast-0.1.0-11-arm64.apk",
+    "size": 43319442,
+    "sha256": "8743a1050717ca52322273a1a24e359d686d4346d54e28e0556e3fd03eb104c1",
     "minimumAndroid": "7.0",
     "architecture": "ARM64",
     "date": "2026-11-07",
     "notes": [
-      "cmux 终端支持跨屏连续滑动和松手后的惯性滚动",
-      "慢网络下按小步连续发送滚动，减少整屏跳动",
-      "触摸、按键和切换终端时停止剩余滚动，保留工具折叠与通知规则"
+      "终端历史提前缓存，并按滚动速度准备更远的内容",
+      "cmux 程序内历史接续到同一个本地列表，保持可见文字位置",
+      "使用系统滚动和惯性，已加载的历史可以直接反向浏览"
     ]
   },
   "node": {
@@ -29,6 +29,22 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "Android",
+      "version": "0.1.0",
+      "versionCode": 10,
+      "file": "panecast-0.1.0-10-arm64.apk",
+      "size": 43311250,
+      "sha256": "c56e1a30a4bfcfc64f593cdc77d1c2422865884e678b690962245297465f6c8b",
+      "minimumAndroid": "7.0",
+      "architecture": "ARM64",
+      "date": "2026-11-07",
+      "notes": [
+        "cmux 终端支持跨屏连续滑动和松手后的惯性滚动",
+        "慢网络下按小步连续发送滚动，减少整屏跳动",
+        "触摸、按键和切换终端时停止剩余滚动，保留工具折叠与通知规则"
+      ]
+    },
     {
       "platform": "Android",
       "version": "0.1.0",
