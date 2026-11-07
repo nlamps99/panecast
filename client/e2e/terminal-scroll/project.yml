@@ -1,0 +1,21 @@
+name: PanecastScrollUITests
+options:
+  bundleIdPrefix: com.nzx.panecast.qa
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: 5.0
+targets:
+  PanecastScrollUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: '16.4'
+    sources: [Tests]
+schemes:
+  PanecastScrollUITests:
+    build:
+      targets:
+        PanecastScrollUITests: [test]
+    test:
+      targets: [PanecastScrollUITests]

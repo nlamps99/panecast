@@ -80,6 +80,9 @@ const RESYNC_MAX_COOLDOWN_MS = 60_000;
 const FOCUS_REUSE_MS = 1_500;
 const MAX_HISTORY_ALIGNMENT_PAGES = 25;
 const HISTORY_ALIGNMENT_TIMEOUT_MS = 10_000;
+const SCROLL_INTERVAL_MS = 32;
+const SCROLL_BATCH_LINES = 4;
+const SCROLL_IN_FLIGHT = 4;
 
 /**
  * State for one terminal surface on top of a relay connection: keeps the
@@ -118,6 +121,9 @@ export class TerminalSession {
   private inspectingScroll = false;
   private queuedScroll = 0;
   private scrollingApplication = false;
+  private scrollInFlight = 0;
+  private scrollTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastScrollSentAt = -Infinity;
   private liveLines: number;
   /** `lines` sent with the latest `surface.subscribe`. */
   private subscribedLines: number | null = null;
@@ -427,7 +433,23 @@ export class TerminalSession {
     this.scrollGeneration++;
     this.inspectingScroll = false;
     this.scrollingApplication = false;
+    this.scrollInFlight = 0;
+    this.lastScrollSentAt = -Infinity;
+    this.stopApplicationScroll();
+  }
+
+  /** A new touch or explicit input stops unsent momentum immediately. */
+  stopApplicationScroll(newGesture = false): void {
     this.queuedScroll = 0;
+    if (this.scrollTimer !== null) clearTimeout(this.scrollTimer);
+    this.scrollTimer = null;
+    if (newGesture && this.state.applicationScroll?.error) {
+      this.update({ applicationScroll: { ...this.state.applicationScroll, error: null } });
+    }
+    if (!this.scrollInFlight && this.scrollingApplication) {
+      this.scrollingApplication = false;
+      if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, busy: false } });
+    }
   }
 
   /** Older relays and ordinary shells retain cursor-based scrollback. */
@@ -444,7 +466,7 @@ export class TerminalSession {
         if (!this.state.applicationScroll) this.resumeLive();
         this.update({ applicationScroll: { ...size, busy: this.scrollingApplication, error: this.state.applicationScroll?.error ?? null } });
       } else if (this.state.applicationScroll) {
-        this.queuedScroll = 0;
+        this.cancelApplicationScroll();
         this.update({ applicationScroll: null });
       }
     } catch {
@@ -457,31 +479,48 @@ export class TerminalSession {
   /** Scroll the selected application without injecting text or changing pane focus. */
   scrollApplication(lines: number): void {
     if (!this.state.applicationScroll || !this.state.target || !this.channel.isOpen || this.disposed || !Number.isFinite(lines)) return;
+    if (this.state.applicationScroll.error) return;
+    if (this.queuedScroll && Math.sign(lines) !== Math.sign(this.queuedScroll)) this.queuedScroll = 0;
     this.queuedScroll = Math.max(-120, Math.min(120, this.queuedScroll + Math.trunc(lines)));
-    if (this.queuedScroll && !this.scrollingApplication) void this.pumpApplicationScroll();
+    if (this.queuedScroll) this.pumpApplicationScroll();
   }
 
-  private async pumpApplicationScroll(): Promise<void> {
-    const target = this.state.target!, generation = this.scrollGeneration;
-    this.scrollingApplication = true;
-    this.update({ applicationScroll: { ...this.state.applicationScroll!, busy: true, error: null } });
-    try {
-      while (this.queuedScroll && this.state.applicationScroll && generation === this.scrollGeneration) {
-        const lines = this.queuedScroll, size = this.state.applicationScroll;
-        this.queuedScroll = 0;
-        await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
-          delta_lines: lines, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5_000);
-      }
-    } catch (error) {
-      if (generation !== this.scrollGeneration) return;
-      this.queuedScroll = 0;
-      if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, error: describeError(error) } });
-    } finally {
-      if (generation === this.scrollGeneration) {
-        this.scrollingApplication = false;
-        if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, busy: false } });
-      }
+  private pumpApplicationScroll(): void {
+    if (this.scrollTimer !== null || this.scrollInFlight >= SCROLL_IN_FLIGHT || !this.queuedScroll) return;
+    const delay = SCROLL_INTERVAL_MS - (Date.now() - this.lastScrollSentAt);
+    if (delay > 0) {
+      this.scrollTimer = setTimeout(() => { this.scrollTimer = null; this.pumpApplicationScroll(); }, delay);
+      return;
     }
+    const target = this.state.target, size = this.state.applicationScroll;
+    if (!target || !size || !this.channel.isOpen || this.disposed) return;
+    const generation = this.scrollGeneration;
+    const lines = Math.sign(this.queuedScroll) * Math.min(SCROLL_BATCH_LINES, Math.abs(this.queuedScroll));
+    this.queuedScroll -= lines;
+    this.scrollInFlight++;
+    this.lastScrollSentAt = Date.now();
+    if (!this.scrollingApplication) {
+      this.scrollingApplication = true;
+      this.update({ applicationScroll: { ...size, busy: true, error: null } });
+    }
+    // WebSocket preserves send order. A small bounded pipeline keeps a slow
+    // round trip from turning finger movement into screen-sized wheel jumps.
+    void this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+      delta_lines: lines, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5_000)
+      .catch((error: unknown) => {
+        if (generation !== this.scrollGeneration) return;
+        this.cancelApplicationScroll();
+        if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, busy: false, error: describeError(error) } });
+      }).finally(() => {
+        if (generation !== this.scrollGeneration) return;
+        this.scrollInFlight--;
+        if (!this.scrollInFlight && !this.queuedScroll) {
+          this.scrollingApplication = false;
+          if (this.state.applicationScroll) this.update({ applicationScroll: { ...this.state.applicationScroll, busy: false } });
+        }
+        this.pumpApplicationScroll();
+      });
+    this.pumpApplicationScroll();
   }
 
   /** Back to the live screen; drops loaded history so the next browse starts from a fresh snapshot. */
@@ -589,6 +628,7 @@ export class TerminalSession {
   private revealInputResult(): void {
     if (!this.state.target || !this.channel.isOpen || this.disposed) return;
     this.resumeLive();
+    this.stopApplicationScroll();
     this.update({ inputRevision: (this.state.inputRevision ?? 0) + 1 });
   }
 

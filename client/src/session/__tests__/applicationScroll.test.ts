@@ -41,18 +41,26 @@ it('uses ordinary history for a primary screen, a non-mouse alternate screen, an
   session.dispose();
 });
 
-it('coalesces remote wheel requests, keeps them ordered and never pins another pane focus', async () => {
+it('streams small ordered wheel steps before slow acknowledgements without changing pane focus', async () => {
+  jest.useFakeTimers();
   const { session, call } = fixture();
   call.mockResolvedValue(application); await session.inspectScrollMode();
-  let finish!: () => void;
-  call.mockImplementation(async (method) => method === 'terminal.scroll' ? new Promise<void>((resolve) => { finish = resolve; }) : {});
+  const finishes: (() => void)[] = [];
+  call.mockImplementation(async (method) => method === 'terminal.scroll' ? new Promise<void>((resolve) => { finishes.push(resolve); }) : {});
   session.scrollApplication(4); session.scrollApplication(5); session.scrollApplication(6);
   expect(call.mock.calls.filter(([m]) => m === 'terminal.scroll')).toHaveLength(1);
-  finish(); await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  expect(call.mock.calls.filter(([m]) => m === 'terminal.scroll').map(([, p]) => p?.delta_lines)).toEqual([4, 11]);
+  await jest.advanceTimersByTimeAsync(100);
+  expect(call.mock.calls.filter(([m]) => m === 'terminal.scroll').map(([, p]) => p?.delta_lines)).toEqual([4, 4, 4, 3]);
+  session.scrollApplication(50);
+  await jest.advanceTimersByTimeAsync(200);
+  expect(finishes).toHaveLength(4); // Bounded backpressure, even if the network stalls.
+  session.stopApplicationScroll();
+  for (const finish of finishes) finish();
+  await jest.advanceTimersByTimeAsync(100);
+  expect(session.getState().applicationScroll?.busy).toBe(false);
   expect(call).toHaveBeenLastCalledWith('terminal.scroll', expect.objectContaining({ workspace_id: 'workspace', surface_id: 'surface', col: 78, row: 23 }), expect.any(Number));
   expect(call.mock.calls.some(([m]) => m === 'surface.focus' || m === 'surface.send_text')).toBe(false);
-  finish(); session.dispose();
+  session.dispose(); jest.useRealTimers();
 });
 
 it('drops queued gestures on a target switch and does not replay an uncertain failed scroll', async () => {
@@ -64,6 +72,9 @@ it('drops queued gestures on a target switch and does not replay an uncertain fa
   fail(new Error('connection lost')); await new Promise<void>((resolve) => setTimeout(resolve, 0));
   expect(session.getState().applicationScroll?.error).toContain('connection lost');
   expect(call.mock.calls.filter(([m]) => m === 'terminal.scroll')).toHaveLength(1);
+  session.scrollApplication(20);
+  expect(call.mock.calls.filter(([m]) => m === 'terminal.scroll')).toHaveLength(1);
+  session.stopApplicationScroll(true);
   session.scrollApplication(3); session.scrollApplication(7);
   session.setTarget({ workspaceId: 'new', surfaceId: 'new' });
   fail(new Error('late failure')); await new Promise<void>((resolve) => setTimeout(resolve, 0));

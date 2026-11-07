@@ -9,7 +9,7 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.nzx.panecast",
-      "buildNumber": "9",
+      "buildNumber": "10",
       "supportsTablet": true,
       "icon": "./assets/panecast.icon",
       "config": {
@@ -24,7 +24,7 @@
     },
     "android": {
       "package": "com.nzx.panecast",
-      "versionCode": 9,
+      "versionCode": 10,
       "adaptiveIcon": {
         "backgroundColor": "#182335",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

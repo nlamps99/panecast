@@ -42,6 +42,19 @@ final class WebSocketHandlerTests: XCTestCase {
 
     // MARK: - RPC dispatch
 
+    func testTerminalGesturesWakeScreenPollingBeforeDispatch() async {
+        let cmux = InputActivityFacade()
+        let machine = WSProtocolMachine(cmux: cmux)
+        _ = await machine.processText(#"{"deviceId":"d","appVersion":"1","protocolVersion":1}"#)
+        for method in ["terminal.scroll", "surface.send_key", "surface.send_text", "surface.read_text"] {
+            let text = "{\"id\":\"1\",\"method\":\"\(method)\",\"params\":{\"surface_id\":\"s\"}}"
+            _ = await machine.processText(text) { surfaceId in await cmux.note(surfaceId) }
+        }
+        let calls = await cmux.snapshot()
+        XCTAssertEqual(calls, ["active:s", "terminal.scroll", "active:s", "surface.send_key",
+                               "active:s", "surface.send_text", "surface.read_text"])
+    }
+
     func testRPCDispatchesToFacade() async {
         let cmux = RecordingCMUXFacade()
         let m = WSProtocolMachine(cmux: cmux)
@@ -139,6 +152,16 @@ final class WebSocketHandlerTests: XCTestCase {
 }
 
 // MARK: - Test doubles
+
+private actor InputActivityFacade: CMUXFacade {
+    private var calls: [String] = []
+    func note(_ surfaceId: String) { calls.append("active:\(surfaceId)") }
+    func dispatch(method: String, params: JSONValue) async throws -> JSONValue {
+        calls.append(method)
+        return .object([:])
+    }
+    func snapshot() -> [String] { calls }
+}
 
 final class NoOpCMUXFacade: CMUXFacade {
     func dispatch(method: String, params: JSONValue) async throws -> JSONValue {

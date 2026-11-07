@@ -45,7 +45,8 @@ public actor WSProtocolMachine {
 
     /// Drive the machine with one inbound text frame. Returns the actions
     /// the handler should apply to the channel (in order).
-    public func processText(_ text: String) async -> [Action] {
+    public func processText(_ text: String,
+                            noteUserInput: (@Sendable (String) async -> Void)? = nil) async -> [Action] {
         let data = Data(text.utf8)
         if !helloed {
             guard let hello = try? JSONDecoder().decode(HelloFrame.self, from: data) else {
@@ -63,6 +64,12 @@ public actor WSProtocolMachine {
         }
         if let relayAction = Self.relayOwnedAction(for: req) {
             return [relayAction]
+        }
+
+        if ["terminal.scroll", "surface.send_key", "surface.send_text"].contains(req.method),
+           case .object(let params) = req.params,
+           case .string(let surfaceId)? = params["surface_id"] {
+            await noteUserInput?(surfaceId)
         }
 
         do {
@@ -278,7 +285,9 @@ public final class WebSocketHandler: ChannelInboundHandler, @unchecked Sendable 
         Task { [weak self] in
             guard let self else { return }
             await self.actionQueue.run {
-                let actions = await self.machine.processText(text)
+                let actions = await self.machine.processText(text) { surfaceId in
+                    await self.session?.noteUserInput(surfaceId: surfaceId)
+                }
                 await self.apply(actions: actions, on: channel)
             }
         }

@@ -13,7 +13,7 @@ const mockScrollTo = jest.fn();
 let mockWrap = true;
 let mockReadOnly = false;
 let mockShowKeys = false;
-let mockPan: { onBegin: () => void; onUpdate: (event: { translationY: number }) => void; enabled: boolean };
+let mockPan: { onBegin: () => void; onUpdate: (event: { translationY: number }) => void; onDeactivate: (event: { velocityY: number; canceled: boolean }) => void; enabled: boolean };
 
 jest.mock('react-native', () => {
   // A host adapter keeps the real TerminalView, session and history behavior
@@ -269,8 +269,33 @@ it.each([true, false])('scrolls application history beyond the current screen (w
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0)));
   await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(0)));
   await act(async () => { mockPan.onBegin(); mockPan.onUpdate({ translationY: -68 }); });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 40)));
   expect(requests().at(-1)?.[1]).toMatchObject({ delta_lines: -4 });
   expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
+});
+
+it('keeps a single fling scrolling cmux across screen updates and stops when a key is sent', async () => {
+  jest.useFakeTimers();
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay'
+    ? { render_grid: { active_screen: 'alternate', columns: 156, rows: 47, modes: [{ ansi: false, code: 1000, on: true }] } } : {});
+  await mount();
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(1400)));
+  await act(async () => { mockPan.onBegin(); mockPan.onUpdate({ translationY: 70 }); mockPan.onDeactivate({ velocityY: 2200, canceled: false }); });
+  const requests = () => channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll');
+  expect(requests()).toHaveLength(0); // The finger has not reached the remote edge.
+  await act(async () => { await jest.advanceTimersByTimeAsync(250); });
+  expect(requests().length).toBeGreaterThan(2);
+  const beforeFrame = requests().length;
+  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: Array.from({ length: 120 }, (_, i) => `remote history ${i}`), cols: 156, rowsCount: 120, cursor: { x: 0, y: 0 } }));
+  await act(async () => { await jest.advanceTimersByTimeAsync(100); });
+  expect(requests().length).toBeGreaterThan(beforeFrame);
+  expect(requests().every(([, params]) => Math.abs(Number(params?.delta_lines)) <= 4)).toBe(true);
+  await act(async () => session.sendKey({ name: 'up' }));
+  const stopped = requests().length;
+  await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+  expect(requests()).toHaveLength(stopped);
+  expect(session.getState().browse).toBeNull();
+  jest.useRealTimers();
 });
 
 it('does not send application scroll input for a read-only source', async () => {
