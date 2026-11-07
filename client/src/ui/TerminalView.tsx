@@ -13,7 +13,7 @@ import {
   type TextStyle,
   type ScrollViewInstance,
 } from 'react-native';
-import { GestureDetector, useNativeGesture, usePanGesture, usePinchGesture, useSimultaneousGestures } from 'react-native-gesture-handler';
+import { GestureDetector, useNativeGesture, usePinchGesture } from 'react-native-gesture-handler';
 
 import type { TerminalSession, TerminalState } from '../session/terminalSession';
 import { DEFAULT_ATTR } from '../terminal/ansi';
@@ -23,7 +23,6 @@ import { DEFAULT_FG, styleForAttr } from '../terminal/palette';
 import { clampFontSize, setPrefs, usePrefs } from '../state/prefs';
 import { colors, fonts, MONO_ADVANCE_EM } from './theme';
 import { TerminalTools } from './TerminalTools';
-import { ApplicationScrollMotion } from './applicationScrollMotion';
 
 const SIDE_PADDING = 8;
 
@@ -42,6 +41,7 @@ type Props = {
   /** Tap on the terminal: hide the keyboard. */
   onTap: () => void;
   readOnly?: boolean;
+  active?: boolean;
 };
 
 /**
@@ -53,7 +53,7 @@ type Props = {
  * with `surface.history`. Back at the bottom the live screen resumes. Pinch
  * changes the font size.
  */
-export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, onTap, readOnly = false }: Props) {
+export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, onTap, readOnly = false, active = true }: Props) {
   const [width, setWidth] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -73,6 +73,8 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const requestedOffset = useRef<number | null>(null);
   const dragging = useRef(false);
   const scrollRange = useRef(0);
+  const historyRunway = useRef(0);
+  const lastScrollSample = useRef({ at: 0, offset: 0 });
   const size = pinchSize ?? fontSize;
   const lineHeight = Math.round(size * 1.3);
   const columns = width > 0 ? terminalColumns(width, size) : 0;
@@ -81,26 +83,13 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const seenInputRevision = useRef(state.inputRevision ?? 0);
   const applicationScroll = state.applicationScroll;
   const applicationEnabled = Boolean(applicationScroll);
-  const target = state.target, inputRevision = state.inputRevision;
-  const applicationMotion = useMemo(() => new ApplicationScrollMotion({
-    lineHeight,
-    scroll: (delta) => session.scrollApplication(delta),
-    active: () => {
-      const current = session.getState();
-      return Boolean(current.applicationScroll) && !current.applicationScroll?.error && current.target === target
-        && current.inputRevision === inputRevision && session.isConnected && !readOnly && !toolsOpen;
-    },
-  }), [session, lineHeight, readOnly, toolsOpen, target, inputRevision]);
-  useEffect(() => () => {
-    applicationMotion.stop();
-    session.stopApplicationScroll();
-  }, [applicationMotion, session]);
+  useEffect(() => () => session.stopApplicationScroll(), [session]);
   useEffect(() => {
-    applicationMotion.stop();
-  }, [applicationMotion, applicationEnabled, columns, viewportHeight, terminalWrap]);
+    if (active && state.subscription === 'live') void session.inspectScrollMode().then(() => session.prepareHistory());
+  }, [session, state.subscription, active]);
   useEffect(() => {
-    if (state.subscription === 'live') void session.inspectScrollMode();
-  }, [session, state.subscription]);
+    if (active && state.subscription === 'live' && !applicationEnabled) session.prepareHistory();
+  }, [session, state.subscription, state.screen.rows, applicationEnabled, browse, active]);
   const rows = browse ? browse.frozenRows : state.screen.rows;
   const olderRows = browse?.olderRows;
   const allRows = useMemo(() => [...(olderRows ?? []), ...rows], [olderRows, rows]);
@@ -153,7 +142,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
 
   const savePosition = () => {
     const current = session.getState();
-    if (!current.browse || current.restoringReading || !lines.length) return;
+    if (!current.browse || current.browse.kind === 'application' || current.restoringReading || !lines.length) return;
     const index = Math.max(0, Math.min(lines.length - 1, Math.round(lastFromBottom.current / lineHeight)));
     const position = makeReadingPosition(allRows, lines[index], horizontalOffset.current / (size * MONO_ADVANCE_EM));
     viewPosition.current = position;
@@ -173,27 +162,10 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   );
 
   const nativeScroll = useNativeGesture({});
-  const applicationPan = usePanGesture({
-    enabled: Boolean(applicationScroll) && !readOnly && !toolsOpen,
-    runOnJS: true,
-    simultaneousWith: nativeScroll,
-    maxPointers: 1,
-    activeOffsetY: [-12, 12],
-    failOffsetX: [-16, 16],
-    onBegin: () => {
-      session.stopApplicationScroll(true);
-      applicationMotion.begin(lastFromBottom.current, scrollRange.current);
-    },
-    onUpdate: (event) => {
-      applicationMotion.move(event.translationY);
-    },
-    onDeactivate: (event) => applicationMotion.end(event.velocityY, event.canceled),
-  });
   const pinch = usePinchGesture({
     runOnJS: true,
     simultaneousWith: nativeScroll,
     onActivate: () => {
-      applicationMotion.stop();
       session.stopApplicationScroll();
       pinchBase.current = fontSize;
     },
@@ -206,7 +178,6 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       setPinchSize(null);
     },
   });
-  const terminalGesture = useSimultaneousGestures(pinch, applicationPan);
 
   const onLayout = (event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width);
 
@@ -215,7 +186,15 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     requestedOffset.current = null;
     if (toolsOpen || state.restoringReading) return;
     void session.inspectScrollMode();
-    if (session.getState().applicationScroll) return;
+    if (session.getState().applicationScroll) {
+      if (!readOnly) { session.startApplicationHistory(); ensureHistoryRunway(); }
+      return;
+    }
+    if (!session.getState().browse) {
+      shortHistory.current = true;
+      session.startBrowsing();
+    }
+    ensureHistoryRunway();
     const { contentSize, layoutMeasurement } = event.nativeEvent;
     // A short visible screen has no scroll range yet. Pulling it must still
     // request scrollback instead of requiring an offset the list cannot reach.
@@ -226,16 +205,31 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     }
   };
 
+  const ensureHistoryRunway = () => {
+    const current = session.getState();
+    if (toolsOpen || !active || current.restoringReading || !current.browse
+      || (current.browse.kind === 'application' && readOnly)
+      || (current.applicationScroll && current.browse.kind !== 'application')) return;
+    const distance = scrollRange.current - Math.max(0, lastFromBottom.current);
+    if (distance < Math.max(viewportHeight * 6, historyRunway.current)) void session.loadOlder();
+  };
+
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollRange.current = Math.max(0, event.nativeEvent.contentSize.height - event.nativeEvent.layoutMeasurement.height);
-    if (session.getState().applicationScroll && !toolsOpen) {
+    if (session.getState().applicationScroll && session.getState().browse?.kind !== 'application' && !toolsOpen) {
       lastFromBottom.current = event.nativeEvent.contentOffset.y;
       return;
     }
     if (toolsOpen || state.restoringReading || laidOut.current !== layoutKey) return;
     if (state.restoredReading && restored.current !== state.restoredReading) return;
-    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const { contentOffset } = event.nativeEvent;
     const fromBottom = contentOffset.y;
+    const now = Date.now(), sample = lastScrollSample.current;
+    if (sample.at && now > sample.at && fromBottom > sample.offset) {
+      const speed = (fromBottom - sample.offset) / (now - sample.at);
+      historyRunway.current = Math.min(viewportHeight * 24, speed * 1800);
+    }
+    lastScrollSample.current = { at: now, offset: fromBottom };
     if (requestedOffset.current !== null) {
       // Native layout can emit a temporary zero before applying scrollToOffset.
       // That is not a user's return to the live edge.
@@ -243,7 +237,6 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       requestedOffset.current = null;
     }
     lastFromBottom.current = fromBottom;
-    const fromTop = contentSize.height - layoutMeasurement.height - fromBottom;
     if (fromBottom > 2) {
       shortHistory.current = false;
       const line = lines[Math.max(0, Math.min(lines.length - 1, Math.round(fromBottom / lineHeight)))];
@@ -253,10 +246,11 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       session.startBrowsing();
       const line = lines[Math.max(0, Math.min(lines.length - 1, Math.round(fromBottom / lineHeight)))];
       if (line) session.rememberReading(makeReadingPosition(allRows, line));
-      if (fromTop < layoutMeasurement.height * 1.5) void session.loadOlder();
+      ensureHistoryRunway();
       return;
     }
     if (browse && fromBottom <= 2) {
+      if (browse.kind === 'application') return;
       // Replacing/retrying a snapshot can reset the native offset to zero.
       // Only a user drag/momentum is an instruction to leave history mode.
       // Web scroll wheels do not emit the native drag callbacks.
@@ -265,7 +259,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       session.resumeLive();
       return;
     }
-    if (browse && fromTop < layoutMeasurement.height * 1.5) void session.loadOlder();
+    if (browse) ensureHistoryRunway();
   };
 
   const jumpToLive = () => {
@@ -274,6 +268,13 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     viewPosition.current = null;
     list.current?.scrollToOffset({ offset: 0, animated: false });
     session.resumeLive();
+  };
+
+  const moveApplication = (lines: number) => {
+    if (session.getState().browse?.kind === 'application') {
+      const offset = Math.max(0, Math.min(scrollRange.current, lastFromBottom.current + lines * lineHeight));
+      list.current?.scrollToOffset({ offset, animated: true });
+    } else session.scrollApplication(lines);
   };
 
   const reachedHistoryEdge = () => {
@@ -298,9 +299,9 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       windowSize={9}
       onScroll={onScroll}
       onEndReached={reachedHistoryEdge}
-      onEndReachedThreshold={1.5}
+      onEndReachedThreshold={6}
       onScrollBeginDrag={beginDrag}
-      onContentSizeChange={(_, height) => { scrollRange.current = Math.max(0, height - viewportHeight); restoreOffset(); }}
+      onContentSizeChange={(_, height) => { scrollRange.current = Math.max(0, height - viewportHeight); restoreOffset(); ensureHistoryRunway(); }}
       onLayout={restoreOffset}
       onScrollEndDrag={() => { savePosition(); dragging.current = false; }}
       onMomentumScrollBegin={() => { dragging.current = true; }}
@@ -329,26 +330,26 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       {applicationScroll ? <View testID="terminal-application-scroll" style={styles.historyStatus}>
         <Text style={styles.historyStatusText}>{readOnly ? '程序内历史需要终端控制权限' : '连续滑动查看程序内历史'}</Text>
         {!readOnly ? <>
-          <Pressable testID="terminal-application-older" style={styles.historyLoad} onPress={() => session.scrollApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
-          <Pressable testID="terminal-application-newer" style={styles.historyLoad} onPress={() => session.scrollApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
+          <Pressable testID="terminal-application-older" style={styles.historyLoad} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
+          <Pressable testID="terminal-application-newer" style={styles.historyLoad} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
         </> : null}
       </View> : null}
       {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
-      {browse ? <View testID="terminal-history-status" style={styles.historyStatus}>
+      {!applicationScroll ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, styles.stableHistoryStatus]}>
         <Text style={styles.historyStatusText}>
-          {browse.loading ? '正在读取更早历史…' : browse.exhausted && browse.olderRows.length === 0
+          {!browse ? '向上滑动查看历史' : browse.exhausted && browse.olderRows.length === 0
             ? `电脑只返回当前 ${browse.frozenRows.length} 行，未提供更早历史`
             : `已加载 ${browse.olderRows.length} 行历史${browse.exhausted ? ' · 已到本次起点' : ''}`}
         </Text>
-        {!browse.exhausted ? <Pressable testID="terminal-history-load" disabled={browse.loading || state.restoringReading}
+        {browse && !browse.exhausted ? <Pressable testID="terminal-history-load" disabled={browse.loading || state.restoringReading}
           style={styles.historyLoad} onPress={() => void session.loadOlder({ retry: Boolean(browse.error) })} accessibilityRole="button">
-          <Text style={styles.historyLoadText}>{browse.loading ? '加载中' : browse.restartRequired ? '重新加载' : '加载更早'}</Text>
+          <Text style={styles.historyLoadText}>{browse.restartRequired ? '重新加载' : '加载更早'}</Text>
         </Pressable> : null}
       </View> : null}
       {browse?.error ? <Pressable testID="terminal-history-retry" style={styles.historyRetry} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
         <Text style={styles.edgeError}>{browse.error} · {browse.restartRequired ? '重新加载历史' : '重试'}</Text>
       </Pressable> : null}
-      <GestureDetector gesture={terminalGesture}>
+      <GestureDetector gesture={pinch}>
         <View testID="terminal-viewport" style={styles.fill} onLayout={(event) => setViewportHeight(event.nativeEvent.layout.height)}>
           {terminalWrap ? terminalList : (
             <ScrollView ref={horizontal} testID="terminal-horizontal-scroll" horizontal directionalLockEnabled nestedScrollEnabled alwaysBounceVertical={false} style={styles.fill}
@@ -433,6 +434,7 @@ const styles = StyleSheet.create({
   readingNotice: { color: colors.muted, fontSize: 12, paddingHorizontal: 12, paddingBottom: 5 },
   historyRetry: { paddingHorizontal: 12, paddingVertical: 6 },
   historyStatus: { paddingHorizontal: 12, paddingBottom: 5, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  stableHistoryStatus: { height: 37 },
   historyStatusText: { flex: 1, color: colors.muted, fontSize: 12, lineHeight: 17 },
   historyLoad: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: 6, backgroundColor: colors.surfaceRaised },
   historyLoadText: { color: colors.blue, fontSize: 12 },

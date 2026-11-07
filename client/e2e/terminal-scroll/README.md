@@ -6,9 +6,11 @@ using this directory's `project.yml`, scheme `PanecastScrollUITests`, and
 On macOS, use a canonical project path such as `/private/tmp/panecast-terminal-ui`
 in both XcodeGen and xcodebuild so generated source paths stay valid.
 
-This exercises the actual terminal screen and native gestures. The alternate
-screen fixture delays wheel acknowledgements by 180 ms and pushes new screen
-frames while the same fling is in progress. The test positions at the old edge,
-resets the counters, then performs exactly one fast drag and release. It checks
-that scrolling continues beyond the finger's travel using small wheel steps.
+This exercises the actual terminal screen and native gestures for ordinary
+scrollback and an alternate-screen application with sticky header/footer rows.
+Normal requests take 500 ms; before a fling the fixture delays network frames
+by 1.8 seconds. The test checks that visible text scrolls past the initial screen
+using locally prepared rows. It also verifies that remote application captures
+preserve the vertical position of a visible row while building the history.
+The regression concerns text movement and continuity, rather than wheel counts.
 It never controls an existing user terminal or starts a model request.

@@ -54,6 +54,7 @@ function TerminalPane() {
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
+  const [terminalActive, setTerminalActive] = useState(false);
   const target = state.target;
   const isOpen = status.state === 'open';
   const actions = useMemo(() => new SurfaceActions(machine), [machine]);
@@ -64,13 +65,14 @@ function TerminalPane() {
   // Battery: read on focus, then every minute until the tab loses focus.
   useFocusEffect(
     useCallback(() => {
+      setTerminalActive(true);
       host.start();
       const current = machine.session.getState().target;
       if (machine.computer && current) {
         const previous = sessionMemory.computer(machine.computer.id).recent.find((entry) => entry.workspaceId === current.workspaceId && entry.surfaceId === current.surfaceId);
         if (previous) sessionMemory.visit(machine.computer.id, previous);
       }
-      return () => host.stop();
+      return () => { setTerminalActive(false); host.stop(); };
     }, [host, machine]),
   );
 
@@ -205,6 +207,7 @@ function TerminalPane() {
       {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
       <View style={[styles.terminal, side]}>
         <TerminalView
+          active={terminalActive}
           readOnly={readOnly}
           key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}`}
           session={session}

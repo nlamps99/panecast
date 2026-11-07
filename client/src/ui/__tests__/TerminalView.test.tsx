@@ -13,7 +13,6 @@ const mockScrollTo = jest.fn();
 let mockWrap = true;
 let mockReadOnly = false;
 let mockShowKeys = false;
-let mockPan: { onBegin: () => void; onUpdate: (event: { translationY: number }) => void; onDeactivate: (event: { velocityY: number; canceled: boolean }) => void; enabled: boolean };
 
 jest.mock('react-native', () => {
   // A host adapter keeps the real TerminalView, session and history behavior
@@ -32,8 +31,8 @@ jest.mock('react-native', () => {
   return { View: host('View'), Text: host('Text'), Pressable: host('Pressable'), ScrollView: host('ScrollView'), FlatList: host('FlatList'), Platform: { OS: 'ios' },
     StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1, absoluteFill: {} } };
 });
-jest.mock('react-native-gesture-handler', () => ({ usePinchGesture: () => ({}), useNativeGesture: () => ({}), useSimultaneousGestures: () => ({}),
-  usePanGesture: (config: typeof mockPan) => { mockPan = config; return {}; }, GestureDetector: ({ children }: { children: ReactNode }) => children }));
+jest.mock('react-native-gesture-handler', () => ({ usePinchGesture: () => ({}), useNativeGesture: () => ({}),
+  GestureDetector: ({ children }: { children: ReactNode }) => children }));
 jest.mock('../../state/prefs', () => ({ usePrefs: () => ({ terminalWrap: mockWrap, keyHaptics: false, extraKeyRow: true }), setPrefs: jest.fn(), clampFontSize: (value: number) => value }));
 jest.mock('expo-haptics', () => ({}));
 jest.mock('../../state/hooks', () => ({ useMachine: () => ({ computer: { id: 'test' } }) }));
@@ -189,21 +188,21 @@ it('does not fight the current drag when dismissing the keyboard changes the vie
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(700)));
   expect(session.getState().browse).not.toBeNull();
 });
-it('continues paging from the list boundary event without requiring another scroll event', async () => {
-  await mount();
+it('prepares consecutive history pages before scrolling instead of waiting at each boundary', async () => {
   let page = 0;
   channel.rpc.mockImplementation(async (method) => method === 'surface.history'
     ? (++page === 1 ? { rows: ['older 1'], anchor_rows: channel.rows, next_cursor: 'next-page' } : { rows: ['older 0'], next_cursor: null }) : {});
+  await mount();
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'surface.history')).toHaveLength(2);
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(1400)));
-  expect(session.getState().browse?.cursor).toBe('next-page');
   await act(async () => callback('terminal-output-list', 'onEndReached', { distanceFromEnd: 0 }));
   expect(session.getState().browse).toMatchObject({ olderRows: ['older 0', 'older 1'], exhausted: true });
   expect(channel.rpc).toHaveBeenLastCalledWith('surface.history', expect.objectContaining({ cursor: 'next-page' }));
 });
 it('coalesces scroll and boundary callbacks while a history page is in flight', async () => {
-  await mount();
   let resolve!: (page: object) => void;
   channel.rpc.mockImplementation(async (method) => method === 'surface.history' ? new Promise((done) => { resolve = done; }) : {});
+  await mount();
   await act(async () => {
     callback('terminal-output-list', 'onScroll', scroll(1400));
     callback('terminal-output-list', 'onEndReached', { distanceFromEnd: 0 });
@@ -213,13 +212,14 @@ it('coalesces scroll and boundary callbacks while a history page is in flight', 
   await act(async () => resolve({ rows: ['old'], anchor_rows: channel.rows, next_cursor: null }));
 });
 it('keeps history retry visible outside the horizontal content and replaces expired cursors', async () => {
-  mockWrap = false; await mount();
+  mockWrap = false;
   let page = 0;
   channel.rpc.mockImplementation(async (method) => {
     if (method !== 'surface.history') return {};
     if (++page === 2) throw new RpcCallError('history_unavailable', '历史快照已过期');
-    return { rows: ['old'], anchor_rows: channel.rows, next_cursor: page === 1 ? 'expired' : 'fresh' };
+    return { rows: page === 1 ? Array.from({ length: 500 }, (_, i) => `old ${i}`) : ['old'], anchor_rows: channel.rows, next_cursor: page === 1 ? 'expired' : 'fresh' };
   });
+  await mount();
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(1400)));
   await act(async () => callback('terminal-output-list', 'onEndReached', { distanceFromEnd: 0 }));
   const retry = container.querySelector('[data-testid="terminal-history-retry"]')!;
@@ -233,77 +233,82 @@ it('keeps history retry visible outside the horizontal content and replaces expi
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0)));
   expect(session.getState().browse).toBeNull();
 });
-it('offers a visible manual continuation and distinguishes a server with no scrollback', async () => {
-  mockWrap = false; await mount();
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(100)));
-  const load = container.querySelector('[data-testid="terminal-history-load"]')!;
-  expect(load).not.toBeNull(); expect(load.closest('[data-native="ScrollView"]')).toBeNull();
+it('distinguishes a server with no scrollback without requiring repeated manual loads', async () => {
+  mockWrap = false;
   channel.rpc.mockImplementation(async (method) => method === 'surface.history' ? { rows: [], anchor_rows: channel.rows, next_cursor: null } : {});
-  await act(async () => callback('terminal-history-load', 'onPress', undefined));
+  await mount();
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(100)));
   expect(container.querySelector('[data-testid="terminal-history-status"]')?.textContent).toContain('未提供更早历史');
   expect(session.getState().browse?.exhausted).toBe(true);
 });
 
-it.each([true, false])('scrolls application history beyond the current screen (wrapped=%s) without freezing its updates', async (wrap) => {
+const application = { render_grid: { active_screen: 'alternate', columns: 156, rows: 47,
+  modes: [{ ansi: false, code: 1000, on: true }] } };
+const applicationRows = (start: number) => Array.from({ length: 47 }, (_, i) => `history ${start + i}`);
+
+it.each([true, false])('appends application captures without replacing visible cells or stopping native momentum (wrapped=%s)', async (wrap) => {
   mockWrap = wrap;
-  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay'
-    ? { render_grid: { active_screen: 'alternate', columns: 156, rows: 47, modes: [{ ansi: false, code: 1000, on: true }] } } : {});
-  await mount();
-  expect(container.querySelector('[data-testid="terminal-application-scroll"]')).not.toBeNull();
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(700)));
-  await act(async () => { mockPan.onBegin(); mockPan.onUpdate({ translationY: 100 }); });
-  expect(channel.rpc.mock.calls.some(([method]) => method === 'terminal.scroll')).toBe(false);
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(1520)));
-  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(1520)));
-  await act(async () => { mockPan.onBegin(); mockPan.onUpdate({ translationY: 68 }); });
-  const requests = () => channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll');
-  expect(requests().at(-1)?.[1]).toMatchObject({ delta_lines: 4 });
-  await act(async () => mockPan.onUpdate({ translationY: 20 }));
-  expect(requests()).toHaveLength(1);
-  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: ['earlier application page'], cols: 156, rowsCount: 1, cursor: { x: 0, y: 0 } }));
+  let acknowledge!: () => void;
+  channel.rpc.mockImplementation(async (method) => {
+    if (method === 'terminal.replay') return application;
+    if (method === 'terminal.scroll') return new Promise<void>((resolve) => { acknowledge = resolve; });
+    return {};
+  });
+  await mount(applicationRows(1000));
+  const shown = () => (mockNative.get('terminal-output-list')?.data as { plain: string }[]).map(line => line.plain);
+  const original = shown();
   expect(session.getState().browse).toBeNull();
-  expect((mockNative.get('terminal-output-list')?.data as { plain: string }[])[0].plain).toBe('earlier application page');
-  await act(async () => callback('terminal-output-list', 'onScrollEndDrag', scroll(0)));
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(-68)));
-  expect(requests()).toHaveLength(1);
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(0)));
-  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(0)));
-  await act(async () => { mockPan.onBegin(); mockPan.onUpdate({ translationY: -68 }); });
-  await act(async () => new Promise((resolve) => setTimeout(resolve, 40)));
-  expect(requests().at(-1)?.[1]).toMatchObject({ delta_lines: -4 });
+  await act(async () => {
+    callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803));
+    callback('terminal-output-list', 'onMomentumScrollBegin', undefined);
+  });
+  expect(session.getState().browse?.kind).toBe('application');
+  mockScrollToOffset.mockClear();
+  await act(async () => {
+    channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: applicationRows(993), cols: 156, rowsCount: 47, cursor: { x: 0, y: 46 } });
+    acknowledge();
+  });
+  expect(shown().slice(0, original.length)).toEqual(original);
+  expect(shown()).toHaveLength(original.length + 7);
+  expect(mockScrollToOffset).not.toHaveBeenCalled();
+  // Filling the runway must continue after layout, even when native hasn't
+  // produced another scroll/boundary event yet.
+  await act(async () => {
+    (mockNative.get('terminal-output-list')?.onContentSizeChange as (w: number, h: number) => void)(390, shown().length * 17 + 4);
+  });
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(2);
+  await act(async () => {
+    channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 3, rows: applicationRows(986), cols: 156, rowsCount: 47, cursor: { x: 0, y: 46 } });
+    acknowledge();
+  });
+  expect(shown().slice(0, original.length)).toEqual(original);
+  expect(shown()).toHaveLength(original.length + 14);
+  expect(mockScrollToOffset).not.toHaveBeenCalled();
+  // Reverse through the loaded region without moving the remote program.
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(2);
   expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
 });
 
-it('keeps a single fling scrolling cmux across screen updates and stops when a key is sent', async () => {
-  jest.useFakeTimers();
-  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay'
-    ? { render_grid: { active_screen: 'alternate', columns: 156, rows: 47, modes: [{ ansi: false, code: 1000, on: true }] } } : {});
-  await mount();
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(1400)));
-  await act(async () => { mockPan.onBegin(); mockPan.onUpdate({ translationY: 70 }); mockPan.onDeactivate({ velocityY: 2200, canceled: false }); });
-  const requests = () => channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll');
-  expect(requests()).toHaveLength(0); // The finger has not reached the remote edge.
-  await act(async () => { await jest.advanceTimersByTimeAsync(250); });
-  expect(requests().length).toBeGreaterThan(2);
-  const beforeFrame = requests().length;
-  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: Array.from({ length: 120 }, (_, i) => `remote history ${i}`), cols: 156, rowsCount: 120, cursor: { x: 0, y: 0 } }));
-  await act(async () => { await jest.advanceTimersByTimeAsync(100); });
-  expect(requests().length).toBeGreaterThan(beforeFrame);
-  expect(requests().every(([, params]) => Math.abs(Number(params?.delta_lines)) <= 4)).toBe(true);
+it('drops application prefetch and restores its viewport when an explicit key is sent', async () => {
+  channel.rpc.mockImplementation(async (method, params) => {
+    if (method === 'terminal.replay') return application;
+    if (method === 'terminal.scroll' && Number(params?.delta_lines) > 0) return new Promise(() => {});
+    return {};
+  });
+  await mount(applicationRows(1000));
+  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803)));
   await act(async () => session.sendKey({ name: 'up' }));
-  const stopped = requests().length;
-  await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
-  expect(requests()).toHaveLength(stopped);
   expect(session.getState().browse).toBeNull();
-  jest.useRealTimers();
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, params]) => params?.delta_lines)).toEqual([7, -7]);
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'surface.send_key')).toHaveLength(1);
 });
 
-it('does not send application scroll input for a read-only source', async () => {
+it('does not prefetch or send application scroll input for a read-only source', async () => {
   mockReadOnly = true;
-  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay'
-    ? { render_grid: { active_screen: 'alternate', columns: 80, rows: 47, modes: [{ ansi: false, code: 1003, on: true }] } } : {});
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : {});
   await mount();
-  expect(mockPan.enabled).toBe(false);
+  expect(session.getState().browse).toBeNull();
   await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(1520)));
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(1600)));
   expect(container.querySelector('[data-testid="terminal-application-older"]')).toBeNull();

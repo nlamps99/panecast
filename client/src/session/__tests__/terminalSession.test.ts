@@ -57,6 +57,42 @@ function firstTick(rows: string[], rev = 1): PushFrame {
   };
 }
 
+describe('TerminalSession history prefetch', () => {
+  it('shows the prepared first page immediately and shares an in-flight continuation', async () => {
+    const channel = new FakeChannel(), session = new TerminalSession(channel);
+    channel.autoReply.add('terminal.replay');
+    session.setTarget(target); await flush(); channel.push(firstTick(['visible a', 'visible b']));
+    await session.inspectScrollMode(); session.prepareHistory();
+    const first = channel.calls.find(c => c.method === 'surface.history')!;
+    first.resolve({ rows: ['older 2'], anchor_rows: ['visible a', 'visible b'], next_cursor: 'page-1' });
+    await flush();
+    const second = channel.calls.filter(c => c.method === 'surface.history')[1];
+    expect(second.params.cursor).toBe('page-1');
+    session.startBrowsing(); await session.loadOlder();
+    expect(session.getState().browse?.olderRows).toEqual(['older 2']);
+    const more = session.loadOlder();
+    expect(channel.calls.filter(c => c.method === 'surface.history')).toHaveLength(2);
+    second.resolve({ rows: ['older 1'], next_cursor: null }); await more;
+    expect(session.getState().browse).toMatchObject({ olderRows: ['older 1', 'older 2'], exhausted: true });
+    session.dispose();
+  });
+
+  it('discards prepared text that no longer joins the current screen', async () => {
+    const channel = new FakeChannel(), session = new TerminalSession(channel);
+    channel.autoReply.add('terminal.replay');
+    session.setTarget(target); await flush(); channel.push(firstTick(['old a', 'old b']));
+    await session.inspectScrollMode(); session.prepareHistory();
+    channel.calls.find(c => c.method === 'surface.history')!.resolve({ rows: ['stale'], anchor_rows: ['old a', 'old b'], next_cursor: null });
+    await flush(); channel.push(firstTick(['new a', 'new b'], 2));
+    session.startBrowsing(); const loading = session.loadOlder(); await flush();
+    const reads = channel.calls.filter(c => c.method === 'surface.history');
+    expect(reads).toHaveLength(2);
+    reads[1].resolve({ rows: ['current older'], anchor_rows: ['new a', 'new b'], next_cursor: null }); await loading;
+    expect(session.getState().browse?.olderRows).toEqual(['current older']);
+    session.dispose();
+  });
+});
+
 describe('TerminalSession subscription', () => {
   it('requests a fresh screen when a non-snapshot diff skips a revision', async () => {
     const channel = new FakeChannel(), session = new TerminalSession(channel);

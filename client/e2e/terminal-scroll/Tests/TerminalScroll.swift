@@ -11,7 +11,38 @@ final class TerminalScroll: XCTestCase {
     return try JSONSerialization.jsonObject(with: result.get()) as! [String: Any]
   }
 
-  func testOneFlingContinuesAcrossRemoteFramesWithSlowAcknowledgements() throws {
+  private func prepared(_ key: String, minimum: Int) throws {
+    let deadline = Date().addingTimeInterval(20)
+    while Date() < deadline {
+      let result = try stats(), calls = result[key] as! [[String: Any]]
+      if calls.count >= minimum, let last = calls.last?["at"] as? Double,
+         Date().timeIntervalSince1970 * 1000 - last > 1200 { return }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    XCTFail("History did not prepare a local runway")
+  }
+
+  private func visibleNumbers(_ app: XCUIApplication, output: XCUIElement, prefix: String) -> [Int] {
+    let snapshot = app.debugDescription, text = snapshot as NSString, viewport = output.frame
+    let attachment = XCTAttachment(string: snapshot)
+    attachment.name = "Visible terminal positions for \(prefix)"; attachment.lifetime = .keepAlways; add(attachment)
+    let pattern = #"StaticText[^\n]*\{\{[-0-9.]+, ([-0-9.]+)\}, \{[-0-9.]+, ([-0-9.]+)\}\}[^\n]*label: '"# + NSRegularExpression.escapedPattern(for: prefix) + #"([0-9]+)'"#
+    let regex = try! NSRegularExpression(pattern: pattern)
+    return regex.matches(in: snapshot, range: NSRange(location: 0, length: text.length)).compactMap { match in
+      guard let y = Double(text.substring(with: match.range(at: 1))),
+            let height = Double(text.substring(with: match.range(at: 2))),
+            y + height > Double(viewport.minY), y < Double(viewport.maxY) else { return nil }
+      return Int(text.substring(with: match.range(at: 3)))
+    }
+  }
+
+  private func fling(_ output: XCUIElement) {
+    let start = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+    let end = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: XCUIGestureVelocity(2000), thenHoldForDuration: 0)
+  }
+
+  func testCachedRowsMoveAcrossBothHistoryKindsWhileNetworkFramesAreDelayed() throws {
     continueAfterFailure = false
     let app = XCUIApplication(bundleIdentifier: "com.nzx.panecast")
     app.launch()
@@ -29,29 +60,32 @@ final class TerminalScroll: XCTestCase {
     if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }
     let output = app.otherElements["terminal-viewport"].firstMatch
     XCTAssertTrue(output.waitForExistence(timeout: 10))
-    XCTAssertTrue(app.staticTexts["连续滑动查看程序内历史"].waitForExistence(timeout: 10))
-    // Position at the edge, then measure exactly one further gesture.
-    output.swipeDown(velocity: .slow)
-    output.swipeDown(velocity: .slow)
-    let ready = expectation(description: "previous gesture settles")
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.7) { ready.fulfill() }
-    wait(for: [ready], timeout: 3)
-    _ = try stats("/reset")
-    let start = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-    let end = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
-    start.press(forDuration: 0.05, thenDragTo: end, withVelocity: XCUIGestureVelocity(2000), thenHoldForDuration: 0)
-    let settled = expectation(description: "inertia settles")
-    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { settled.fulfill() }
-    wait(for: [settled], timeout: 3)
-    let result = try stats()
-    let calls = result["calls"] as! [[String: Any]]
-    let fingerLines = Int(output.frame.height * 0.6 / 17)
-    XCTAssertGreaterThan(result["total"] as! Int, fingerLines + 8, "One fling must continue beyond the finger's travel")
-    XCTAssertGreaterThan(calls.count, 12)
-    XCTAssertTrue(calls.allSatisfy { abs($0["lines"] as! Int) <= 4 }, "No screen-sized scroll batches")
-    XCTAssertGreaterThan(result["frames"] as! Int, 5)
-    XCTAssertGreaterThan((calls.last!["at"] as! Double) - (calls.first!["at"] as! Double), 800)
-    let screenshot = XCTAttachment(screenshot: app.screenshot())
-    screenshot.name = "cmux after one continuous fling"; screenshot.lifetime = .keepAlways; add(screenshot)
+    try prepared("historyCalls", minimum: 4)
+    _ = try stats("/latency?ms=1800")
+    fling(output)
+    let primaryNumbers = visibleNumbers(app, output: output, prefix: "CMUX_HISTORY_")
+    XCTAssertFalse(primaryNumbers.isEmpty)
+    XCTAssertLessThan(primaryNumbers.min()!, 9940, "Native scrolling must cross the initial 47-row screen using cached rows")
+    let primaryShot = XCTAttachment(screenshot: app.screenshot())
+    primaryShot.name = "Primary history after one fling with delayed network"; primaryShot.lifetime = .keepAlways; add(primaryShot)
+
+    _ = try stats("/latency?ms=500")
+    app.otherElements["程序终端"].firstMatch.tap()
+    let anchor = app.staticTexts["APP_HISTORY_1025"].firstMatch
+    XCTAssertTrue(anchor.waitForExistence(timeout: 10))
+    let touch = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+    let moved = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+    touch.press(forDuration: 0.05, thenDragTo: moved, withVelocity: XCUIGestureVelocity(100), thenHoldForDuration: 0.2)
+    let anchorY = anchor.frame.minY
+    try prepared("calls", minimum: 3)
+    XCTAssertTrue(anchor.exists && anchor.isHittable, "Prefetch must retain the screen being read")
+    XCTAssertEqual(anchor.frame.minY, anchorY, accuracy: 1, "Remote captures must not move a visible row")
+    _ = try stats("/latency?ms=1800")
+    fling(output)
+    let applicationNumbers = visibleNumbers(app, output: output, prefix: "APP_HISTORY_")
+    XCTAssertFalse(applicationNumbers.isEmpty)
+    XCTAssertLessThan(applicationNumbers.min()!, 995, "The same native fling must enter earlier cached application history")
+    let appShot = XCTAttachment(screenshot: app.screenshot())
+    appShot.name = "Application history after one fling with delayed network"; appShot.lifetime = .keepAlways; add(appShot)
   }
 }

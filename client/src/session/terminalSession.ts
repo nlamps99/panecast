@@ -4,6 +4,7 @@ import { encodeKey, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
+import { olderApplicationRows, type ApplicationHistoryPage } from './applicationHistory';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -28,6 +29,7 @@ export type SurfaceTarget = { workspaceId: string; surfaceId: string };
  * `olderRows` are pages from `surface.history`, oldest first.
  */
 export type Browse = {
+  kind?: 'application';
   frozenRows: readonly string[];
   olderRows: readonly string[];
   cursor: string | null;
@@ -105,6 +107,12 @@ export class TerminalSession {
   private subscribeToken = 0;
   private historyToken = 0;
   private historyCursors = new Set<string>();
+  private preparedHistory: Promise<HistoryPage | null> | null = null;
+  private preparedPage: HistoryPage | null = null;
+  private preparedPages = new Map<string, Promise<HistoryPage>>();
+  private applicationAnchor: readonly string[] | null = null;
+  private applicationTravel = 0;
+  private applicationPage: { accept: (rows: readonly string[]) => void; cancel: () => void } | null = null;
   /** An unsubscribe + subscribe is in flight (resync or a live-lines change). Only one at a time. */
   private replacing = false;
   private lastResyncAt = 0;
@@ -119,6 +127,7 @@ export class TerminalSession {
   private selectionIntent = 0;
   private scrollGeneration = 0;
   private inspectingScroll = false;
+  private scrollModeChecked = false;
   private queuedScroll = 0;
   private scrollingApplication = false;
   private scrollInFlight = 0;
@@ -135,7 +144,7 @@ export class TerminalSession {
     private readonly options: TerminalSessionOptions = {},
   ) {
     this.liveLines = sanitizeLines(options.liveLines ?? 120, 120);
-    this.historyPageLines = options.historyPageLines ?? 200;
+    this.historyPageLines = options.historyPageLines ?? 500;
     this.log = options.log ?? (() => {});
     this.disposers.push(
       channel.onPush((frame) => this.handlePush(frame)),
@@ -165,11 +174,15 @@ export class TerminalSession {
 
   dispose(): void {
     this.disposed = true;
+    this.restoreApplicationViewport();
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
     this.subscribeToken++;
     this.historyToken++;
+    this.preparedHistory = null;
+    this.preparedPage = null; this.preparedPages.clear();
     this.cancelApplicationScroll();
+    this.scrollModeChecked = false;
     this.discardQueuedInput();
     this.listeners.clear();
   }
@@ -180,11 +193,15 @@ export class TerminalSession {
     this.selectionIntent++;
     const previous = this.state.target;
     if (sameTarget(previous, target)) return;
+    this.restoreApplicationViewport();
     if (previous && this.channel.isOpen) {
       this.channel.call('surface.unsubscribe', { surface_id: previous.surfaceId }).catch(() => {});
     }
     this.historyToken++;
+    this.preparedHistory = null;
+    this.preparedPage = null; this.preparedPages.clear();
     this.cancelApplicationScroll();
+    this.scrollModeChecked = false;
     this.discardQueuedInput();
     this.lastFocus = null;
     this.readingTask++;
@@ -366,9 +383,10 @@ export class TerminalSession {
   }
 
   private setScreen(screen: ScreenState): void {
+    this.applicationPage?.accept(screen.rows);
     const browse = this.state.browse;
     const rowsChanged = screen.rows !== this.state.screen.rows;
-    if (browse && rowsChanged && !browse.liveChanged) {
+    if (browse && browse.kind !== 'application' && rowsChanged && !browse.liveChanged) {
       this.update({ screen, browse: { ...browse, liveChanged: true } });
     } else {
       this.update({ screen });
@@ -377,6 +395,7 @@ export class TerminalSession {
   }
 
   rememberReading(position: ReadingPosition): void {
+    if (this.state.browse?.kind === 'application') return;
     if (this.state.target && !this.state.restoringReading) this.options.saveReading?.(this.state.target, position);
   }
 
@@ -409,6 +428,122 @@ export class TerminalSession {
   }
 
   // MARK: History
+
+  /** Fetch the first immutable page while the current screen is being read. */
+  prepareHistory(): void {
+    const target = this.state.target, rows = this.state.screen.rows;
+    if (!this.scrollModeChecked || this.preparedHistory || this.state.browse || this.state.applicationScroll || !rows.length
+      || !target || !this.channel.isOpen || this.disposed) return;
+    const generation = this.historyToken;
+    this.preparedHistory = this.channel.call('surface.history', {
+      workspace_id: target.workspaceId, surface_id: target.surfaceId,
+      limit: this.historyPageLines, tail_lines: rows.length,
+    }, 30_000).then(parseHistoryPage).then((page) => {
+      if (generation === this.historyToken && !this.disposed) {
+        this.preparedPage = page;
+        void this.fillPreparedHistory(target, page, generation);
+      }
+      return page;
+    }).catch(() => null);
+  }
+
+  private async fillPreparedHistory(target: SurfaceTarget, first: HistoryPage, generation: number): Promise<void> {
+    let page = first, collected = first.rows;
+    const seen = new Set<string>();
+    try {
+      for (let count = 1; page.nextCursor && collected.length < this.historyPageLines && count < 8; count++) {
+        if (generation !== this.historyToken || this.state.browse || this.disposed) return;
+        const cursor = page.nextCursor;
+        if (seen.has(cursor) || !page.rows.length) return;
+        seen.add(cursor);
+        const pending = this.channel.call('surface.history', {
+          workspace_id: target.workspaceId, surface_id: target.surfaceId, cursor, limit: this.historyPageLines,
+        }, 30_000).then(parseHistoryPage);
+        this.preparedPages.set(cursor, pending);
+        page = await pending;
+        // If a drag began while this page was in flight, the normal loader
+        // takes the same promise. The first page never waits for this runway.
+        if (generation !== this.historyToken || this.state.browse || this.disposed) return;
+        this.preparedPages.delete(cursor);
+        collected = [...page.rows, ...collected];
+        this.preparedPage = { ...page, rows: collected, anchorRows: first.anchorRows };
+      }
+    } catch {
+      // The first page stays usable. A later browse can retry this cursor.
+    }
+  }
+
+  /** Keep captured application history in the same native list as the first screen. */
+  startApplicationHistory(): void {
+    if (!this.state.applicationScroll || this.state.browse || !this.state.screen.rows.length) return;
+    this.stopApplicationScroll();
+    this.applicationAnchor = this.state.screen.rows;
+    this.update({ browse: { kind: 'application', frozenRows: this.state.screen.rows, olderRows: [],
+      cursor: null, started: false, exhausted: false, loading: false, error: null, liveChanged: false } });
+  }
+
+  private restoreApplicationViewport(): void {
+    this.applicationPage?.cancel();
+    this.applicationPage = null;
+    const travel = this.applicationTravel;
+    this.applicationTravel = 0;
+    this.applicationAnchor = null;
+    const target = this.state.target, size = this.state.applicationScroll;
+    if (travel && target && size && this.channel.isOpen) {
+      void this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+        delta_lines: -travel, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000).catch(() => {});
+    }
+  }
+
+  private async loadApplicationOlder(): Promise<void> {
+    const target = this.state.target, browse = this.state.browse, size = this.state.applicationScroll;
+    const anchor = this.applicationAnchor;
+    if (!target || !size || !browse || browse.loading || browse.exhausted || browse.error || !anchor || !this.channel.isOpen) return;
+    const token = ++this.historyToken;
+    this.update({ browse: { ...browse, loading: true } });
+    let finish!: (page: ApplicationHistoryPage | null) => void;
+    let accepted = false;
+    const result = new Promise<ApplicationHistoryPage | null>((resolve) => { finish = resolve; });
+    const pending = this.applicationPage = {
+      accept: (rows) => {
+        if (accepted) return;
+        const page = olderApplicationRows(anchor, rows);
+        if (page) { accepted = true; this.applicationAnchor = rows; finish(page); }
+      },
+      cancel: () => finish(null),
+    };
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const lines = Math.max(1, Math.floor(size.rows / 6));
+      this.applicationTravel += lines;
+      await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+        delta_lines: lines, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000);
+      if (token !== this.historyToken || this.disposed) return;
+      timer = setTimeout(() => finish(null), 1500);
+      let page = await result;
+      if (!page && token === this.historyToken) {
+        const fresh = await this.channel.call<{ text?: string }>('surface.read_text', {
+          workspace_id: target.workspaceId, surface_id: target.surfaceId, lines: size.rows,
+        }, 5000);
+        if (typeof fresh.text !== 'string') throw new Error('无法读取程序的历史画面');
+        const rows = fresh.text.split('\n');
+        page = olderApplicationRows(anchor, rows);
+        if (page) this.applicationAnchor = rows;
+        else if (!sameVisibleRows(anchor, rows)) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
+      }
+      const current = this.state.browse;
+      if (token !== this.historyToken || !current || this.disposed) return;
+      this.update({ browse: { ...current,
+        frozenRows: page && !current.started ? current.frozenRows.slice(page.headerRows) : current.frozenRows,
+        olderRows: page ? [...page.rows, ...current.olderRows] : current.olderRows,
+        started: true, loading: false, exhausted: page === null } });
+    } catch (error) {
+      if (token === this.historyToken && this.state.browse) this.update({ browse: { ...this.state.browse, loading: false, error: describeError(error) } });
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+      if (this.applicationPage === pending) this.applicationPage = null;
+    }
+  }
 
   /** Freezes the view at the current live rows; call when the user scrolls away from the bottom. */
   startBrowsing(options: { freezeApplication?: boolean } = {}): void {
@@ -472,7 +607,7 @@ export class TerminalSession {
     } catch {
       // Capability detection must not break history on tmux or older cmux.
     } finally {
-      if (generation === this.scrollGeneration) this.inspectingScroll = false;
+      if (generation === this.scrollGeneration) { this.inspectingScroll = false; this.scrollModeChecked = true; }
     }
   }
 
@@ -526,6 +661,7 @@ export class TerminalSession {
   /** Back to the live screen; drops loaded history so the next browse starts from a fresh snapshot. */
   resumeLive(): void {
     if (!this.state.browse && !this.pendingReading && !this.state.restoringReading) return;
+    this.restoreApplicationViewport();
     this.historyToken++;
     this.readingTask++;
     this.pendingReading = null;
@@ -536,6 +672,10 @@ export class TerminalSession {
 
   /** Loads the page above what is shown. No-op while loading, after the start of history, or after an error. */
   async loadOlder(options: { retry?: boolean } = {}): Promise<void> {
+    if (this.state.browse?.kind === 'application') {
+      if (options.retry && this.state.browse.error) this.update({ browse: { ...this.state.browse, error: null } });
+      return this.loadApplicationOlder();
+    }
     const target = this.state.target;
     let browse = this.state.browse;
     if (!target || !browse || browse.loading || browse.exhausted) return;
@@ -558,15 +698,26 @@ export class TerminalSession {
       const readPage = async (cursor: string | null, timeoutMs = 30_000): Promise<HistoryPage> => {
         const params = { workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: this.historyPageLines,
           ...(cursor ? { cursor } : { tail_lines: Math.max(1, browse!.frozenRows.length || this.liveLines) }) };
-        const raw = await this.channel.call('surface.history', params, timeoutMs);
+        const pending = cursor ? this.preparedPages.get(cursor) : null;
+        if (cursor) this.preparedPages.delete(cursor);
+        const page = pending ? await pending : parseHistoryPage(await this.channel.call('surface.history', params, timeoutMs));
         if (token !== this.historyToken || !this.state.browse || this.disposed) throw new RpcCallError('history_cancelled', '已取消历史加载');
-        const page = parseHistoryPage(raw);
         if (page.nextCursor && (page.nextCursor === cursor || seen.has(page.nextCursor))) throw new RpcCallError('history_stalled', '历史分页没有前进，请重新读取历史');
         if (page.nextCursor && page.rows.length === 0) throw new RpcCallError('history_stalled', '历史服务重复返回空页，请重新读取历史');
         if (page.nextCursor) seen.add(page.nextCursor);
         return page;
       };
-      let page = await readPage(first ? null : browse.cursor);
+      const prepared = first ? this.preparedHistory : null;
+      const preparedPage = first ? this.preparedPage : null;
+      if (first) this.preparedHistory = null;
+      let page = preparedPage ?? (prepared ? await prepared : null);
+      if (first) this.preparedPage = null;
+      if (token !== this.historyToken || !this.state.browse || this.disposed) return;
+      // A cached page can precede new output. Reuse it only when its text
+      // still joins the frozen screen, keeping the reading boundary exact.
+      if (page && (!page.anchorRows || !alignHistory(browse.frozenRows, page.rows, page.anchorRows).matched)) page = null;
+      if (!page) page = await readPage(first ? null : browse.cursor);
+      else if (page.nextCursor) seen.add(page.nextCursor);
       let olderRows: readonly string[] = page.rows;
       let replacementAnchor: readonly string[] | null = null;
       if (first && page.anchorRows !== null) {
