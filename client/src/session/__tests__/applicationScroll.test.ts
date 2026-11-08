@@ -11,14 +11,24 @@ function fixture() {
 const application = { render_grid: { active_screen: 'alternate', columns: 156, rows: 47,
   modes: [{ ansi: false, code: 1000, on: true }, { ansi: false, code: 1006, on: true }] } };
 
-function acceleratedFixture(stationary = false, multiplier = 9) {
+function acceleratedFixture(stationary = false, multiplier = 9, partial = false) {
   let listener: (frame: PushFrame) => void = () => {}, position = 1000, revision = 0;
   const rows = () => ['header', 'transcript', ...Array.from({ length: 31 }, (_, i) => `transcript row #${position + i}`), 'input', `status ${revision}`];
-  const push = () => listener({ type: 'screen.full', surfaceId: 'surface', rev: ++revision, rows: rows(), cols: 80, rowsCount: 35, cursor: { x: 0, y: 34 } });
+  const push = (snapshot?: string[]) => {
+    revision++;
+    listener({ type: 'screen.full', surfaceId: 'surface', rev: revision, rows: snapshot ?? rows(), cols: 80, rowsCount: 35, cursor: { x: 0, y: 34 } });
+  };
   const call = jest.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
     if (method === 'terminal.replay') return { render_grid: { ...application.render_grid, rows: 35 } };
     if (method === 'surface.read_text') return { text: rows().join('\n') };
-    if (method === 'terminal.scroll') { if (!stationary) position -= Number(params?.delta_lines) * multiplier; push(); }
+    if (method === 'terminal.scroll') {
+      if (!stationary) position -= Number(params?.delta_lines) * multiplier;
+      if (partial && Number(params?.delta_lines) > 0) {
+        const complete = rows(), clearing = [...complete];
+        for (let i = 2; i < 11; i++) clearing[i] = '';
+        push(clearing); setTimeout(() => push(complete), 100);
+      } else push();
+    }
     return {};
   });
   const channel: RpcChannel = { isOpen: true, call: call as RpcChannel['call'], onPush: (fn) => { listener = fn; return () => {}; }, onStatus: () => () => {} };
@@ -46,6 +56,19 @@ it('reaches the oldest transcript without an alignment error when the status kee
   const loading = session.loadOlder();
   await jest.advanceTimersByTimeAsync(1600); await loading;
   expect(session.getState().browse).toMatchObject({ error: null, exhausted: true });
+  session.dispose(); jest.useRealTimers();
+});
+
+it('waits for a partial redraw to fill its cleared prefix before appending history', async () => {
+  jest.useFakeTimers();
+  const { session } = acceleratedFixture(false, 9, true); await session.inspectScrollMode(); session.startApplicationHistory();
+  const loading = session.loadOlder();
+  await jest.advanceTimersByTimeAsync(50);
+  expect(session.getState().browse).toMatchObject({ loading: true, olderRows: [] });
+  await jest.advanceTimersByTimeAsync(100); await loading;
+  const browse = session.getState().browse!;
+  expect([...browse.olderRows, ...browse.frozenRows].filter(row => row.startsWith('transcript row #')))
+    .toEqual(Array.from({ length: 40 }, (_, i) => `transcript row #${991 + i}`));
   session.dispose(); jest.useRealTimers();
 });
 

@@ -15,9 +15,9 @@ class Session extends RelaySession {
   position = 1000;
   revision = 0;
   subscribed = new Set();
-  screen(surface) {
+  screen(surface, snapshot) {
     if (!this.subscribed.has(surface) || this.disposed) return;
-    const rows = surface === primary ? history.slice(-47) : applicationRows(this.position, this.revision + 1);
+    const rows = snapshot ?? (surface === primary ? history.slice(-47) : applicationRows(this.position, this.revision + 1));
     frames++;
     this.send({ type: 'screen.full', surface_id: surface, rev: ++this.revision, rows,
       cols: 80, rowsCount: rows.length, cursor: { x: 0, y: 46 } });
@@ -38,7 +38,12 @@ class Session extends RelaySession {
       if (params.workspace_id !== workspace || params.surface_id !== application) throw new Error('Wrong scroll target');
       calls.push({ at: Date.now(), lines: params.delta_lines });
       this.position = Math.max(1, this.position - params.delta_lines * 9);
-      this.screen(application);
+      if (params.delta_lines > 0) {
+        const complete = applicationRows(this.position, this.revision + 2), clearing = [...complete];
+        for (let i = 1; i <= Math.min(43, params.delta_lines * 9); i++) clearing[i] = '';
+        this.screen(application, clearing);
+        setTimeout(() => this.screen(application, complete), 80);
+      } else this.screen(application);
       return {};
     }
     if (method === 'surface.read_text') return { text: (params.surface_id === application ? applicationRows(this.position, this.revision) : history.slice(-47)).join('\n') };

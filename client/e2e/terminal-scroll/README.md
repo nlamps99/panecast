@@ -19,3 +19,5 @@ The application fixture multiplies wheel input by nine and changes header,
 footer, and progress rows between captures. This reproduces the old alignment
 failure caused by scrolling a complete screen without overlap. The client must
 keep visible rows fixed and use reliable overlap even when status text redraws.
+The fixture also emits a cleared-prefix intermediate frame before the complete
+draw. The client must wait for the real revealed text before committing it.

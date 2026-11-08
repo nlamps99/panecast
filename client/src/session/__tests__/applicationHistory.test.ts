@@ -1,4 +1,4 @@
-import { olderApplicationRows, sameApplicationViewport } from '../applicationHistory';
+import { applicationPageHasPayload, olderApplicationRows, sameApplicationViewport } from '../applicationHistory';
 
 const body = (start: number, count = 40) => Array.from({ length: count }, (_, i) => `历史 ${start + i}`);
 
@@ -72,4 +72,29 @@ it('does not invent history when the program redraws, repeats blank rows, or mov
   expect(olderApplicationRows(body(100), ['unrelated program', ...body(500)])).toBeNull();
   expect(olderApplicationRows(['header', ...Array(40).fill(''), 'footer'], ['different', ...Array(40).fill(''), 'footer'])).toBeNull();
   expect(olderApplicationRows(body(100), body(100))).toBeNull();
+});
+
+
+it('waits while a partial draw has cleared the revealed prefix', () => {
+  const previous = ['header', 'transcript', ...body(100, 31), 'input', 'status old'];
+  const partial = ['header', 'transcript', ...Array(9).fill(''), ...body(100, 9), ...body(118, 13), 'input', 'status new'];
+  const page = olderApplicationRows(previous, partial)!;
+  expect(page).not.toBeNull();
+  expect(applicationPageHasPayload(previous, page)).toBe(false);
+  const complete = ['header', 'transcript', ...body(91, 31), 'input', 'status new'];
+  expect(applicationPageHasPayload(previous, olderApplicationRows(previous, complete)!)).toBe(true);
+});
+
+it('does not use duplicated rows left behind by a partial redraw as overlap', () => {
+  const previous = ['header', 'transcript', ...body(100, 31), 'input', 'status old'];
+  const partial = ['header', 'transcript', ...body(100, 9), ...body(100, 9), ...body(118, 13), 'input', 'status new'];
+  expect(olderApplicationRows(previous, partial)).toBeNull();
+});
+
+it('waits when the whole old body moved but the revealed prefix still contains stale text', () => {
+  const previous = ['header', 'transcript', ...body(100, 31), 'input', 'status old'];
+  const partial = ['header', 'transcript', ...body(100, 9), ...body(100, 22), 'input', 'status new'];
+  const page = olderApplicationRows(previous, partial)!;
+  expect(page).not.toBeNull();
+  expect(applicationPageHasPayload(previous, page)).toBe(false);
 });

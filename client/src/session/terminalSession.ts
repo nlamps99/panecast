@@ -4,7 +4,7 @@ import { encodeKey, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
-import { olderApplicationRows, sameApplicationViewport, type ApplicationHistoryPage } from './applicationHistory';
+import { applicationPageHasPayload, olderApplicationRows, sameApplicationViewport, type ApplicationHistoryPage } from './applicationHistory';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -508,7 +508,7 @@ export class TerminalSession {
       accept: (rows) => {
         if (accepted) return;
         const page = olderApplicationRows(anchor, rows);
-        if (page) { accepted = true; this.applicationAnchor = rows; finish(page); }
+        if (page && applicationPageHasPayload(anchor, page)) { accepted = true; this.applicationAnchor = rows; finish(page); }
       },
       cancel: () => finish(null),
     };

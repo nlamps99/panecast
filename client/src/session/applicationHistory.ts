@@ -4,6 +4,16 @@ export type ApplicationHistoryPage = { rows: readonly string[]; replacedRows: nu
 
 const meaningful = (row: string) => Boolean(row.trim()) && !/^[\s─━═╌╍┄┅┈┉│┌┐└┘╭╮╰╯=+|\-]+$/u.test(row);
 
+/** Wait for a draw that has cleared its prefix to fill in the revealed text. */
+export function applicationPageHasPayload(previous: readonly string[], page: ApplicationHistoryPage): boolean {
+  const old = plainTerminalRows(previous), payload = plainTerminalRows(page.rows).slice(page.replacedRows);
+  if (!payload.some(meaningful)) return false;
+  const novel = payload.filter(row => meaningful(row) && !old.includes(row)).length;
+  const duplicates = payload.filter(row => row.length >= 4 && meaningful(row) && old.filter(value => value === row).length === 1).length;
+  if (payload.filter(row => !row.trim()).length > payload.length / 2 && novel <= 1) return false;
+  return duplicates < 2 || novel >= duplicates / 2;
+}
+
 /** A spinner or status update does not mean that the transcript moved. */
 export function sameApplicationViewport(previous: readonly string[], next: readonly string[]): boolean {
   const a = plainTerminalRows(previous), b = plainTerminalRows(next);
@@ -39,6 +49,7 @@ export function olderApplicationRows(previous: readonly string[], next: readonly
     const pair = unique.length >= 2 && characters >= 24;
     const single = matches.length === 1 && header > 0 && first === header && first + delta < b.length - 1
       && a[first].length >= 12 && unique.length === 1;
+    if (unique.length < 2 && !single) continue;
     if (!(matches.length >= minimum && distinct.size >= 2) && !group && !pair && !single) continue;
     let span = 0;
     for (let i = first; i <= last; i++) if (meaningful(a[i]) || meaningful(b[i + delta])) span++;
