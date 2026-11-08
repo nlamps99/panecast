@@ -125,7 +125,7 @@ export class TerminalConversationStore {
       const changed = raw.reset === true || id !== this.state.conversationId || Boolean(epoch && this.state.generation && epoch !== this.state.generation);
       if (changed) { this.historyVersion++; this.historyStarted = false; this.older = null; }
       const parsed = Array.isArray(raw.items) ? raw.items.map(agentItem).filter((item): item is AgentItem => item !== null) : [];
-      const items = raw.unchanged ? this.state.items : mergeTerminalItems(changed ? [] : this.state.items, parsed);
+      const items = raw.available !== true ? [] : raw.unchanged ? this.state.items : mergeTerminalItems(changed ? [] : this.state.items, parsed);
       const matched = new Set<string>();
       const submissions = (changed && this.state.conversationId && id !== this.state.conversationId ? [] : this.state.submissions).filter(submission => {
         const echo = submission.status !== 'not_sent' && items.find(item => !matched.has(item.id) && item.type === 'userMessage' && (item.sequence ?? 0) >= submission.base && clean(itemText(item)) === clean(submission.text));
@@ -135,7 +135,7 @@ export class TerminalConversationStore {
       this.update({ conversationId: id, generation: epoch, provider: optionalText(raw.provider) ?? 'terminal', name: optionalText(raw.name) ?? '终端输出',
         available: raw.available === true, items, submissions, loading: false, loadingOlder: cursor || changed ? false : this.state.loadingOlder, error: null, blocked: false,
         ...(!cursor ? { revision: optionalText(raw.revision), branch: optionalText(raw.branch), active: raw.active === true, headSequence: typeof raw.head_sequence === 'number' ? raw.head_sequence : this.state.headSequence } : {}),
-        ...(!raw.unchanged && (cursor || changed || !this.historyStarted) ? { cursor: optionalText(raw.next_cursor) } : {}) });
+        ...(raw.available !== true ? { cursor: null } : !raw.unchanged && (cursor || changed || !this.historyStarted) ? { cursor: optionalText(raw.next_cursor) } : {}) });
       this.terminalChanged();
     } catch (error) {
       if (generation !== this.generation || this.disposed) return;

@@ -37,10 +37,12 @@ final class TerminalChat: XCTestCase {
     composer.tap(); composer.typeText("second terminal message"); app.buttons["发送消息到当前终端"].tap()
     XCTAssertTrue(app.staticTexts["CHAT_REPLY_1: second terminal message"].firstMatch.waitForExistence(timeout: 15))
     let list = app.otherElements["terminal-chat-messages"].firstMatch
-    for _ in 0..<25 { list.swipeDown(); if app.staticTexts["CHAT_1_ANSWER_0"].firstMatch.exists { break } }
+    for _ in 0..<60 { list.swipeDown(); if app.staticTexts["CHAT_1_ANSWER_0"].firstMatch.exists { break } }
     XCTAssertTrue(app.staticTexts["CHAT_1_ANSWER_0"].firstMatch.waitForExistence(timeout: 10))
     let history = XCTAttachment(screenshot: app.screenshot()); history.name = "Chat continuous history"; history.lifetime = .keepAlways; add(history)
     app.terminate(); app.launch()
+    let reopen = app.buttons["打开终端 第二个终端"]
+    if reopen.waitForExistence(timeout: 5) { reopen.tap() }
     XCTAssertTrue(app.buttons["对话模式"].waitForExistence(timeout: 10))
     XCTAssertTrue(app.buttons["对话模式"].isSelected)
     app.buttons["终端模式"].tap()

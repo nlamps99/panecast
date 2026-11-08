@@ -63,6 +63,9 @@ it('keeps an unconfirmed send visible and never retries it automatically', async
 });
 
 it('shows ordinary terminal output on an older relay and clears inaccessible transcript data', async () => {
+  channel.snapshot = { ...channel.snapshot, items: [message('old', 10, 'previous transcript')] }; await store.refresh();
+  channel.snapshot = { available: false, conversation_id: 'one', provider: 'terminal', items: [] }; await store.refresh();
+  expect(store.getState().items).toEqual([]); expect(store.getState().cursor).toBeNull();
   channel.handler = async () => { throw new RpcCallError('method_not_found', 'old relay'); };
   await store.refresh(); expect(store.getState().available).toBe(false); expect(store.getState().error).toBeNull();
   channel.handler = async () => { throw new RpcCallError('source_revoked', 'revoked'); };
