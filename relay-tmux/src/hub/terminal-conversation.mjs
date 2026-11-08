@@ -49,6 +49,7 @@ export function parseConversation(records, provider, sessionId, options = {}) {
           const text = body(item.content); if (text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record);
         } else if (type === 'agentmessage' && item.phase !== 'analysis') {
           const text = body(item.content); if (text) put(id, 'agentMessage', { text }, record);
+          if (item.phase === 'final') active = false;
         } else if (type === 'commandexecution') put(id, 'commandExecution', { command: command(item.command), aggregatedOutput: clipped(item.aggregated_output, 6000), status: item.exit_code ? 'failed' : state(item.status) }, record);
         else if (type === 'filechange') put(id, 'fileChange', { status: state(item.status), changes: Object.entries(item.changes ?? {}).slice(0, 20).map(([path, change]) => ({ path: clipped(path, 500), diff: clipped(change?.unified_diff, 2000) })) }, record);
         else if (/tool|websearch|collab|imagegeneration/.test(type) && type !== 'reasoning') put(id, 'toolExecution', { tool: clipped(item.tool ?? item.name ?? item.type, 100), text: clipped(display(item.output ?? item.result), 4000), status: state(item.status) }, record);

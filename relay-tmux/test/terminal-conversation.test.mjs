@@ -35,6 +35,7 @@ test('canonical Codex messages stay visible while tool details normalize and rea
   assert.equal(parsed.items[1].command, 'npm test'); assert.equal(parsed.items[2].changes[0].diff, '+ok');
   assert.equal(parsed.items.at(-1).text, '检查完成'); assert.equal(parsed.active, false);
   assert.equal(JSON.stringify(parsed).includes('private reasoning'), false);
+  assert.equal(parseConversation(records([completed(agent('finished without a lifecycle marker'))]), 'codex', id).active, false);
 });
 
 test('legacy Codex calls retain visible questions and late results', () => {
@@ -66,7 +67,7 @@ test('Claude follows the current parent chain, combines tool results and exclude
 
 test('reader pages an exact bound file, ignores partial appends and keeps active state on unchanged polls', async t => {
   const fx = await fixture(t, 'codex', [{ type: 'session_meta', payload: { id } },
-    { type: 'event_msg', payload: { type: 'task_started' } }, ...Array.from({ length: 95 }, (_, i) => completed(agent(`answer ${i}`), `t${i}`))]);
+    { type: 'event_msg', payload: { type: 'task_started' } }, ...Array.from({ length: 95 }, (_, i) => completed({ ...agent(`answer ${i}`), phase: 'commentary' }, `t${i}`))]);
   const page = await fx.reader.read(fx.binding, { limit: 20 });
   assert.equal(page.items.length, 20); assert.ok(page.next_cursor); assert.equal(page.active, true);
   const all = [...page.items]; let cursor = page.next_cursor;
