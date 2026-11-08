@@ -4,7 +4,7 @@ import { encodeKey, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
-import { olderApplicationRows, type ApplicationHistoryPage } from './applicationHistory';
+import { olderApplicationRows, sameApplicationViewport, type ApplicationHistoryPage } from './applicationHistory';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -513,29 +513,43 @@ export class TerminalSession {
       cancel: () => finish(null),
     };
     let timer: ReturnType<typeof setTimeout> | null = null;
-    try {
-      const lines = Math.max(1, Math.floor(size.rows / 6));
-      this.applicationTravel += lines;
+    const currentTarget = () => {
+      if (token !== this.historyToken || this.disposed) throw new RpcCallError('history_cancelled', '已取消历史加载');
+    };
+    const scroll = async (delta: number) => {
+      currentTarget();
+      this.applicationTravel += delta;
       await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
-        delta_lines: lines, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000);
-      if (token !== this.historyToken || this.disposed) return;
+        delta_lines: delta, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000);
+      currentTarget();
+    };
+    const read = async () => {
+      currentTarget();
+      const fresh = await this.channel.call<{ text?: string }>('surface.read_text', {
+        workspace_id: target.workspaceId, surface_id: target.surfaceId, lines: size.rows,
+      }, 5000);
+      currentTarget();
+      if (typeof fresh.text !== 'string') throw new Error('无法读取程序的历史画面');
+      return fresh.text.split('\n');
+    };
+    try {
+      // cmux and the program can each multiply wheel input. One request can
+      // already reveal many rows; scaling by grid height can skip a full screen.
+      const lines = 1;
+      await scroll(lines);
       timer = setTimeout(() => finish(null), 1500);
       let page = await result;
       if (!page && token === this.historyToken) {
-        const fresh = await this.channel.call<{ text?: string }>('surface.read_text', {
-          workspace_id: target.workspaceId, surface_id: target.surfaceId, lines: size.rows,
-        }, 5000);
-        if (typeof fresh.text !== 'string') throw new Error('无法读取程序的历史画面');
-        const rows = fresh.text.split('\n');
+        const rows = await read();
         page = olderApplicationRows(anchor, rows);
         if (page) this.applicationAnchor = rows;
-        else if (!sameVisibleRows(anchor, rows)) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
+        else if (!sameVisibleRows(anchor, rows) && !sameApplicationViewport(anchor, rows)) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
       }
       const current = this.state.browse;
       if (token !== this.historyToken || !current || this.disposed) return;
       this.update({ browse: { ...current,
-        frozenRows: page && !current.started ? current.frozenRows.slice(page.headerRows) : current.frozenRows,
-        olderRows: page ? [...page.rows, ...current.olderRows] : current.olderRows,
+        frozenRows: page ? current.frozenRows.slice(Math.max(0, page.replacedRows - current.olderRows.length)) : current.frozenRows,
+        olderRows: page ? [...page.rows, ...current.olderRows.slice(page.replacedRows)] : current.olderRows,
         started: true, loading: false, exhausted: page === null } });
     } catch (error) {
       if (token === this.historyToken && this.state.browse) this.update({ browse: { ...this.state.browse, loading: false, error: describeError(error) } });

@@ -1,4 +1,5 @@
 import { TerminalSession, type RpcChannel } from '../terminalSession';
+import type { PushFrame } from '../../protocol/frames';
 
 function fixture() {
   const call = jest.fn(async (_method: string, _params?: Record<string, unknown>): Promise<unknown> => ({}));
@@ -9,6 +10,44 @@ function fixture() {
 }
 const application = { render_grid: { active_screen: 'alternate', columns: 156, rows: 47,
   modes: [{ ansi: false, code: 1000, on: true }, { ansi: false, code: 1006, on: true }] } };
+
+function acceleratedFixture(stationary = false, multiplier = 9) {
+  let listener: (frame: PushFrame) => void = () => {}, position = 1000, revision = 0;
+  const rows = () => ['header', 'transcript', ...Array.from({ length: 31 }, (_, i) => `transcript row #${position + i}`), 'input', `status ${revision}`];
+  const push = () => listener({ type: 'screen.full', surfaceId: 'surface', rev: ++revision, rows: rows(), cols: 80, rowsCount: 35, cursor: { x: 0, y: 34 } });
+  const call = jest.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+    if (method === 'terminal.replay') return { render_grid: { ...application.render_grid, rows: 35 } };
+    if (method === 'surface.read_text') return { text: rows().join('\n') };
+    if (method === 'terminal.scroll') { if (!stationary) position -= Number(params?.delta_lines) * multiplier; push(); }
+    return {};
+  });
+  const channel: RpcChannel = { isOpen: true, call: call as RpcChannel['call'], onPush: (fn) => { listener = fn; return () => {}; }, onStatus: () => () => {} };
+  const session = new TerminalSession(channel); session.setTarget({ workspaceId: 'workspace', surfaceId: 'surface' }); push();
+  return { session, call };
+}
+
+it.each([9, 30])('joins accelerated program history when wheel input is multiplied %s times', async multiplier => {
+  const { session, call } = acceleratedFixture(false, multiplier); await session.inspectScrollMode(); session.startApplicationHistory();
+  for (let i = 0; i < 6; i++) await session.loadOlder();
+  const browse = session.getState().browse!;
+  expect(browse.error).toBeNull();
+  const transcript = [...browse.olderRows, ...browse.frozenRows].filter(row => row.startsWith('transcript row #'));
+  expect(transcript).toEqual(Array.from({ length: 31 + 6 * multiplier }, (_, i) => `transcript row #${1000 - 6 * multiplier + i}`));
+  expect(browse.frozenRows).toEqual([...Array.from({ length: 31 }, (_, i) => `transcript row #${1000 + i}`), 'input', 'status 1']);
+  expect(call.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, p]) => p?.delta_lines)).toEqual([1, 1, 1, 1, 1, 1]);
+  session.resumeLive();
+  expect(call.mock.calls.filter(([method]) => method === 'terminal.scroll').at(-1)?.[1]?.delta_lines).toBe(-6);
+  session.dispose();
+});
+
+it('reaches the oldest transcript without an alignment error when the status keeps changing', async () => {
+  jest.useFakeTimers();
+  const { session } = acceleratedFixture(true); await session.inspectScrollMode(); session.startApplicationHistory();
+  const loading = session.loadOlder();
+  await jest.advanceTimersByTimeAsync(1600); await loading;
+  expect(session.getState().browse).toMatchObject({ error: null, exhausted: true });
+  session.dispose(); jest.useRealTimers();
+});
 
 it('recognizes application-owned history without treating the current screen as the beginning', async () => {
   const { session, call } = fixture();

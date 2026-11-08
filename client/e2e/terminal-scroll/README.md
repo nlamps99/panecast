@@ -14,3 +14,8 @@ using locally prepared rows. It also verifies that remote application captures
 preserve the vertical position of a visible row while building the history.
 The regression concerns text movement and continuity, rather than wheel counts.
 It never controls an existing user terminal or starts a model request.
+
+The application fixture multiplies wheel input by nine and changes header,
+footer, and progress rows between captures. This reproduces the old alignment
+failure caused by scrolling a complete screen without overlap. The client must
+keep visible rows fixed and use reliable overlap even when status text redraws.

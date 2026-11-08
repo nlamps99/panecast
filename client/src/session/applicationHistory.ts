@@ -1,30 +1,54 @@
 import { plainTerminalRows } from '../terminal/textTools';
 
-export type ApplicationHistoryPage = { rows: readonly string[]; headerRows: number };
+export type ApplicationHistoryPage = { rows: readonly string[]; replacedRows: number };
+
+const meaningful = (row: string) => Boolean(row.trim()) && !/^[\s─━═╌╍┄┅┈┉│┌┐└┘╭╮╰╯=+|\-]+$/u.test(row);
+
+/** A spinner or status update does not mean that the transcript moved. */
+export function sameApplicationViewport(previous: readonly string[], next: readonly string[]): boolean {
+  const a = plainTerminalRows(previous), b = plainTerminalRows(next);
+  let total = 0, matches = 0;
+  const distinct = new Set<string>();
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (!meaningful(a[i] ?? '') && !meaningful(b[i] ?? '')) continue;
+    total++;
+    if (a[i] === b[i]) { matches++; distinct.add(a[i]); }
+  }
+  return distinct.size >= 3 && matches >= total * 0.8;
+}
 
 /** Extract only newly revealed rows, using the overlap between two TUI screens. */
 export function olderApplicationRows(previous: readonly string[], next: readonly string[]): ApplicationHistoryPage | null {
   const a = plainTerminalRows(previous), b = plainTerminalRows(next);
-  let header = 0, footer = 0;
+  const count = (rows: readonly string[], row: string) => rows.reduce((total, value) => total + Number(value === row), 0);
+  const minimum = Math.max(3, Math.ceil(Math.min(a.filter(meaningful).length, b.filter(meaningful).length) / 4));
+  let header = 0;
   while (header < Math.min(a.length, b.length) && a[header] === b[header]) header++;
-  while (footer < Math.min(a.length, b.length) - header && a[a.length - footer - 1] === b[b.length - footer - 1]) footer++;
-  const oldBody = a.slice(header, a.length - footer), newBody = b.slice(header, b.length - footer);
-  const minimum = Math.max(3, Math.floor(Math.min(oldBody.length, newBody.length) / 3));
-  let prior = new Uint32Array(newBody.length + 1);
-  let best = 0, shift = 0, ambiguous = false;
-  for (let i = 0; i < oldBody.length; i++) {
-    const lengths = new Uint32Array(newBody.length + 1);
-    for (let j = 0; j < newBody.length; j++) {
-      if (oldBody[i] !== newBody[j]) continue;
-      const length = lengths[j + 1] = prior[j] + 1;
-      const delta = j - i;
-      if (delta <= 0 || length < minimum || length < best) continue;
-      const meaningful = new Set(oldBody.slice(i - length + 1, i + 1).filter((row) => row.trim()));
-      if (meaningful.size < 2) continue;
-      if (length > best) { best = length; shift = delta; ambiguous = false; }
-      else if (shift !== delta) ambiguous = true;
+  let best = 0, oldStart = 0, newStart = 0, ambiguous = false;
+  for (let delta = 1; delta < b.length; delta++) {
+    const matches: number[] = [];
+    const distinct = new Set<string>();
+    for (let i = 0; i < Math.min(a.length, b.length - delta); i++) {
+      if (a[i] === b[i + delta] && meaningful(a[i])) { matches.push(i); distinct.add(a[i]); }
     }
-    prior = lengths;
+    if (!matches.length || matches.length < best) continue;
+    const first = matches[0], last = matches[matches.length - 1];
+    const unique = matches.filter(i => a[i].length >= 4 && count(a, a[i]) === 1 && count(b, a[i]) === 1);
+    const characters = unique.reduce((total, i) => total + a[i].length, 0);
+    const group = unique.length >= 3 && characters >= 18;
+    const pair = unique.length >= 2 && characters >= 24;
+    const single = matches.length === 1 && header > 0 && first === header && first + delta < b.length - 1
+      && a[first].length >= 12 && unique.length === 1;
+    if (!(matches.length >= minimum && distinct.size >= 2) && !group && !pair && !single) continue;
+    let span = 0;
+    for (let i = first; i <= last; i++) if (meaningful(a[i]) || meaningful(b[i + delta])) span++;
+    if (matches.length < span * 0.65) continue;
+    if (matches.length > best) {
+      best = matches.length; oldStart = first; newStart = first + delta; ambiguous = false;
+    } else if (newStart - oldStart !== delta) ambiguous = true;
   }
-  return best && !ambiguous ? { rows: next.slice(header, header + shift), headerRows: header } : null;
+  if (!best || ambiguous || sameApplicationViewport(previous, next)) return null;
+  // Replace the old boundary prefix with the actual new prefix. It includes
+  // any changing header once, so header height changes cannot drop real rows.
+  return { rows: next.slice(0, newStart), replacedRows: oldStart };
 }

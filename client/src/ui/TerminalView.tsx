@@ -205,14 +205,16 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     }
   };
 
-  const ensureHistoryRunway = () => {
+  const ensureHistoryRunway = useCallback(() => {
     const current = session.getState();
     if (toolsOpen || !active || current.restoringReading || !current.browse
       || (current.browse.kind === 'application' && readOnly)
       || (current.applicationScroll && current.browse.kind !== 'application')) return;
-    const distance = scrollRange.current - Math.max(0, lastFromBottom.current);
+    const range = Math.max(scrollRange.current, lines.length * lineHeight - viewportHeight);
+    const distance = range - Math.max(0, lastFromBottom.current);
     if (distance < Math.max(viewportHeight * 6, historyRunway.current)) void session.loadOlder();
-  };
+  }, [session, toolsOpen, active, readOnly, viewportHeight, lines.length, lineHeight]);
+  useEffect(ensureHistoryRunway, [ensureHistoryRunway, rows, olderRows]);
 
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollRange.current = Math.max(0, event.nativeEvent.contentSize.height - event.nativeEvent.layoutMeasurement.height);

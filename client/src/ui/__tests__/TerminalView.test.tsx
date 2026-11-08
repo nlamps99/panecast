@@ -217,7 +217,7 @@ it('keeps history retry visible outside the horizontal content and replaces expi
   channel.rpc.mockImplementation(async (method) => {
     if (method !== 'surface.history') return {};
     if (++page === 2) throw new RpcCallError('history_unavailable', '历史快照已过期');
-    return { rows: page === 1 ? Array.from({ length: 500 }, (_, i) => `old ${i}`) : ['old'], anchor_rows: channel.rows, next_cursor: page === 1 ? 'expired' : 'fresh' };
+    return { rows: page === 1 ? Array.from({ length: 500 }, (_, i) => `old ${i}`) : ['old'], anchor_rows: channel.rows, next_cursor: page === 1 ? 'expired' : null };
   });
   await mount();
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(1400)));
@@ -286,12 +286,13 @@ it.each([true, false])('appends application captures without replacing visible c
   expect(shown()).toHaveLength(original.length + 14);
   expect(mockScrollToOffset).not.toHaveBeenCalled();
   // Reverse through the loaded region without moving the remote program.
+  const requestsBeforeReverse = channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').length;
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(2);
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(requestsBeforeReverse);
   expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
   await act(async () => callback('terminal-application-newer', 'onPress', undefined));
   expect(session.getState().browse).toBeNull();
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(-2).map(([, p]) => p?.delta_lines)).toEqual([-14, -3]);
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(-2).map(([, p]) => p?.delta_lines)).toEqual([-requestsBeforeReverse, -3]);
 });
 
 it('drops application prefetch and restores its viewport when an explicit key is sent', async () => {
@@ -304,7 +305,7 @@ it('drops application prefetch and restores its viewport when an explicit key is
   await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803)));
   await act(async () => session.sendKey({ name: 'up' }));
   expect(session.getState().browse).toBeNull();
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, params]) => params?.delta_lines)).toEqual([7, -7]);
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, params]) => params?.delta_lines)).toEqual([1, -1]);
   expect(channel.rpc.mock.calls.filter(([method]) => method === 'surface.send_key')).toHaveLength(1);
 });
 

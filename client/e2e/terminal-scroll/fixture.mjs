@@ -9,14 +9,15 @@ const directory = await mkdtemp(join(tmpdir(), 'panecast-scroll-ui-'));
 const workspace = 'qa-scroll-workspace', primary = 'qa-scroll-primary', application = 'qa-scroll-application';
 const history = Array.from({ length: 10000 }, (_, i) => `CMUX_HISTORY_${i + 1}`);
 let calls = [], frames = 0, historyCalls = [], latency = 500;
-const applicationRows = (position) => ['PROGRAM HEADER', ...Array.from({ length: 43 }, (_, i) => `APP_HISTORY_${position + i}`), '────────', '› fixture prompt', 'PROGRAM FOOTER'];
+const applicationRows = (position, revision) => [`PROGRAM HEADER ${revision}`, ...Array.from({ length: 43 }, (_, i) =>
+  (position + i) % 7 === 0 ? `APP_PROGRESS_${position + i}_${revision}` : `APP_HISTORY_${position + i}`), '────────', '› fixture prompt', `PROGRAM STATUS ${revision}`];
 class Session extends RelaySession {
   position = 1000;
   revision = 0;
   subscribed = new Set();
   screen(surface) {
     if (!this.subscribed.has(surface) || this.disposed) return;
-    const rows = surface === primary ? history.slice(-47) : applicationRows(this.position);
+    const rows = surface === primary ? history.slice(-47) : applicationRows(this.position, this.revision + 1);
     frames++;
     this.send({ type: 'screen.full', surface_id: surface, rev: ++this.revision, rows,
       cols: 80, rowsCount: rows.length, cursor: { x: 0, y: 46 } });
@@ -36,11 +37,11 @@ class Session extends RelaySession {
     if (method === 'terminal.scroll') {
       if (params.workspace_id !== workspace || params.surface_id !== application) throw new Error('Wrong scroll target');
       calls.push({ at: Date.now(), lines: params.delta_lines });
-      this.position = Math.max(1, this.position - params.delta_lines * 3);
+      this.position = Math.max(1, this.position - params.delta_lines * 9);
       this.screen(application);
       return {};
     }
-    if (method === 'surface.read_text') return { text: (params.surface_id === application ? applicationRows(this.position) : history.slice(-47)).join('\n') };
+    if (method === 'surface.read_text') return { text: (params.surface_id === application ? applicationRows(this.position, this.revision) : history.slice(-47)).join('\n') };
     if (method === 'surface.history') {
       if (params.surface_id !== primary) throw new Error('Application history must use captures');
       historyCalls.push({ at: Date.now(), cursor: params.cursor ?? null });
