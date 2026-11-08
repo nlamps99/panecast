@@ -26,14 +26,25 @@ final class TerminalScroll: XCTestCase {
     let snapshot = app.debugDescription, text = snapshot as NSString, viewport = output.frame
     let attachment = XCTAttachment(string: snapshot)
     attachment.name = "Visible terminal positions for \(prefix)"; attachment.lifetime = .keepAlways; add(attachment)
-    let pattern = #"StaticText[^\n]*\{\{[-0-9.]+, ([-0-9.]+)\}, \{[-0-9.]+, ([-0-9.]+)\}\}[^\n]*label: '"# + NSRegularExpression.escapedPattern(for: prefix) + #"([0-9]+)'"#
+    let rowPrefix = prefix == "APP_HISTORY_" ? "(?:APP_HISTORY_|APP_PROGRESS_)" : NSRegularExpression.escapedPattern(for: prefix)
+    let pattern = #"StaticText[^\n]*\{\{[-0-9.]+, ([-0-9.]+)\}, \{[-0-9.]+, ([-0-9.]+)\}\}[^\n]*label: '"# + rowPrefix + #"([0-9]+)(?:_[0-9]+)?'"#
     let regex = try! NSRegularExpression(pattern: pattern)
-    return regex.matches(in: snapshot, range: NSRange(location: 0, length: text.length)).compactMap { match in
+    let found: [(Double, Int)] = regex.matches(in: snapshot, range: NSRange(location: 0, length: text.length)).compactMap { match in
       guard let y = Double(text.substring(with: match.range(at: 1))),
             let height = Double(text.substring(with: match.range(at: 2))),
-            y + height > Double(viewport.minY), y < Double(viewport.maxY) else { return nil }
-      return Int(text.substring(with: match.range(at: 3)))
+            height > 0, y + height > Double(viewport.minY), y < Double(viewport.maxY),
+            let value = Int(text.substring(with: match.range(at: 3))) else { return nil }
+      return (y, value)
+    }.sorted { $0.0 < $1.0 }
+    var visible: [(Double, Int)] = []
+    for row in found {
+      if let last = visible.last, row.1 == last.1, abs(row.0 - last.0) < 8 { continue }
+      visible.append(row)
     }
+    for index in visible.indices.dropFirst() {
+      XCTAssertEqual(visible[index].1, visible[index - 1].1 + 1, "Visible transcript must not skip or duplicate rows")
+    }
+    return visible.map { $0.1 }
   }
 
   private func fling(_ output: XCUIElement) {
