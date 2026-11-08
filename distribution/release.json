@@ -1,26 +1,26 @@
 {
   "baseUrl": "https://ningzx.cn/panecast",
   "mac": {
-    "date": "2026-11-05",
+    "date": "2026-11-07",
     "notes": [
-      "支持一条命令、Homebrew 与 npm 安装",
-      "新增配置向导、扫码配对和 macOS 后台服务管理",
-      "保留已有配置，独立授权 tmux、cmux 和 Codex 来源"
+      "支持 cmux 对话模式的结构化正文与工具记录读取",
+      "根据精确会话绑定定位 Codex 和 Claude Code 记录",
+      "保留当前终端发送、来源权限检查及旧客户端兼容"
     ]
   },
   "android": {
     "version": "0.1.0",
-    "versionCode": 12,
-    "file": "panecast-0.1.0-12-arm64.apk",
-    "size": 43323538,
-    "sha256": "478058ef8a98bd2ea9b14fb620d455a1c3896b3fb00fe8676e6edddbfacf58d7",
+    "versionCode": 13,
+    "file": "panecast-0.1.0-13-arm64.apk",
+    "size": 43344018,
+    "sha256": "38b10d160a0c9af00cd64ae40c7e8229116bb7a911b2ce9858b37e32e348ce5d",
     "minimumAndroid": "7.0",
     "architecture": "ARM64",
     "date": "2026-11-07",
     "notes": [
-      "修复 cmux 程序内历史误报画面无法衔接",
-      "小步滚动并支持局部状态重绘和少量可靠重叠",
-      "接续正文时保留阅读位置，并跳过重绘中的过渡空白"
+      "新增 cmux 对话气泡模式，消息直接发送到当前命令行",
+      "命令执行与文件修改默认折叠，正文和提问保持可见",
+      "连续上滑读取更早对话，随时切回原始终端"
     ]
   },
   "node": {
@@ -29,6 +29,22 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "Android",
+      "version": "0.1.0",
+      "versionCode": 12,
+      "file": "panecast-0.1.0-12-arm64.apk",
+      "size": 43323538,
+      "sha256": "478058ef8a98bd2ea9b14fb620d455a1c3896b3fb00fe8676e6edddbfacf58d7",
+      "minimumAndroid": "7.0",
+      "architecture": "ARM64",
+      "date": "2026-11-07",
+      "notes": [
+        "修复 cmux 程序内历史误报画面无法衔接",
+        "小步滚动并支持局部状态重绘和少量可靠重叠",
+        "接续正文时保留阅读位置，并跳过重绘中的过渡空白"
+      ]
+    },
     {
       "platform": "Android",
       "version": "0.1.0",
