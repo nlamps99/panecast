@@ -12,7 +12,7 @@ export const AgentToolsSummary = memo(function AgentToolsSummary({ group, onTogg
   const counts = new Map<string, number>();
   let failed = 0, running = 0;
   for (const item of group.items) {
-    const label = item.type === 'commandExecution' ? '命令' : item.type === 'fileChange' ? '文件修改' : '外部工具';
+    const label = item.type === 'commandExecution' ? '命令' : item.type === 'fileChange' ? '文件修改' : item.type === 'mcpToolCall' ? '外部工具' : '工具';
     counts.set(label, (counts.get(label) ?? 0) + 1);
     if (FAILED.has(item.status ?? '')) failed++;
     if (RUNNING.has(item.status ?? '')) running++;
@@ -36,14 +36,14 @@ export const AgentToolsSummary = memo(function AgentToolsSummary({ group, onTogg
   </Pressable>;
 });
 
-export const AgentMessage = memo(function AgentMessage({ item }: { item: AgentItem }) {
+export const AgentMessage = memo(function AgentMessage({ item, agentLabel = 'Codex', bubble = false }: { item: AgentItem; agentLabel?: string; bubble?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const content = itemText(item);
   if (!content) return null;
-  const code = ['commandExecution', 'fileChange'].includes(item.type);
+  const code = ['commandExecution', 'fileChange', 'toolExecution'].includes(item.type);
   const limit = code ? 1200 : 4000;
-  const label = item.type === 'userMessage' ? '你' : item.type === 'agentMessage' ? 'Codex' : item.type === 'fileChange' ? '文件修改' : item.type === 'commandExecution' ? '命令' : item.type === 'mcpToolCall' ? '外部工具' : '计划';
-  return <View style={[styles.message, item.type === 'userMessage' && styles.userMessage]}>
+  const label = item.type === 'userMessage' ? '你' : item.type === 'agentMessage' ? agentLabel : item.type === 'fileChange' ? '文件修改' : item.type === 'commandExecution' ? '命令' : item.type === 'toolExecution' ? item.tool || '工具' : item.type === 'mcpToolCall' ? '外部工具' : '计划';
+  return <View style={[styles.message, item.type === 'userMessage' && styles.userMessage, bubble && styles.bubble, bubble && item.type === 'userMessage' && styles.userBubble]}>
     <View style={styles.summaryRow}>
       <Text style={styles.meta}>{label}</Text>
       {FAILED.has(item.status ?? '') ? <Text style={[styles.meta, styles.failed]}>失败</Text> : RUNNING.has(item.status ?? '') ? <Text style={[styles.meta, styles.running]}>进行中</Text> : null}
@@ -64,6 +64,7 @@ const styles = StyleSheet.create({
   toggle: { color: colors.green, fontSize: 12 },
   failed: { color: colors.red }, running: { color: colors.yellow },
   message: { padding: 12, backgroundColor: colors.surface, borderRadius: 12, gap: 8 }, userMessage: { backgroundColor: colors.surfaceRaised },
+  bubble: { alignSelf: 'flex-start', maxWidth: '94%' }, userBubble: { alignSelf: 'flex-end', borderTopRightRadius: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
   messageText: { color: colors.ink, fontSize: 14, lineHeight: 22 }, code: { color: colors.ink, fontFamily: fonts.mono, fontSize: 12, lineHeight: 19 },
   contentToggle: { alignSelf: 'flex-start', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surfaceRaised },
 });

@@ -12,6 +12,7 @@ export type Prefs = {
   /** The second key row: Ctrl, symbols, PgUp/PgDn, Home/End. */
   extraKeyRow: boolean;
   terminalWrap: boolean;
+  terminalPresentation: 'terminal' | 'chat';
   tabletSidebar: boolean;
 };
 
@@ -29,6 +30,7 @@ export const DEFAULT_PREFS: Prefs = {
   keyHaptics: true,
   extraKeyRow: false,
   terminalWrap: true,
+  terminalPresentation: 'terminal',
   tabletSidebar: true,
 };
 const KEY = 'panecast.prefs.v1';
@@ -61,6 +63,7 @@ export function sanitizePrefs(value: unknown): Prefs {
     keyHaptics: typeof v.keyHaptics === 'boolean' ? v.keyHaptics : DEFAULT_PREFS.keyHaptics,
     extraKeyRow: typeof v.extraKeyRow === 'boolean' ? v.extraKeyRow : DEFAULT_PREFS.extraKeyRow,
     terminalWrap: typeof v.terminalWrap === 'boolean' ? v.terminalWrap : DEFAULT_PREFS.terminalWrap,
+    terminalPresentation: v.terminalPresentation === 'chat' ? 'chat' : 'terminal',
     tabletSidebar: typeof v.tabletSidebar === 'boolean' ? v.tabletSidebar : DEFAULT_PREFS.tabletSidebar,
   };
 }

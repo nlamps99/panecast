@@ -13,7 +13,8 @@ export type SourceInfo = {
 export type AgentProject = { id: string; name: string; cwd: string };
 export type AgentThread = { id: string; name: string; cwd: string; status?: { type: string }; updatedAt?: number; live?: boolean };
 export type AgentItem = { id: string; type: string; clientId?: string; text?: string; content?: { type: string; text?: string }[];
-  command?: string; aggregatedOutput?: string; status?: string; changes?: { path: string; diff?: string }[]; server?: string; tool?: string; truncated?: boolean };
+  command?: string; aggregatedOutput?: string; status?: string; changes?: { path: string; diff?: string }[]; server?: string; tool?: string; truncated?: boolean;
+  sequence?: number; updatedSequence?: number; timestamp?: number };
 export type AgentTurn = { id: string; status: string; items: AgentItem[]; error?: { message?: string }; omittedItems?: number };
 export type AgentRequest = { id: string; method: string; supported: boolean;
   params: { threadId?: string; command?: string; reason?: string; questions?: { id: string; header: string; question: string; options?: { label: string; description?: string }[] }[] } };
@@ -417,6 +418,7 @@ export function itemText(item: AgentItem): string {
     case 'commandExecution': return [item.command, item.aggregatedOutput].filter(Boolean).join('\n');
     case 'fileChange': return (item.changes ?? []).map((c) => `${c.path}\n${c.diff ?? ''}`).join('\n\n');
     case 'mcpToolCall': return `${item.server ?? ''} / ${item.tool ?? ''} · ${item.status ?? ''}`;
+    case 'toolExecution': return [item.tool, item.command, item.aggregatedOutput || item.text].filter(Boolean).join('\n');
     default: return '';
   }
 }

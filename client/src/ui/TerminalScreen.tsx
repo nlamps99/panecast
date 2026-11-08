@@ -9,6 +9,7 @@ import { HostStatusStore } from '../session/hostStatus';
 import { canCloseSurface, SurfaceActions } from '../session/surfaceActions';
 import { pickDefaultTarget, type SurfaceInfo } from '../session/surfaces';
 import { describeError } from '../session/terminalSession';
+import { TerminalConversationStore } from '../session/terminalConversation';
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { backToWorkspaces } from '../state/navigation';
 import { setPrefs, usePrefs } from '../state/prefs';
@@ -19,6 +20,7 @@ import { InputBar } from './InputBar';
 import { ProjectBrowser } from './ProjectBrowser';
 import { statusBanner, statusColor, statusLabel } from './status';
 import { TerminalView } from './TerminalView';
+import { TerminalChatView } from './TerminalChatView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
@@ -49,7 +51,9 @@ function TerminalPane() {
   const status = useConnectionStatus(channel);
   const state = useStore(session);
   const { workspaces, surfaces, known } = useStore(machine.workspaces);
-  const { fontSize, inputMode } = usePrefs();
+  const { fontSize, inputMode, terminalPresentation } = usePrefs();
+  const chat = terminalPresentation === 'chat';
+  const conversation = useMemo(() => new TerminalConversationStore(channel, session), [channel, session]);
   const inputRef = useRef<TerminalInputHandle>(null);
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
@@ -61,6 +65,11 @@ function TerminalPane() {
   const { running, error: actionError } = useStore(actions);
   const host = useMemo(() => new HostStatusStore(channel), [channel]);
   const { battery } = useStore(host);
+  useEffect(() => () => conversation.dispose(), [conversation]);
+  useEffect(() => {
+    if (terminalActive && chat) conversation.start(); else conversation.stop();
+    return () => conversation.stop();
+  }, [conversation, terminalActive, chat]);
 
   // Battery: read on focus, then every minute until the tab loses focus.
   useFocusEffect(
@@ -204,9 +213,17 @@ function TerminalPane() {
           </>
         ) : null}
       </View>
+      <View style={[styles.presentation, side]} accessibilityRole="tablist">
+        {(['chat', 'terminal'] as const).map(mode => <Pressable key={mode} onPress={() => setPrefs({ terminalPresentation: mode })}
+          style={[styles.presentationTab, mode === terminalPresentation && styles.presentationSelected]} accessibilityRole="tab" accessibilityState={{ selected: mode === terminalPresentation }}
+          accessibilityLabel={mode === 'chat' ? '对话模式' : '终端模式'}>
+          <Text style={[styles.presentationText, mode === terminalPresentation && styles.presentationTextSelected]}>{mode === 'chat' ? '对话' : '终端'}</Text>
+        </Pressable>)}
+        {chat ? <Text style={styles.chatHint} numberOfLines={1}>直接发送到当前终端</Text> : null}
+      </View>
       {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
       <View style={[styles.terminal, side]}>
-        <TerminalView
+        {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} onShowTerminal={() => setPrefs({ terminalPresentation: 'terminal' })} /> : <TerminalView
           active={terminalActive}
           readOnly={readOnly}
           key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}`}
@@ -216,11 +233,12 @@ function TerminalPane() {
           onFontSizeChange={(size) => setPrefs({ fontSize: size })}
           placeholder={placeholderFor(status, Boolean(target))}
           onTap={() => void inputRef.current?.blur()}
-        />
+        />}
       </View>
       <View style={[styles.bottom, side, { paddingBottom: keyboardVisible ? 0 : Math.max(insets.bottom - 10, 0) }]}>
         {readOnly ? <Text style={{ color: colors.yellow, padding: 12 }}>这个连接源只允许读取</Text> : null}
-        <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef} />
+        <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${terminalPresentation}:${inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef}
+          presentation={terminalPresentation} onSubmitLine={chat ? text => conversation.send(text) : undefined} />
       </View>
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
     </KeyboardAvoidingView>
@@ -254,6 +272,10 @@ function placeholderFor(status: ConnectionStatus, hasTarget: boolean): string | 
 
 const styles = StyleSheet.create({
   layout: { flex: 1, flexDirection: 'row', backgroundColor: colors.canvas },
+  presentation: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: colors.surfaceSunken },
+  presentationTab: { borderRadius: 7, paddingHorizontal: 16, paddingVertical: 7 }, presentationSelected: { backgroundColor: colors.surfaceRaised },
+  presentationText: { color: colors.muted, fontSize: 13 }, presentationTextSelected: { color: colors.green, fontWeight: '600' },
+  chatHint: { flex: 1, textAlign: 'right', paddingRight: 8, color: colors.muted, fontSize: 11 },
   screen: { flex: 1, backgroundColor: colors.canvas },
   header: {
     backgroundColor: colors.surfaceSunken,

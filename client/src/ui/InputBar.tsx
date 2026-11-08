@@ -61,6 +61,8 @@ type Props = {
   /** A send failure from the session. */
   error: string | null;
   inputRef: React.RefObject<TerminalInputHandle | null>;
+  presentation?: 'terminal' | 'chat';
+  onSubmitLine?: (text: string) => Promise<SendReceipt>;
 };
 
 /**
@@ -77,8 +79,11 @@ type Props = {
  * relay saved it at goes into the command draft, or to the terminal in live
  * mode.
  */
-export function InputBar({ session, disabled, error, inputRef }: Props) {
-  const { inputMode: mode } = usePrefs();
+export function InputBar({ session, disabled, error, inputRef, presentation = 'terminal', onSubmitLine }: Props) {
+  const { inputMode } = usePrefs();
+  const chat = presentation === 'chat';
+  const mode = chat ? 'line' : inputMode;
+  const [keysOpen, setKeysOpen] = useState(false);
   const { channel, computer } = useMachine();
   const target = session.getState().target;
   const library = inputLibrary(computer?.id ?? 'demo');
@@ -133,10 +138,11 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
     setHint('正在发送…');
     clearAttachError();
     const line = text.replace(/[\r\n]+$/, '');
+    if (chat && !line.trim()) { setHint(null); return; }
     library.setDraft(savedKey, text);
     sendingRef.current = true;
     setSending(true);
-    const receipt = await session.submitLine(line);
+    const receipt = await (onSubmitLine ? onSubmitLine(line) : session.submitLine(line));
     if (receipt.status === 'sent') {
       if (target) library.remember(line, target.workspaceId);
       if (library.getState().drafts[savedKey] === text) library.setDraft(savedKey, '');
@@ -305,14 +311,15 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
     <View>
       {message ? <Text style={[styles.message, messageStyle]}>{message}</Text> : null}
       <View style={styles.libraryRow}>
+        {chat ? <Pressable onPress={() => setKeysOpen(!keysOpen)} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
         <Pressable onPress={sheet.open} disabled={!ready} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
         {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
         {libraryState.error ? <Text style={styles.messageError}>{libraryState.error}</Text> : null}
         {!session.isConnected ? <Text style={styles.libraryText}>离线 · 可以继续写草稿</Text> : null}
       </View>
-      <KeyBar session={session} disabled={disabled || !session.isConnected || sending} />
+      {!chat || keysOpen ? <KeyBar session={session} disabled={disabled || !session.isConnected || sending} /> : null}
       <View style={styles.row}>
-        <View style={styles.segment} accessibilityRole="tablist">
+        {!chat ? <View style={styles.segment} accessibilityRole="tablist">
           {(['line', 'live'] as const).map((item) => (
             <Pressable
               key={item}
@@ -328,13 +335,13 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
               </Text>
             </Pressable>
           ))}
-        </View>
+        </View> : null}
         <View style={styles.inputBox}>
           <TerminalInputView
             ref={inputRef}
             mode={mode}
             editable={!disabled && ready && !sending && (mode === 'line' || session.isConnected)}
-            placeholder={mode === 'live' ? '打字直接发到终端' : '输入命令'}
+            placeholder={chat ? '发消息到当前终端…' : mode === 'live' ? '打字直接发到终端' : '输入命令'}
             placeholderColor={colors.muted}
             textColor={colors.ink}
             caretColor={colors.green}
@@ -374,10 +381,10 @@ export function InputBar({ session, disabled, error, inputRef }: Props) {
         {mode === 'line' ? (
           <Pressable
             onPress={() => void submitCurrent().catch(() => setHint('暂时无法发送，草稿已保留'))}
-            disabled={disabled || !ready || sending}
+            disabled={disabled || !ready || sending || (chat && !hasText)}
             style={({ pressed }) => [styles.send, !hasText && styles.sendEmpty, pressed && styles.sendPressed]}
             accessibilityRole="button"
-            accessibilityLabel={hasText ? '发送命令' : '发送回车'}
+            accessibilityLabel={chat ? '发送消息到当前终端' : hasText ? '发送命令' : '发送回车'}
             hitSlop={6}
           >
             <Text style={[styles.sendText, !hasText && styles.sendTextEmpty]}>发送</Text>

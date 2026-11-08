@@ -63,6 +63,16 @@ npm run hub -- sources revoke codex
 
 cmux 通过现有 Swift relay 接入，保留其终端订阅、历史和项目文件协议。
 配置 `url`（通常为 `ws://127.0.0.1:4399/v1/ws`）、`device_id` 和 `token`。
+
+手机终端顶部可切换「对话 / 终端」。对话模式把正文显示为气泡，连续工具执行默认
+折叠，点按摘要可以展开；发送消息仍通过当前 surface 的输入通道发送文字和回车。
+需要审批时可切回终端，或展开「终端按键」操作。
+
+`terminal.conversation` 根据 cmux `surface.resume.get` 的精确会话绑定读取本机 Codex / Claude Code
+记录，不按项目目录猜测会话。cmux 来源必须连接本机 loopback relay；远程来源、没有
+绑定的普通 shell 和旧 relay 会显示终端输出。自定义记录目录可在来源配置中指定
+`codex_home` 或 `claude_home`，默认使用环境变量和用户主目录。分页 cursor 绑定会话
+和文件身份，读取不会恢复会话、创建任务或发送输入。
 后两个值应来自该 relay 的正常设备登记，不是 broker 的 relay token。
 可通过 relay 的 `POST /v1/devices/me/register`，使用其 LAN 配对码登记一个名为
 Panecast hub 的独立设备；把返回凭据直接存到权限为 0600 的本地配置中。

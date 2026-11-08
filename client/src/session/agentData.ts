@@ -3,7 +3,7 @@ import type { AgentItem, AgentThread, AgentTurn } from './sourceStore';
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown, limit = 16_000): string => typeof value === 'string' ? value.slice(-limit) : '';
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
-const visible = new Set(['userMessage', 'agentMessage', 'plan', 'commandExecution', 'fileChange', 'mcpToolCall']);
+const visible = new Set(['userMessage', 'agentMessage', 'plan', 'commandExecution', 'fileChange', 'mcpToolCall', 'toolExecution']);
 const messages = new Set(['userMessage', 'agentMessage', 'plan']);
 
 /** Network data is not a TypeScript value until it has been checked. */
@@ -14,6 +14,9 @@ export function agentItem(value: unknown): AgentItem | null {
   const parts = array(item.content).map(record).filter((c) => c.type === 'text');
   const content = parts.slice(-8).map((c) => text(c.text)).join('\n');
   return { id: item.id, type: item.type, text: text(item.text, limit),
+    ...(typeof item.sequence === 'number' && Number.isFinite(item.sequence) ? { sequence: item.sequence } : {}),
+    ...(typeof item.updatedSequence === 'number' && Number.isFinite(item.updatedSequence) ? { updatedSequence: item.updatedSequence } : {}),
+    ...(typeof item.timestamp === 'number' && Number.isFinite(item.timestamp) ? { timestamp: item.timestamp } : {}),
     ...(typeof item.clientId === 'string' ? { clientId: item.clientId } : {}),
     content: [{ type: 'text', text: text(content) }],
     command: text(item.command, 2000), aggregatedOutput: text(item.aggregatedOutput, 6000), status: text(item.status, 100),

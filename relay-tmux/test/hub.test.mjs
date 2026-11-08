@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,7 +17,7 @@ async function upstream(t, codex = false) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(server, 'listening');
   t.after(async () => { for (const ws of server.clients) ws.terminate(); await new Promise((resolve) => server.close(resolve)); });
-  const calls = [], responses = [];
+  const calls = [], responses = [], bindings = new Map();
   server.on('connection', (ws) => ws.on('message', (raw) => {
     const m = JSON.parse(raw); if (!m.method) { if ('result' in m) responses.push(m); return; }
     calls.push(m);
@@ -26,6 +26,7 @@ async function upstream(t, codex = false) {
     if (m.method === 'window.list') result = { windows: [{ id: 'window', ref: 'window:1', key: true }] };
     if (m.method === 'workspace.list') result = { window_id: 'window', workspaces: [{ id: '$0', title: 'cmux workspace', selected: true }] };
     if (m.method === 'surface.list') result = { surfaces: [{ id: '%0', title: 'cmux shell', type: 'terminal' }] };
+    if (m.method === 'surface.resume.get') result = { resume_binding: bindings.get(m.params.surface_id) ?? null };
     if (m.method === 'surface.subscribe') ws.send(JSON.stringify({ type: 'screen.full', surface_id: m.params.surface_id, rev: 1, rows: ['cmux output'], cols: 80, rowsCount: 1, cursor: { x: 0, y: 0 } }));
     if (m.method === 'thread/loaded/list') result = { data: ['thread-1'] };
     const thread = { id: 'thread-1', name: 'Desktop conversation', cwd: '/project', status: { type: 'idle' } };
@@ -35,7 +36,7 @@ async function upstream(t, codex = false) {
     if (m.method === 'turn/start') result = { turn: { id: 'turn-2', status: 'inProgress', items: [] } };
     ws.send(JSON.stringify({ id: m.id, ...(codex ? {} : { ok: true }), result }));
   }));
-  return { server, calls, responses, url: `ws://127.0.0.1:${server.address().port}`, emit(message) { for (const ws of server.clients) ws.send(JSON.stringify(message)); } };
+  return { server, calls, responses, bindings, url: `ws://127.0.0.1:${server.address().port}`, emit(message) { for (const ws of server.clients) ws.send(JSON.stringify(message)); } };
 }
 
 async function fixture(t) {
@@ -77,6 +78,30 @@ test('cmux application history forwards replay and scrolling with target and acc
   assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', delta_lines: 10, col: 40, row: 10 });
   await assert.rejects(peer.call('terminal.scroll', { ...target, surface_id: scoped('tmux', fx.surface.id), delta_lines: 10 }), { code: 'invalid_target' });
   await assert.rejects(peer.call('terminal.replay', { workspace_id: scoped('tmux', fx.workspace_id), surface_id: scoped('tmux', fx.surface.id) }), { code: 'method_not_found' });
+});
+
+test('terminal chat reads only the selected binding and honors source scope, read-only access and revocation', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'panecast-bound-chat-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const cmux = await upstream(t), id = randomUUID(), other = randomUUID();
+  const codexHome = join(directory, 'codex'); await mkdir(join(codexHome, 'sessions'), { recursive: true });
+  for (const [sessionId, text] of [[id, 'selected answer'], [other, 'different terminal']]) await writeFile(join(codexHome, 'sessions', `${sessionId}.jsonl`), [
+    { type: 'session_meta', payload: { id: sessionId } }, { type: 'event_msg', payload: { type: 'user_message', message: text } },
+  ].map(value => JSON.stringify(value) + '\n').join(''));
+  cmux.bindings.set('%0', { kind: 'codex', checkpoint_id: id, execution_location: 'local', cwd: directory });
+  cmux.bindings.set('%1', { kind: 'codex', checkpoint_id: other, execution_location: 'local', cwd: directory });
+  const sources = [{ id: 'cmux', type: 'cmux', enabled: true, access: 'read', url: cmux.url, token: 'fixture-only', device_id: 'fixture', codex_home: codexHome }];
+  const { peer, hub } = await connect(t, { state_directory: join(directory, 'hub'), port: 0, lan: { pairing_code: 'pair-secret' }, sources });
+  const target = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
+  const page = await peer.call('terminal.conversation', target);
+  assert.equal(page.available, true); assert.equal(page.conversation_id, id); assert.equal(page.items[0].content[0].text, 'selected answer');
+  assert.deepEqual(cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0' });
+  const second = await peer.call('terminal.conversation', { ...target, surface_id: scoped('cmux', '%1') });
+  assert.equal(second.conversation_id, other); assert.equal(second.items[0].content[0].text, 'different terminal');
+  assert.equal((await peer.call('terminal.conversation', { ...target, surface_id: scoped('cmux', '%2') })).available, false);
+  await assert.rejects(peer.call('terminal.conversation', { ...target, surface_id: scoped('different', '%0') }), { code: 'invalid_target' });
+  assert.equal(cmux.calls.some(call => /send|resume$|turn\/start/.test(call.method)), false);
+  hub.reloadSources([{ ...sources[0], enabled: false }]);
+  await assert.rejects(peer.call('terminal.conversation', target), { code: 'source_revoked' });
 });
 
 test('one pairing routes cmux, real tmux and Codex without mixing IDs or permissions', async (t) => {

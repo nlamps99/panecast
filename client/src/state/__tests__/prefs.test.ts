@@ -40,6 +40,7 @@ describe('sanitizePrefs', () => {
       keyHaptics: true,
       extraKeyRow: false,
       terminalWrap: true,
+      terminalPresentation: 'terminal',
       tabletSidebar: true,
     });
   });

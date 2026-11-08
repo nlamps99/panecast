@@ -2,8 +2,9 @@ import { RelaySession } from '../server.mjs';
 import { RpcError, TmuxBackend } from '../tmux.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scopeResult, scoped, targetParams } from './ids.mjs';
+import { TerminalConversationReader, localConversationSource } from './terminal-conversation.mjs';
 
-const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
+const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
 const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'terminal.scroll', 'notification.create']);
 
 /** A phone keeps one authenticated connection while sources keep independent transports. */
@@ -137,6 +138,19 @@ export class HubSession extends RelaySession {
       else throw new RpcError('invalid_target', '请先选择连接源');
     }
     const source = this.registry.get(id);
+    if (method === 'terminal.conversation') {
+      if (source.config.type !== 'cmux' || !localConversationSource(source.config.url)) return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
+      if (!params.workspace_id || !params.surface_id) throw new RpcError('invalid_target', '请选择当前终端');
+      let info;
+      try { info = await this.client(id).call('surface.resume.get', { workspace_id: params.workspace_id, surface_id: params.surface_id }); }
+      catch (error) {
+        if (['method_not_found', 'not_supported', '-32601'].includes(String(error.code))) return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
+        throw error;
+      }
+      source.conversationReader ??= new TerminalConversationReader({ codexHome: source.config.codex_home, claudeHome: source.config.claude_home });
+      try { return await source.conversationReader.read(info.resume_binding, params); }
+      catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('conversation_unavailable', '对话记录暂时不可用，请稍后重试'); }
+    }
     if ((method === 'terminal.replay' || method === 'terminal.scroll') && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持应用内滚动');
     if (WRITES.has(method)) this.control(source);
     if (params.window_id === 'default') delete params.window_id;
