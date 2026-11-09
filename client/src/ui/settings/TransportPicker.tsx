@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert } from '../../platform/alert';
 
 import { appStore } from '../../state/appStore';
 import type { TransportPreference } from '../../state/computers';

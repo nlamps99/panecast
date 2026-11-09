@@ -1,0 +1,16 @@
+{
+  "name": "panecast-desktop",
+  "productName": "Panecast",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "export": "node scripts/export.mjs",
+    "start": "electron .",
+    "build": "npm run export && node scripts/build.mjs",
+    "test": "node --test"
+  },
+  "dependencies": { "ws": "^8.18.3" },
+  "devDependencies": { "electron": "45.2.3", "@electron/packager": "20.3.0" }
+}

@@ -23,6 +23,8 @@ import { getPrefs } from './prefs';
 import { sessionMemory, surfaceMemoryKey } from './sessionMemory';
 import { listSurfaces } from '../session/surfaces';
 import { RpcCallError } from '../protocol/connection';
+import { AccountError, accountRequest, accountServer, type AccountComputer, type AccountSession } from '../account/api';
+import { loadAccount, saveAccount, signIn } from '../account/store';
 
 export { PairingError } from './connect';
 
@@ -42,6 +44,8 @@ export type AppStoreState = {
   phase: 'loading' | 'unpaired' | 'ready';
   computers: ComputerList;
   machine: Machine | null;
+  account: AccountSession | null;
+  accountError: string | null;
 };
 
 function log(message: string) {
@@ -57,11 +61,14 @@ function isComputerChannel(channel: unknown): channel is ComputerChannel {
  * reads it with `useSyncExternalStore`. Exported for tests.
  */
 export class AppStore {
-  private state: AppStoreState = { phase: 'loading', computers: EMPTY_COMPUTER_LIST, machine: null };
+  private state: AppStoreState = { phase: 'loading', computers: EMPTY_COMPUTER_LIST, machine: null, account: null, accountError: null };
   private listeners = new Set<() => void>();
   private loaded = false;
   private machineObservers: (() => void)[] = [];
   private restoreNavigation: string | null = null;
+  private accountRefresh: Promise<void> | null = null;
+  private accountGeneration = 0;
+  private computerWrites: Promise<void> = Promise.resolve();
 
   getState = (): AppStoreState => this.state;
 
@@ -82,12 +89,21 @@ export class AppStore {
     } catch (error) {
       log(`could not read computers: ${error instanceof Error ? error.message : String(error)}`);
     }
+    try {
+      const account = await loadAccount();
+      this.setState({ ...this.state, account });
+      computers = { ...computers, computers: computers.computers.filter((c) => !c.accountId || (c.accountId === account?.user.id && c.broker.token === account?.token)) };
+    } catch {
+      computers = { ...computers, computers: computers.computers.filter((c) => !c.accountId) };
+      this.setState({ ...this.state, accountError: '无法读取登录信息，请重新登录。' });
+    }
     this.connect(computers);
+    if (this.state.account) void this.refreshAccount().catch(() => {});
   }
 
   /** Pairs with the computer described by a scanned `cmux://pair?...` URL and switches to it. */
   async pair(rawUrl: string): Promise<void> {
-    if (!storageSupported) throw new PairingError('网页版还不能配对，请用手机 App。');
+    if (!storageSupported) throw new PairingError('请使用 Panecast 手机或桌面 App 连接电脑。');
     const parsed = parsePairingUrl(rawUrl);
     if (!parsed.ok) {
       throw new PairingError(
@@ -96,10 +112,19 @@ export class AppStore {
           : '这不是 Panecast 的配对二维码。',
       );
     }
+    const account = this.state.account;
+    if (account && accountServer(parsed.payload.serverUrl) === account.serverUrl) {
+      await accountRequest(account.serverUrl, 'computers', 'POST', { relay_id: parsed.payload.relayId, pairing_code: parsed.payload.pairingCode }, account.token);
+      this.invalidateAccountRefresh();
+      await this.refreshAccount();
+      const computer = this.state.computers.computers.find((c) => c.accountId === account.user.id && c.broker.relayId === parsed.payload.relayId);
+      if (computer) await this.select(computer.id);
+      return;
+    }
     const registered = await registerComputer(parsed.payload);
     // Re-pairing the same relay replaces its credentials but keeps its id and name.
     const { list: computers } = upsertComputer(this.state.computers, registered);
-    await saveComputers(computers);
+    await this.persistComputers(computers);
     this.connect(computers);
   }
 
@@ -109,9 +134,15 @@ export class AppStore {
    * to the pairing screen when none is left. The demo stays the demo.
    */
   async remove(computerId: string): Promise<void> {
+    const removed = this.state.computers.computers.find((c) => c.id === computerId);
+    if (removed?.accountId) {
+      const account = this.requireAccount();
+      this.invalidateAccountRefresh();
+      await accountRequest(account.serverUrl, `computers?relay_id=${encodeURIComponent(removed.broker.relayId)}`, 'DELETE', undefined, account.token);
+    }
     const computers = removeComputer(this.state.computers, computerId);
     if (computers === this.state.computers) return;
-    await saveComputers(computers);
+    await this.persistComputers(computers);
     if (this.state.machine?.computer?.id === computerId) this.connect(computers);
     else this.setState({ ...this.state, computers });
     void forgetInbox(inboxStorageKey(computerId));
@@ -129,8 +160,14 @@ export class AppStore {
 
   /** Renames a computer; a blank name falls back to its relay id. The connection is untouched. */
   async rename(computerId: string, name: string): Promise<void> {
+    const old = this.state.computers.computers.find((c) => c.id === computerId);
+    if (old?.accountId) {
+      const account = this.requireAccount();
+      this.invalidateAccountRefresh();
+      await accountRequest(account.serverUrl, `computers?relay_id=${encodeURIComponent(old.broker.relayId)}`, 'PATCH', { name: name.trim() || old.broker.relayId }, account.token);
+    }
     const computers = renameComputer(this.state.computers, computerId, name);
-    await saveComputers(computers);
+    await this.persistComputers(computers);
     const renamed = computers.computers.find((c) => c.id === computerId);
     const machine = this.state.machine;
     this.setState({
@@ -145,7 +182,7 @@ export class AppStore {
     if (this.state.machine?.computer?.id === computerId) return;
     if (!this.state.computers.computers.some((c) => c.id === computerId)) return;
     const computers: ComputerList = { ...this.state.computers, selectedId: computerId };
-    await saveComputers(computers);
+    await this.persistComputers(computers);
     this.connect(computers);
   }
 
@@ -155,7 +192,7 @@ export class AppStore {
       ...this.state.computers,
       transport: { ...this.state.computers.transport, [computerId]: preference },
     };
-    await saveComputers(computers);
+    await this.persistComputers(computers);
     if (this.state.machine?.computer?.id === computerId) this.connect(computers);
     else this.setState({ ...this.state, computers });
   }
@@ -177,6 +214,119 @@ export class AppStore {
   wake(): void {
     const channel = this.state.machine?.channel;
     if (isComputerChannel(channel)) channel.wake();
+    if (this.state.account) void this.refreshAccount().catch(() => {});
+  }
+
+  async login(server: string, username: string, password: string, create: boolean): Promise<void> {
+    if (this.state.account) throw new Error('请先退出当前账号。');
+    const account = await signIn(server, username, password, create);
+    try { await saveAccount(account); }
+    catch (error) { await accountRequest(account.serverUrl, 'logout', 'POST', undefined, account.token).catch(() => {}); throw error; }
+    this.accountGeneration++;
+    this.setState({ ...this.state, account, accountError: null });
+    await this.refreshAccount();
+  }
+
+  refreshAccount(): Promise<void> {
+    if (this.accountRefresh) return this.accountRefresh;
+    const account = this.state.account;
+    if (!account) return Promise.resolve();
+    const generation = this.accountGeneration;
+    const refresh = this.syncAccount(account, generation).finally(() => { if (this.accountRefresh === refresh) this.accountRefresh = null; });
+    this.accountRefresh = refresh;
+    return refresh;
+  }
+
+  private async syncAccount(account: AccountSession, generation: number): Promise<void> {
+    try {
+      const result = await accountRequest<{ computers: AccountComputer[] }>(account.serverUrl, 'computers', 'GET', undefined, account.token);
+      if (generation !== this.accountGeneration) return;
+      if (!Array.isArray(result.computers)) throw new Error('服务器返回的电脑列表无效。');
+      const previous = this.state.computers;
+      const local = previous.computers.filter((c) => !c.accountId && !(c.broker.serverUrl === account.serverUrl && result.computers.some((remote) => remote.relay_id === c.broker.relayId)));
+      const computers: StoredComputer[] = result.computers.map((c) => {
+        if (typeof c.relay_id !== 'string' || typeof c.device_id !== 'string' || typeof c.name !== 'string') throw new Error('服务器返回的电脑信息无效。');
+        const existing = previous.computers.find((p) => (!p.accountId || p.accountId === account.user.id) && p.broker.serverUrl === account.serverUrl && p.broker.relayId === c.relay_id);
+        return { id: existing?.id ?? `account:${account.user.id}:${c.relay_id}`, accountId: account.user.id, name: c.name, online: c.online,
+          broker: { serverUrl: account.serverUrl, relayId: c.relay_id, deviceId: c.device_id, token: account.token }, pairedAt: c.paired_at };
+      });
+      const list: ComputerList = { ...previous, computers: [...local, ...computers] };
+      if (!list.computers.some((c) => c.id === list.selectedId)) list.selectedId = list.computers[0]?.id ?? null;
+      await this.persistComputers(list);
+      if (generation !== this.accountGeneration) return;
+      const current = this.state.machine?.computer;
+      const updated = list.computers.find((c) => c.id === current?.id);
+      if (this.state.machine?.mode !== 'demo' && (!current || !updated || current.broker.token !== updated.broker.token)) this.connect(list);
+      else this.setState({ ...this.state, computers: list, machine: this.state.machine && updated ? { ...this.state.machine, computer: updated } : this.state.machine });
+      this.setState({ ...this.state, accountError: null });
+    } catch (error) {
+      if (generation !== this.accountGeneration) return;
+      if (error instanceof AccountError && error.status === 401) await this.clearAccount();
+      this.setState({ ...this.state, accountError: error instanceof Error ? error.message : '同步失败，请重试。' });
+      throw error;
+    }
+  }
+
+  async bindExisting(computerId: string): Promise<void> {
+    const account = this.requireAccount();
+    const computer = this.state.computers.computers.find((c) => c.id === computerId);
+    if (!computer || computer.accountId || accountServer(computer.broker.serverUrl) !== account.serverUrl) throw new Error('只能绑定当前服务器上已配对的电脑。');
+    await accountRequest(account.serverUrl, 'computers', 'POST', { relay_id: computer.broker.relayId, device_token: computer.broker.token, name: computer.name }, account.token);
+    this.invalidateAccountRefresh();
+    await this.refreshAccount();
+  }
+
+  async logout(): Promise<void> {
+    const account = this.requireAccount();
+    this.invalidateAccountRefresh();
+    try { await accountRequest(account.serverUrl, 'logout', 'POST', undefined, account.token); }
+    catch (error) { if (!(error instanceof AccountError && error.status === 401)) throw error; }
+    await this.clearAccount();
+  }
+
+  async changePassword(oldPassword: string, password: string): Promise<void> {
+    const account = this.requireAccount();
+    await accountRequest(account.serverUrl, 'password', 'POST', { old_password: oldPassword, password }, account.token);
+  }
+
+  async deleteAccount(password: string): Promise<void> {
+    const account = this.requireAccount();
+    await accountRequest(account.serverUrl, 'me', 'DELETE', { password }, account.token);
+    await this.clearAccount();
+  }
+
+  private requireAccount(): AccountSession {
+    if (!this.state.account) throw new Error('请先登录账号。');
+    return this.state.account;
+  }
+
+  private async clearAccount(): Promise<void> {
+    this.invalidateAccountRefresh();
+    await saveAccount(null);
+    const removed = this.state.computers.computers.filter((c) => c.accountId);
+    const remaining = this.state.computers.computers.filter((c) => !c.accountId);
+    const computers = { ...this.state.computers, computers: remaining, selectedId: remaining.some((c) => c.id === this.state.computers.selectedId) ? this.state.computers.selectedId : remaining[0]?.id ?? null };
+    await this.persistComputers(computers);
+    this.setState({ ...this.state, account: null, accountError: null });
+    this.connect(computers);
+    for (const computer of removed) {
+      void forgetInbox(inboxStorageKey(computer.id));
+      void forgetInputs(computer.id).catch(() => {});
+      void forgetConversations(computer.id).catch(() => {});
+      sessionMemory.forgetComputer(computer.id);
+      void keyboardProfiles().forgetComputer(computer.id);
+    }
+  }
+
+  private invalidateAccountRefresh(): void {
+    this.accountGeneration++;
+    this.accountRefresh = null;
+  }
+
+  private persistComputers(computers: ComputerList): Promise<void> {
+    const write = this.computerWrites.then(() => saveComputers(computers));
+    this.computerWrites = write.catch(() => {});
+    return write;
   }
 
   private connect(computers: ComputerList): void {
@@ -215,7 +365,7 @@ export class AppStore {
       previous.inbox.dispose();
       if (isComputerChannel(previous.channel)) previous.channel.stop();
     }
-    this.setState({ phase: machine ? 'ready' : 'unpaired', computers, machine });
+    this.setState({ ...this.state, phase: machine ? 'ready' : 'unpaired', computers, machine });
     this.restoreNavigation = machine?.computer && (machine.session.getState().target || sessionMemory.computer(machine.computer.id).source) ? machine.computer.id : null;
     if (machine?.computer) this.observeMachine(machine);
     if (machine && isComputerChannel(machine.channel)) machine.channel.start();

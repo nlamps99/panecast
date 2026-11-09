@@ -1,4 +1,5 @@
 import { registerUrl, type RelayEndpoint } from './endpoint';
+import { serviceFetch } from '../platform/desktop';
 
 /** Bearer token and device id issued by `POST /v1/devices/me/register`. */
 export type DeviceCredentials = { deviceId: string; token: string };
@@ -34,7 +35,7 @@ const MAX_FIELD_LENGTH = 256;
 
 export async function registerDevice(request: RegisterRequest): Promise<DeviceCredentials> {
   const { endpoint, pairingCode, clientId } = request;
-  const fetchImpl = request.fetchImpl ?? fetch;
+  const fetchImpl = request.fetchImpl ?? serviceFetch;
   const deviceName = clampField(request.deviceName.trim() || 'Panecast');
   const body: Record<string, string> = {
     pairing_code: pairingCode,

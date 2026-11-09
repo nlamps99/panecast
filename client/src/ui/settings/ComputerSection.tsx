@@ -177,7 +177,7 @@ function ManageComputer({
           onPress={() => close(() => openPairing(computer.id))}
         />
       ) : null}
-      <SheetRow title="移除这台电脑" titleColor={colors.red} detail="移除后要重新扫码才能连接" onPress={remove} />
+      <SheetRow title={computer.accountId ? '从账号解除绑定' : '移除这台电脑'} titleColor={colors.red} detail={computer.accountId ? '账号下的所有设备都将断开与它的连接' : '移除后需要重新配对才能连接'} onPress={remove} />
     </View>
   );
 }

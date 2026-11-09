@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#131722">
-  <meta name="description" content="下载 Panecast Android App，安装 Mac 终端网关。在手机上继续电脑上的终端工作。">
+  <meta name="description" content="下载 Panecast 手机和 Mac 桌面 App。登录账号，连接自己的电脑，继续终端和 Codex 中的工作。">
   <title>下载 Panecast · 把终端带在身边</title>
   <link rel="icon" href="./icon.png">
   <link rel="stylesheet" href="./style.css">
@@ -22,7 +22,7 @@
       <div class="hero-copy">
         <p class="eyebrow"><span class="tiny-line"></span> YOUR TERMINAL. WITH YOU.</p>
         <h1 id="hero-title">离开桌面，<br>工作依然<span>在手边。</span></h1>
-        <p class="hero-description">在手机上查看终端输出、输入指令，接着处理电脑上的工作。<br class="desktop-break">安装手机 App，再连接属于你的 Mac。</p>
+        <p class="hero-description">在手机或另一台电脑上查看终端、输入指令，接着处理远程工作。<br class="desktop-break">登录同一个账号，让自己的电脑随时可达。</p>
         <div class="hero-facts"><span><i class="dot green"></i>支持 cmux / tmux</span><span><i class="dot gold"></i>连接 Codex 会话</span></div>
       </div>
       <div class="terminal-art" aria-hidden="true">
@@ -33,8 +33,17 @@
     </section>
 
     <section id="downloads" aria-labelledby="downloads-title">
-      <div class="section-heading"><div><p class="eyebrow">01 / DOWNLOAD</p><h2 id="downloads-title">两端就位，即可出发。</h2></div><span class="quiet-label">手机 App + 电脑网关</span></div>
+      <div class="section-heading"><div><p class="eyebrow">01 / DOWNLOAD</p><h2 id="downloads-title">两端就位，即可出发。</h2></div><span class="quiet-label">手机 / 桌面 App + 电脑网关</span></div>
       <div class="download-grid">
+        <article class="download-card" id="desktop-card" hidden>
+          <div class="card-top"><span class="tag">桌面客户端 · 预览版</span></div>
+          <h3>Mac 桌面版</h3><p class="card-description">和手机使用相同的终端、Codex、工作区与收件箱功能。在这台 Mac 上连接另一台电脑。</p>
+          <div class="version-row"><strong id="desktop-version"></strong><span id="desktop-size"></span></div>
+          <a class="download-button" id="desktop-download" download><span>下载 Mac 桌面版</span><span aria-hidden="true">↓</span></a>
+          <p class="requirement">macOS 13 及以上 · Apple Silicon（M 系列芯片）</p>
+          <p class="small-note">解压后将 Panecast 拖入「应用程序」。此预览版尚未经过 Apple 公证；系统可能要求在「隐私与安全性」中确认打开。</p>
+          <div class="fine-links"><a id="desktop-checksum">SHA-256 校验文件 ↗</a><a href="#desktop-connect">账号与连接说明 ↗</a></div>
+        </article>
         <article class="download-card android-card">
           <div class="card-top"><div class="platform-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 9h16v17H8zM11 5h10v4H11zM12 29v-3m8 3v-3M5 12v10m22-10v10M11 2l2 3m8-3-2 3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">手机端</span></div>
           <h3>Android</h3><p class="card-description">你的随身终端。扫码连接电脑，查看输出、输入指令和处理待办。</p>
@@ -47,7 +56,7 @@
         </article>
 
         <article class="download-card mac-card">
-          <div class="card-top"><div class="platform-icon mac-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><rect x="4" y="5" width="24" height="17" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 28h8m-4-6v6M10 11l3 3-3 3m6 0h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">电脑端</span></div>
+          <div class="card-top"><div class="platform-icon mac-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><rect x="4" y="5" width="24" height="17" rx="3" stroke="currentColor" stroke-width="2"/><path d="M12 28h8m-4-6v6M10 11l3 3-3 3m6 0h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">电脑网关</span></div>
           <div class="mac-title"><h3>macOS</h3><span id="mac-version" class="version-pill">CLI</span></div>
           <p class="card-description">安装轻量的 Panecast 网关，让手机访问这台 Mac 上授权的来源。</p>
           <div class="install-tabs" role="tablist" aria-label="Mac 安装方式">
@@ -77,6 +86,7 @@
         <article><span class="step-number">03</span><h3>手机扫码配对</h3><code>panecast pair</code><p>输入这台电脑的配对码，再用手机 App 扫描终端里显示的二维码。</p></article>
       </div>
       <div class="connection-note"><span aria-hidden="true">↳</span><p>目前通过邀请接入中转，每台电脑使用独立凭据。安装器方式在当前终端可使用 <code>~/.local/bin/panecast</code>；新终端中直接运行 <code>panecast</code>。</p></div>
+      <div class="connection-note" id="desktop-connect"><span aria-hidden="true">↳</span><p>桌面版打开「账号登录与电脑管理」，注册或登录账号，再粘贴目标电脑的配对链接。之后在另一台设备登录同一账号，即可取回电脑列表。账号属于所填写的服务器；不同服务器分别管理账号。目标电脑需保持网关运行。已发布的 Android build 13 仍使用扫码配对，账号入口将在新手机构建中提供。</p></div>
     </section>
 
     <div class="details-grid">

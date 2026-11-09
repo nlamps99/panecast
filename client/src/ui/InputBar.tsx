@@ -1,16 +1,7 @@
 import { SymbolView } from 'expo-symbols';
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActionSheetIOS,
-  ActivityIndicator,
-  Alert,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type TextStyle,
-} from 'react-native';
+import { ActionSheetIOS, ActivityIndicator, Platform, Pressable, StyleSheet, Text, View, type TextStyle } from 'react-native';
+import { Alert } from '../platform/alert';
 
 import { TerminalInputView, type TerminalInputHandle, type TerminalInputKey } from '../../modules/terminal-input';
 import { encodeImage, pickImage, type ImageSource } from '../input/attachImage';

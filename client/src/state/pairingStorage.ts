@@ -1,6 +1,5 @@
 import { randomUUID } from 'expo-crypto';
-import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
+import { secureStorage, secureStorageSupported } from '../platform/secureStorage';
 
 import { EMPTY_COMPUTER_LIST, type ComputerList, type StoredComputer } from './computers';
 
@@ -9,21 +8,15 @@ const COMPUTERS_KEY = 'panecast.computers.v2';
 const LEGACY_PAIRING_KEY = 'panecast.pairing.v1';
 const CLIENT_ID_KEY = 'panecast.clientId';
 
-/** Tokens stay on this device: not in backups, not migrated to a new phone. */
-const OPTIONS: SecureStore.SecureStoreOptions = {
-  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-};
-
-/** SecureStore has no web implementation; the web client cannot pair yet. */
-export const storageSupported = Platform.OS === 'ios' || Platform.OS === 'android';
+export const storageSupported = secureStorageSupported;
 
 export async function loadComputers(): Promise<ComputerList> {
   if (!storageSupported) return EMPTY_COMPUTER_LIST;
-  const raw = await SecureStore.getItemAsync(COMPUTERS_KEY, OPTIONS);
+  const raw = await secureStorage.get(COMPUTERS_KEY);
   if (raw) {
     const parsed = parseList(raw);
     if (parsed) return parsed;
-    await SecureStore.deleteItemAsync(COMPUTERS_KEY, OPTIONS);
+    await secureStorage.remove(COMPUTERS_KEY);
   }
   const migrated = await migrateLegacy();
   if (migrated.computers.length > 0) await saveComputers(migrated);
@@ -32,7 +25,7 @@ export async function loadComputers(): Promise<ComputerList> {
 
 export async function saveComputers(list: ComputerList): Promise<void> {
   if (!storageSupported) throw new Error('这个平台不支持安全存储');
-  await SecureStore.setItemAsync(COMPUTERS_KEY, JSON.stringify(list), OPTIONS);
+  await secureStorage.set(COMPUTERS_KEY, JSON.stringify(list));
 }
 
 /**
@@ -41,10 +34,10 @@ export async function saveComputers(list: ComputerList): Promise<void> {
  */
 export async function getClientId(): Promise<string> {
   if (!storageSupported) return randomUUID();
-  const existing = await SecureStore.getItemAsync(CLIENT_ID_KEY, OPTIONS);
+  const existing = await secureStorage.get(CLIENT_ID_KEY);
   if (existing) return existing;
   const id = randomUUID();
-  await SecureStore.setItemAsync(CLIENT_ID_KEY, id, OPTIONS);
+  await secureStorage.set(CLIENT_ID_KEY, id);
   return id;
 }
 
@@ -84,7 +77,7 @@ function isComputer(value: unknown): value is StoredComputer {
 
 /** Reads the v1 single-pairing record, if any, and removes it. */
 async function migrateLegacy(): Promise<ComputerList> {
-  const raw = await SecureStore.getItemAsync(LEGACY_PAIRING_KEY, OPTIONS);
+  const raw = await secureStorage.get(LEGACY_PAIRING_KEY);
   if (!raw) return EMPTY_COMPUTER_LIST;
   let computer: StoredComputer | null = null;
   try {
@@ -107,6 +100,6 @@ async function migrateLegacy(): Promise<ComputerList> {
   } catch {
     computer = null;
   }
-  await SecureStore.deleteItemAsync(LEGACY_PAIRING_KEY, OPTIONS);
+  await secureStorage.remove(LEGACY_PAIRING_KEY);
   return computer ? { version: 2, selectedId: computer.id, computers: [computer] } : EMPTY_COMPUTER_LIST;
 }

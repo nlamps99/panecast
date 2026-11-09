@@ -63,6 +63,13 @@ async function loadReleases() {
   byId('android-download').href = `./${data.android.file}`;
   byId('android-checksum').href = `./${data.android.file}.sha256`;
   byId('mac-version').textContent = `v${data.mac.version} CLI`;
+  if (data.desktop) {
+    byId('desktop-card').hidden = false;
+    byId('desktop-version').textContent = `v${data.desktop.version}`;
+    byId('desktop-size').textContent = `${(data.desktop.size / 1000000).toFixed(1)} MB`;
+    byId('desktop-download').href = `./${data.desktop.file}`;
+    byId('desktop-checksum').href = `./${data.desktop.file}.sha256`;
+  }
   commands = {
     brew: { command: `brew tap panecast/tap ${base}/homebrew-tap.git\nbrew install panecast/tap/panecast`, note: '需要已安装 Homebrew；自动处理 Node.js 和 tmux 依赖，支持 Apple Silicon 与 Intel。' },
     script: { command: `curl -fsSL ${base}/install.sh | bash`, note: '自带独立 Node.js 运行时，无需 sudo。如使用 tmux 来源，请另行安装 tmux。' },
@@ -70,6 +77,7 @@ async function loadReleases() {
   };
   selectMethod(activeMethod);
   const list = byId('release-list'); list.replaceChildren(releaseRow(data.mac, 'Mac CLI'), releaseRow(data.android, 'Android'));
+  if (data.desktop) list.prepend(releaseRow(data.desktop, 'Mac 桌面版'));
   for (const release of data.history ?? []) list.append(releaseRow(release, release.platform));
 }
 loadReleases().catch(() => { byId('load-error').hidden = false; byId('android-version').textContent = 'Android APK'; });

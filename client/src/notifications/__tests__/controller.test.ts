@@ -119,7 +119,7 @@ function computer(id: string, relayId: string, lan = false): StoredComputer {
 }
 
 class FakeStore {
-  state: AppStoreState = { phase: 'loading', computers: { version: 2, selectedId: null, computers: [] }, machine: null };
+  state: AppStoreState = { phase: 'loading', account: null, accountError: null, computers: { version: 2, selectedId: null, computers: [] }, machine: null };
   machines = new Map<string, FakeMachine>();
   private listeners = new Set<() => void>();
   getState = () => this.state;

@@ -10,6 +10,7 @@ import { storageSupported } from '../state/pairingStorage';
 import { Icon } from '../ui/Icon';
 import { ConnectionGuide } from '../ui/ConnectionGuide';
 import { colors, fonts } from '../ui/theme';
+import { desktopBridge } from '../platform/desktop';
 
 /** Re-scanning a code that just failed is ignored for this long. */
 const RETRY_SAME_CODE_MS = 4_000;
@@ -31,7 +32,8 @@ export default function PairScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [manual, setManual] = useState(false);
+  const desktop = desktopBridge() !== null;
+  const [manual, setManual] = useState(desktop);
   const [manualText, setManualText] = useState('');
   const handling = useRef(false);
   const rejected = useRef<{ data: string; at: number } | null>(null);
@@ -79,7 +81,7 @@ export default function PairScreen() {
       <View style={[styles.screen, { paddingTop, paddingBottom: insets.bottom + 12 }]}>
         <Header title="Panecast" presented={presented} />
         <View style={styles.center}>
-          <Text style={styles.body}>网页版还不能连接电脑，请先用 iPhone 或 Android App。</Text>
+          <Text style={styles.body}>请使用 Panecast 手机或桌面 App 连接电脑。</Text>
           {presented ? null : (
             <Pressable onPress={() => appStore.enterDemo()} accessibilityRole="button">
               <Text style={styles.link}>先看看演示</Text>
@@ -123,12 +125,13 @@ export default function PairScreen() {
       keyboardDismissMode="on-drag"
     >
       <Header title={title} presented={presented} />
+      <Pressable style={styles.button} onPress={() => router.push('/account')} accessibilityRole="button"><Text style={styles.buttonText}>账号登录与电脑管理</Text></Pressable>
       <ConnectionGuide />
       <Text style={styles.body}>
         {repairing ? `「${repairing.name}」的配对已失效。在这台 Mac 上` : '在 Mac 上'}运行 <Text style={styles.code}>cmux-relay pair</Text>
-        ，然后扫描它显示的二维码。
+        {desktop ? '，然后粘贴它显示的配对链接。' : '，然后扫描它显示的二维码。'}
       </Text>
-      <View style={styles.cameraBox}>{camera}</View>
+      {desktop ? null : <View style={styles.cameraBox}>{camera}</View>}
       {busy ? (
         <View style={styles.status}>
           <ActivityIndicator color={colors.ink} />
@@ -192,7 +195,7 @@ function Header({ title, presented }: { title: string; presented: boolean }) {
 
 const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: colors.canvas },
-  screen: { flexGrow: 1, backgroundColor: colors.canvas, paddingHorizontal: 20, gap: 12 },
+  screen: { flexGrow: 1, width: '100%', maxWidth: 700, alignSelf: 'center', backgroundColor: colors.canvas, paddingHorizontal: 20, gap: 12 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   title: { flex: 1, color: colors.ink, fontSize: 24, fontWeight: '600' },

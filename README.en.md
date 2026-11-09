@@ -2,6 +2,10 @@ English · [简体中文](README.md)
 
 # Panecast
 
+The [Mac desktop client](desktop/README.md) shares the mobile app's terminal, Codex,
+workspace, inbox and file features. Accounts on a broker discover authorized computers
+across devices. See the [account protocol](docs/specs/2026-11-09-accounts-and-desktop.md).
+
 View and drive the terminals on your computer from your phone.
 
 > **Early stage.** Panecast grew out of

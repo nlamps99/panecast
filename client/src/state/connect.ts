@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Network from 'expo-network';
 import { Platform } from 'react-native';
+import { desktopBridge, DesktopSocket, serviceFetch } from '../platform/desktop';
 
 import { RelayConnection, type SocketLike } from '../protocol/connection';
 import { brokerEndpoint, healthUrl, lanEndpoint, webSocketUrl } from '../protocol/endpoint';
@@ -172,7 +173,7 @@ function storedLan(
  * counts, so some other device at that address is not mistaken for the Mac.
  * No query string: the relay routes the raw request path.
  */
-export async function probeHealth(url: string, timeoutMs: number, fetchImpl: typeof fetch = fetch): Promise<boolean> {
+export async function probeHealth(url: string, timeoutMs: number, fetchImpl: typeof fetch = serviceFetch): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -223,6 +224,8 @@ export function deviceName(): string {
  * CLAUDE.md).
  */
 export function createSocket(url: string, protocols: string[], headers: Record<string, string>): SocketLike {
+  const desktop = desktopBridge();
+  if (desktop) return new DesktopSocket(desktop, url, protocols, headers);
   const NativeWebSocket = WebSocket as unknown as new (u: string, p: string[], o?: { headers: Record<string, string> }) => SocketLike;
   return Platform.OS === 'web' ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url, protocols, { headers });
 }

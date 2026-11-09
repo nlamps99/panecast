@@ -31,3 +31,4 @@ CLAUDE.local.md
 
 # Worktrees symlink node_modules into client/
 client/node_modules
+desktop/web/

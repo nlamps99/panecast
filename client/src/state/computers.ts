@@ -16,6 +16,9 @@ export type StoredComputer = {
   lan?: { url: string } & ComputerCredentials;
   /** ISO time. */
   pairedAt: string;
+  /** Account-derived credentials are removed when this account signs out. */
+  accountId?: string;
+  online?: boolean;
 };
 
 /** How to reach a computer: `auto` prefers LAN when it answers, else the broker. */

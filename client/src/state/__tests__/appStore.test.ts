@@ -79,6 +79,7 @@ jest.mock('../connect', () => {
 // Imported after the mocks.
 /* eslint-disable import/first */
 import { AppStore, PairingError } from '../appStore';
+import * as accountApi from '../../account/api';
 import { loadComputers, saveComputers } from '../pairingStorage';
 /* eslint-enable import/first */
 
@@ -234,5 +235,69 @@ describe('AppStore with several computers', () => {
       store.exitDemo();
       expect(store.getState().phase).toBe('unpaired');
     });
+  });
+});
+
+describe('account computers', () => {
+  const account = { user: { id: 'account-1', username: 'alice' }, token: 'account-token', expires_at: '2099-01-01T00:00:00Z' };
+  const remote = { relay_id: 'mac-1', device_id: 'account-device', name: 'Home Mac', online: true, paired_at: '2026-11-09T00:00:00Z' };
+  let request: jest.SpyInstance;
+  beforeEach(() => {
+    request = jest.spyOn(accountApi, 'accountRequest').mockImplementation(async (_server, route) => {
+      if (route === 'login') return account as never;
+      if (route === 'computers') return { computers: [remote] } as never;
+      return undefined as never;
+    });
+  });
+  afterEach(() => request.mockRestore());
+
+  it('loads the same remote computers after login and removes account access on logout', async () => {
+    const store = await storeWith([stored('manual')]);
+    await store.login(SERVER, 'alice', 'long password', false);
+    const computer = store.getState().computers.computers.find((c) => c.accountId);
+    expect(computer).toMatchObject({ accountId: 'account-1', name: 'Home Mac', online: true, broker: { token: 'account-token' } });
+    await store.select(computer!.id);
+    const active = lastChannel();
+    await store.logout();
+    expect(active.stopped).toBe(true);
+    expect(store.getState().account).toBeNull();
+    expect(store.getState().computers.computers.map((c) => c.id)).toEqual(['manual']);
+    expect(mockStore.has('panecast.account.v1')).toBe(false);
+    expect((await loadComputers()).computers.some((c) => c.accountId)).toBe(false);
+  });
+
+  it('keeps a local computer identity when migrating its existing pairing into the account', async () => {
+    const store = await storeWith([stored('existing-id', 'mac-1')]);
+    await store.login(SERVER, 'alice', 'long password', false);
+    expect(store.getState().computers.computers).toHaveLength(1);
+    expect(store.getState().computers.computers[0]).toMatchObject({ id: 'existing-id', accountId: 'account-1' });
+  });
+
+  it('ignores a device-list response that arrives after logout', async () => {
+    const store = await storeWith([]);
+    await store.login(SERVER, 'alice', 'long password', false);
+    let resolve!: (value: unknown) => void;
+    request.mockImplementation(async (_server, route) => {
+      if (route === 'computers') return new Promise((done) => { resolve = done; });
+      return undefined;
+    });
+    const refresh = store.refreshAccount();
+    await store.logout();
+    resolve({ computers: [remote] });
+    await refresh;
+    expect(store.getState().account).toBeNull();
+    expect(store.getState().computers.computers).toEqual([]);
+    expect((await loadComputers()).computers).toEqual([]);
+  });
+
+  it('an expired account removes its credentials and stops the active connection', async () => {
+    const store = await storeWith([]);
+    await store.login(SERVER, 'alice', 'long password', false);
+    const active = lastChannel();
+    request.mockRejectedValue(new accountApi.AccountError(401, 'account_unauthorized'));
+    await expect(store.refreshAccount()).rejects.toThrow('登录已失效');
+    expect(store.getState().account).toBeNull();
+    expect(active.stopped).toBe(true);
+    expect((await loadComputers()).computers).toEqual([]);
   });
 });

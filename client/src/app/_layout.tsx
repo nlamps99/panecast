@@ -54,6 +54,7 @@ export default function RootLayout() {
           <Stack.Screen name="(tabs)" />
         </Stack.Protected>
         <Stack.Screen name="pair" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="account" />
       </Stack>
       {phase === 'ready' ? <InboxToast /> : null}
     </GestureHandlerRootView>

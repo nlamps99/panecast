@@ -4,6 +4,8 @@ import http from "node:http";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { AccountStore } from "./accounts.mjs";
+import { accountRoute } from "./account-routes.mjs";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 export const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
@@ -323,6 +325,10 @@ export async function createBrokerServer(options) {
   const logger = config.logger ?? console;
   const store = new DeviceStore(config.dataFile);
   await store.load();
+  const accounts = new AccountStore(config.accountFile ?? resolve(dirname(config.dataFile), 'accounts.json'));
+  await accounts.load();
+  const accountLimiter = new SlidingWindowRateLimiter(config.accountLimit ?? 15, 60_000);
+  const accountTotalLimiter = new SlidingWindowRateLimiter(config.accountTotalLimit ?? 120, 60_000);
   const rateLimiter = new SlidingWindowRateLimiter(config.pairingLimit ?? 5, 60_000);
   const totalPairingLimiter = new SlidingWindowRateLimiter(config.totalPairingLimit ?? 30, 60_000);
   const relayConnections = new Map();
@@ -332,7 +338,7 @@ export async function createBrokerServer(options) {
 
   async function syncPushDevices(relayId) {
     await store.load();
-    const deviceIds = store.allDevices(relayId).map((d) => d.device_id);
+    const deviceIds = [...store.allDevices(relayId).map((d) => d.device_id), ...accounts.deviceIds(relayId)];
     const allowed = new Set(deviceIds);
     for (const [sessionId, session] of phoneSessions) {
       if (session.relayId === relayId && !allowed.has(session.deviceId)) {
@@ -360,11 +366,16 @@ export async function createBrokerServer(options) {
   }
 
   const authenticatePhone = async (request, relayId) =>
-    relays.has(relayId) ? store.authenticate(bearerToken(request), relayId) : null;
+    relays.has(relayId) ? (await store.authenticate(bearerToken(request), relayId)) ?? accounts.authenticateDevice(bearerToken(request), relayId) : null;
 
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
+      if (await accountRoute(request, response, url, {
+        accounts, relays, relayConnections, store, readJSON, sendJSON, sendEmpty, bearerToken, secretEquals,
+        limit: () => accountTotalLimiter.allow('all') && accountLimiter.allow(remoteIP(request, config.trustProxy)),
+        sync: () => Promise.all([...relays.keys()].map(syncPushDevices)),
+      })) return;
       if (request.method === "GET" && url.pathname === "/v1/health") {
         const relayId = url.searchParams.has("relay_id") ? url.searchParams.get("relay_id") : defaultRelayId;
         if (url.searchParams.has("relay_id") && !await authenticatePhone(request, relayId)) {
@@ -377,6 +388,7 @@ export async function createBrokerServer(options) {
           version: "0.1.0",
           push_forwarding: true,
           relay_scoped_health: true,
+          accounts: true,
         });
         return;
       }

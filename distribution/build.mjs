@@ -28,6 +28,12 @@ const apkPath = join(root, 'client/build/android', androidFile);
 if (await digest(apkPath) !== settings.android.sha256) throw new Error('Android APK checksum mismatch');
 await copyFile(apkPath, join(output, androidFile));
 await copyFile(apkPath, join(output, 'panecast-latest.apk'));
+if (settings.desktop) {
+  const desktopPath = join(root, 'build/desktop', safeFile(settings.desktop.file));
+  if (await digest(desktopPath) !== settings.desktop.sha256) throw new Error('Desktop archive checksum mismatch');
+  await copyFile(desktopPath, join(output, settings.desktop.file));
+  await writeFile(join(output, settings.desktop.file + '.sha256'), `${settings.desktop.sha256}  ${settings.desktop.file}\n`);
+}
 for (const artifact of [mac, settings.android]) await writeFile(join(output, artifact.file + '.sha256'), `${artifact.sha256}  ${artifact.file}\n`);
 const template = await readFile(join(root, 'distribution/install.sh.in'), 'utf8');
 const values = { CLI_VERSION: mac.version, CLI_FILE: mac.file, CLI_SHA: mac.sha256, NODE_VERSION: settings.node.version,
@@ -36,7 +42,7 @@ const installer = template.replace(/__([A-Z0-9_]+)__/g, (_, key) => { if (!value
 await writeFile(join(output, 'install.sh'), installer, { mode: 0o755 });
 await cp(join(root, 'distribution/site'), output, { recursive: true });
 await copyFile(join(root, 'client/assets/images/icon.png'), join(output, 'icon.png'));
-await writeFile(join(output, 'releases.json'), JSON.stringify({ schemaVersion: 1, android: settings.android, mac, history: settings.history }, null, 2) + '\n');
+await writeFile(join(output, 'releases.json'), JSON.stringify({ schemaVersion: 1, android: settings.android, mac, ...(settings.desktop ? { desktop: settings.desktop } : {}), history: settings.history }, null, 2) + '\n');
 
 const tap = join(root, 'build/distribution/tap');
 await mkdir(join(tap, 'Formula'), { recursive: true });
@@ -99,7 +105,7 @@ execFileSync('git', ['--git-dir', bare, 'update-server-info']);
 // Remove the build machine's local path from the publicly served Git config.
 try { execFileSync('git', ['--git-dir', bare, 'config', '--remove-section', 'remote.origin'], { stdio: 'ignore' }); } catch {}
 const checksums = [];
-for (const filename of [cliFile, androidFile, ...['arm64', 'x64'].map((arch) => `node-v${settings.node.version}-darwin-${arch}.tar.gz`)]) {
+for (const filename of [cliFile, androidFile, ...(settings.desktop ? [settings.desktop.file] : []), ...['arm64', 'x64'].map((arch) => `node-v${settings.node.version}-darwin-${arch}.tar.gz`)]) {
   checksums.push(`${await digest(join(output, filename))}  ${filename}`);
 }
 await writeFile(join(output, 'SHA256SUMS'), checksums.join('\n') + '\n');

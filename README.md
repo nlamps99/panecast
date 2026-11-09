@@ -2,7 +2,7 @@
 
 # Panecast
 
-在手机上查看和操作电脑上的终端。
+在手机或另一台电脑上查看和操作远程终端。
 
 > **早期阶段。** Panecast 由 [cmux Remote](https://github.com/NewTurn2017/cmux-remote)
 > 演变而来，支持 [cmux](https://github.com/manaflow-ai/cmux) 和 tmux。
@@ -17,6 +17,7 @@ Panecast 由三部分组成：
 - **broker**（可选）：部署在你自己的 VPS 上。手机和电脑都主动连接它，电脑不用
   开放入站端口。broker 能看到中转的终端内容：连接有 TLS 保护，但不是端到端加密。
 - **client**：手机 App，用 Expo（React Native）写。
+- **desktop**：Mac 桌面客户端，复用手机功能，支持账号登录与电脑列表。
 
 手机和电脑在同一个局域网或 Tailscale 网络里时直接连 relay；在外面时经过
 broker 中转。
@@ -26,6 +27,7 @@ broker 中转。
 | 目录 | 内容 |
 |---|---|
 | `client/` | Expo 手机 App |
+| `desktop/` | Mac 桌面客户端 |
 | `relay/` | Mac relay（Swift） |
 | `relay-tmux/` | tmux relay 与 cmux / tmux / Codex 统一网关（Node） |
 | `broker/` | VPS broker（Node） |
@@ -35,6 +37,10 @@ broker 中转。
 ## 快速开始
 
 **[下载与安装 Panecast](https://ningzx.cn/panecast/)**：Android APK、Mac 一键安装、Homebrew 和 npm 安装入口及版本记录。
+
+Mac 桌面版可通过相同下载页获取。打开「账号登录与电脑管理」，登录后粘贴目标电脑的
+配对链接，之后在另一台设备登录相同服务器上的同一账号即可连接。详见
+[桌面版说明](desktop/README.md)和[账号协议](docs/specs/2026-11-09-accounts-and-desktop.md)。
 
 Mac 推荐使用 Homebrew：
 

@@ -4,6 +4,12 @@
 主动连接服务器，不需要在手机安装 Tailscale，也不需要给 Mac 开放入站端口。
 同一个 broker 和域名可以连接多台 Mac、Linux 电脑，每台电脑分别配对和鉴权。
 
+新版支持账号：客户端注册 / 登录后，可用配对链接或已有设备凭据把电脑绑定到账号。
+同一服务器上的同一账号可在手机和桌面端取回电脑列表；每个登录设备拥有独立会话。
+退出账号或解除绑定会立即关闭对应连接。账号按 broker 隔离，不跨独立服务器合并。
+原配对客户端继续兼容。接口及存储说明见[账号与桌面客户端](../docs/specs/2026-11-09-accounts-and-desktop.md)。
+升级前备份现有数据卷，保留 `devices.json` 和新增的 `accounts.json`，无需修改私有配置。
+
 ```text
 iPhone -- HTTPS/WSS --> VPS Broker <-- WSS -- Mac cmux-relay --> cmux Unix socket
 ```

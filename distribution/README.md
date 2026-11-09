@@ -17,6 +17,19 @@ Homebrew tap 通过 HTTPS 的 Git 静态协议提供，地址为 `/panecast/home
 
 ## 发新版本
 
+桌面版本可单独发布，保留已有 CLI 和手机产物：在 `desktop/` 运行 `npm run build`，
+把经过校验的 `build/desktop/desktop-arm64.json` 元数据及日期、更新说明写入
+`release.json` 的 `desktop` 字段，然后执行：
+
+```sh
+node distribution/desktop.mjs
+python3 distribution/publish.py --desktop-only --host USER@SERVER --directory /absolute/webroot/panecast
+```
+
+此流程从已发布清单继承其他平台版本，校验 ZIP 的 SHA-256 后发布；若其他平台版本
+在准备与上传之间发生变化，会停止发布以避免覆盖。当前 Mac 包为未公证预览版，
+下载页面明确说明。发布后应重新下载 ZIP 核对哈希，并核对 broker 的账号与撤销流程。
+
 1. 修改 CLI 时递增 `relay-tmux/package.json` 版本，运行 `npm install --package-lock-only --ignore-scripts`。
 2. Android 按 `client/ANDROID.md` 构建。将其元数据更新到 `release.json`，旧版加入 `history`
    （每条包含 `platform`、`version`、`file`、`date`、`notes`）。不要改写同一版本的二进制。

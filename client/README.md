@@ -12,6 +12,11 @@ previews/downloads, Git diff, and connection diagnostics. See the
 and platform limits. The web build currently provides the interactive demo;
 real pairing is supported on iOS and Android.
 
+The [desktop app](../desktop/README.md) packages this same client for macOS with native
+credential storage and authenticated networking. Account login is available from pairing
+and settings; accounts synchronize authorized computers on the selected broker. New mobile
+builds include this screen; the currently published Android build 13 still uses pairing.
+
 The Sources tab supports the [unified hub](../relay-tmux/HUB.md), including
 source status/permissions and Codex conversations, streamed replies, approvals,
 and interruption. The offline demo also includes a simulated Codex conversation.

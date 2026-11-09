@@ -1,6 +1,7 @@
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
-import { Alert, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
+import { Alert } from '../../platform/alert';
 
 import { PROTOCOL_VERSION } from '../../protocol/frames';
 import { ActionRow, Section, settingsStyles as s } from './Section';

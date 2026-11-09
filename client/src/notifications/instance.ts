@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { Alert, AppState, Linking, Platform } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
+import { Alert } from '../platform/alert';
 
 import { appStore } from '../state/appStore';
 import { backToWorkspaces, openSurface } from '../state/navigation';

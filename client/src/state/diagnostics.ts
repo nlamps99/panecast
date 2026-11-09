@@ -1,4 +1,5 @@
 import type { Machine } from './appStore';
+import { serviceFetch } from '../platform/desktop';
 
 export type Diagnostic = { name: string; state: 'ok' | 'warning' | 'error'; detail: string; ms?: number };
 async function health(base: string, name: string, fetchImpl: typeof fetch, broker?: { relayId: string; token: string }): Promise<Diagnostic> {
@@ -17,7 +18,7 @@ async function health(base: string, name: string, fetchImpl: typeof fetch, broke
   } catch { return { name, state: 'error', detail: abort.signal.aborted ? '连接超时；检查网络、地址和防火墙' : '无法访问；检查网络和服务地址' }; }
   finally { clearTimeout(timer); }
 }
-export async function diagnose(machine: Machine, fetchImpl: typeof fetch = fetch): Promise<Diagnostic[]> {
+export async function diagnose(machine: Machine, fetchImpl: typeof fetch = serviceFetch): Promise<Diagnostic[]> {
   if (machine.mode === 'demo') return [{ name: '演示电脑', state: 'ok', detail: '演示环境可以正常交互，不检测真实网络' }];
   const computer = machine.computer;
   if (!computer) return [];

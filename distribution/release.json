@@ -136,5 +136,21 @@
         "支持扫码配对和局域网自动切换"
       ]
     }
-  ]
+  ],
+  "desktop": {
+    "version": "0.1.0",
+    "platform": "macOS",
+    "architecture": "arm64",
+    "file": "panecast-desktop-0.1.0-mac-arm64.zip",
+    "size": 120624905,
+    "sha256": "090ecfea69eca6efab4356a9bced31bbcc55a9aed33051cecefb910ee2bddc7a",
+    "minimumMacOS": "13.0",
+    "date": "2026-11-09",
+    "notarized": false,
+    "notes": [
+      "首个 Mac 桌面客户端，复用手机的终端、Codex、对话与工作区功能",
+      "新增账号登录、电脑列表同步、绑定与解除绑定",
+      "凭据由系统钥匙串保护；Apple Silicon 预览版，尚未经过 Apple 公证"
+    ]
+  }
 }

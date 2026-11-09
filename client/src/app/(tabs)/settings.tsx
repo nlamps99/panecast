@@ -10,11 +10,13 @@ import { TransportPicker } from '../../ui/settings/TransportPicker';
 import { DiagnosticSection } from '../../ui/settings/DiagnosticSection';
 import { KeyboardProfileSection } from '../../ui/settings/KeyboardProfileSection';
 import { colors } from '../../ui/theme';
+import { router } from 'expo-router';
+import { ActionRow, Section } from '../../ui/settings/Section';
 
 /** Each section is its own component so features can grow independently. */
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { machine } = useAppState();
+  const { machine, account } = useAppState();
   const computer = machine?.mode === 'relay' ? machine.computer : null;
   return (
     <ScrollView
@@ -22,6 +24,7 @@ export default function SettingsScreen() {
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12, paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }]}
     >
       <Text style={styles.title}>设置</Text>
+      <Section title="账号"><ActionRow label={account ? `${account.user.username} · 管理账号与电脑` : '登录账号，同步电脑列表'} divided={false} onPress={() => router.push('/account')} /></Section>
       <ComputerSection />
       {computer ? <TransportPicker computerId={computer.id} /> : null}
       <TerminalSection />
