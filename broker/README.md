@@ -9,6 +9,9 @@
 退出账号或解除绑定会立即关闭对应连接。账号按 broker 隔离，不跨独立服务器合并。
 原配对客户端继续兼容。接口及存储说明见[账号与桌面客户端](../docs/specs/2026-11-09-accounts-and-desktop.md)。
 升级前备份现有数据卷，保留 `devices.json` 和新增的 `accounts.json`，无需修改私有配置。
+若通过已有 nginx 容器代理两个独立 broker，重建容器后需先执行 `nginx -t`，再平滑
+reload nginx，使静态上游主机名重新解析。Docker 可能重用或交换容器 IP；仅检查
+公开健康接口无法发现两个入口互换，应使用各自的认证请求核对归属，并等待 relay 重连。
 
 ```text
 iPhone -- HTTPS/WSS --> VPS Broker <-- WSS -- Mac cmux-relay --> cmux Unix socket
