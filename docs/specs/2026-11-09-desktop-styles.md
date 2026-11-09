@@ -44,3 +44,14 @@ frame 限制保持启用，应用继续仅加载包内脚本。修复位于桌�
 | panecast-desktop-0.2.2-mac-arm64.dmg | 3,617,749 | 3312abc995467159d167feb5e37a2dd1777a6b3e0ca0e9b0f66547f275e5d0b8 |
 | panecast-desktop-0.2.2-mac-arm64.zip | 3,371,640 | aa0201b6a1190ab4e1867e28c8be527e2843da86cdb75faf0dba508d847b3fdd |
 | install-desktop-0.2.2-mac-arm64.sh | 5,630 | b3e3c875e663de6bfad36ccfb2271e9df6ad5e553e5dbacc3f2424687c855a39 |
+
+## 发布记录
+
+实现提交 `847b44b` 已推送至现有 main，并发布到 <https://ningzx.cn/panecast/>。
+公网重新下载的 DMG、ZIP 和版本化脚本大小、SHA-256 与上表一致，总校验清单也一致。
+`install-desktop.sh` 与 0.2.2 版本化脚本内容相同，首页和安装说明与源文件一致，版本清单
+仍返回 `Cache-Control: no-cache`。发布前后除 desktop 外的元数据完全一致。
+
+两个 broker 容器均保持 running，本次未重启。远端暂存目录为
+`/tmp/panecast-publish-4b88ad9dc7d64f96bb6bbe2b70fbec80`；本地验证记录在忽略的
+`build/evidence/desktop-0.2.2/`。更新时需先通过 ⌘Q 退出旧版，再运行已有桌面安装命令。
