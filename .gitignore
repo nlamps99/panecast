@@ -32,3 +32,6 @@ CLAUDE.local.md
 # Worktrees symlink node_modules into client/
 client/node_modules
 desktop/web/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/icons/

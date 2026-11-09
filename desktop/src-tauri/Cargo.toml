@@ -1,0 +1,47 @@
+[package]
+name = "panecast-desktop"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.90"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+tokio = { version = "1", features = ["sync", "time", "net", "macros", "rt-multi-thread"] }
+tokio-util = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "stream"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+futures-util = "0.3"
+aes-gcm = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = "0.12"
+sha1 = "0.10"
+getrandom = "0.3"
+zeroize = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAlert", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSString"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+# With deployment target 13, the current Apple linker produces a misaligned
+# Mach-O LINKEDIT string pool if Rust requests either form of stripping.
+# Release already omits debug info; retain the symbol table so dyld can load it.
+strip = false

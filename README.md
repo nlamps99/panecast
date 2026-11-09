@@ -17,7 +17,7 @@ Panecast 由三部分组成：
 - **broker**（可选）：部署在你自己的 VPS 上。手机和电脑都主动连接它，电脑不用
   开放入站端口。broker 能看到中转的终端内容：连接有 TLS 保护，但不是端到端加密。
 - **client**：手机 App，用 Expo（React Native）写。
-- **desktop**：Mac 桌面客户端，复用手机功能，支持账号登录与电脑列表。
+- **desktop**：Tauri 2 / Rust Mac 桌面客户端，复用手机功能，支持账号登录与电脑列表。
 
 手机和电脑在同一个局域网或 Tailscale 网络里时直接连 relay；在外面时经过
 broker 中转。

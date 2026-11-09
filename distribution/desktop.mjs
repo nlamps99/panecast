@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { access, copyFile, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -16,6 +16,9 @@ const artifact = join(root, 'build/desktop', desktop.file);
 await access(artifact);
 const digest = createHash('sha256').update(await readFile(artifact)).digest('hex');
 if (digest !== desktop.sha256) throw new Error('Desktop archive checksum mismatch');
+// This directory is generated staging, not a historical release archive.
+// Carrying an older ZIP into the next upload bypasses its versioned checksum list.
+await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(join(root, 'distribution/site'), output, { recursive: true });
 await copyFile(join(root, 'client/assets/images/icon.png'), join(output, 'icon.png'));

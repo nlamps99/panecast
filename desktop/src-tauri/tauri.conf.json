@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Panecast",
+  "version": "../package.json",
+  "identifier": "com.nzx.panecast.desktop",
+  "build": { "frontendDist": "../web" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost 'self' data: blob:; media-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'",
+      "capabilities": [{ "identifier": "main-window", "windows": ["main"], "permissions": ["core:default"] }]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["icons/icon.png", "icons/icon.icns"],
+    "category": "DeveloperTool",
+    "shortDescription": "Connect to your computers and terminals",
+    "macOS": { "minimumSystemVersion": "13.0", "signingIdentity": "-", "hardenedRuntime": true }
+  }
+}

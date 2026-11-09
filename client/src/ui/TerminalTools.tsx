@@ -1,4 +1,4 @@
-import * as Clipboard from 'expo-clipboard';
+import * as Clipboard from '../platform/clipboard';
 import * as Linking from 'expo-linking';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';

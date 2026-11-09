@@ -13,6 +13,7 @@ export type DesktopBridge = {
   closeSocket(id: string): void;
   onSocket(listener: (event: SocketEvent) => void): () => void;
   dialog(options: { title: string; message?: string; buttons: string[]; cancelId: number }): Promise<number>;
+  writeClipboard?(text: string): Promise<boolean>;
 };
 declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {
