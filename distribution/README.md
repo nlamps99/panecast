@@ -8,6 +8,8 @@
 - `site/`：无需框架的响应式下载页面，读取 `releases.json` 显示版本和更新记录。
 - `release.json`：已验证的 Android 版本、文件大小、SHA-256、运行时版本和历史版本清单。
 - `install.sh.in`：独立安装器模板，支持 ARM64 / Intel，安装私有 Node 运行时并校验 SHA-256。
+- `../desktop/install/install.sh.in`：桌面客户端安装器；固定 ZIP 的 SHA-256，校验应用完整性并保留升级备份。与电脑网关的 `install.sh` 分开发布。
+- `desktop-artifacts.mjs`：完整发布和桌面单独发布共用的 DMG、ZIP、安装脚本校验与暂存。
 - `build.mjs`：打包 `relay-tmux/` 的 CLI，包含运行依赖；生成 Homebrew Formula 和静态 Git tap。
 - `publish.py`：上传并校验产物，拒绝修改已发布的版本化文件，原子替换元数据和页面。
 
@@ -26,9 +28,13 @@ node distribution/desktop.mjs
 python3 distribution/publish.py --desktop-only --host USER@SERVER --directory /absolute/webroot/panecast
 ```
 
-此流程从已发布清单继承其他平台版本，校验 ZIP 的 SHA-256 后发布；若其他平台版本
+此流程从已发布清单继承其他平台版本，校验 DMG、ZIP、版本化脚本的大小和 SHA-256 后发布；若其他平台版本
 在准备与上传之间发生变化，会停止发布以避免覆盖。当前 Mac 包为未公证预览版，
-下载页面明确说明。发布后应重新下载 ZIP 核对哈希，并核对 broker 的账号与撤销流程。
+下载页面与 DMG 内明确说明。`desktop.file` 是 DMG 主下载，`desktop.archive` 保留 ZIP，
+`desktop.installer` 指向版本化脚本。`install-desktop.sh` 是同内容的可变入口，不加入不可变
+产物的 SHA256SUMS；上传顺序保证版本化文件先于页面、脚本入口和元数据上线。
+发布后重新下载三种产物核对哈希；若修改账号或连接功能，再核对 broker 的账号与撤销流程。
+安装说明在 `/panecast/mac-install.html`，同一文件作为离线说明放入 DMG。
 
 1. 修改 CLI 时递增 `relay-tmux/package.json` 版本，运行 `npm install --package-lock-only --ignore-scripts`。
 2. Android 按 `client/ANDROID.md` 构建。将其元数据更新到 `release.json`，旧版加入 `history`
@@ -56,6 +62,11 @@ python3 distribution/publish.py --host USER@SERVER --directory /absolute/webroot
 `--config`、`PANECAST_SERVICE_LABEL` 和 `PANECAST_LAUNCH_AGENTS_DIR` 隔离，避免操作日常 hub。
 发布用 Homebrew tap 的 Git 工作目录保存在 `build/distribution/tap`，更新会保留提交历史。
 在另一台机器继续发布前，应先从线上 tap 克隆到该目录，不要重新生成不相关的历史。
+
+桌面安装器用 `PANECAST_DESKTOP_INSTALL_DIR` 指向临时应用目录，
+`PANECAST_DESKTOP_DOWNLOAD_BASE` 指向 HTTPS 或 localhost / 127.0.0.1 本地 HTTP 服务器。
+验证首次安装、升级备份和损坏下载时必须使用隔离目录；脚本不会启动图形界面。
+DMG 可用 `hdiutil attach -readonly -nobrowse -noautoopen` 挂载检查，结束后 detach。
 
 现有公网中转仍需管理员分配每台电脑的独立凭据。安装 CLI 不自动授权来源，setup 只在
 用户选择后授权 tmux 控制或 Codex 只读历史。升级、重装和卸载都保留用户配置与配对。

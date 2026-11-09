@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { readFile, writeFile, mkdir, cp, copyFile, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, cp, copyFile, access, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { stageDesktopArtifacts } from './desktop-artifacts.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const output = join(root, 'build/distribution/public');
@@ -12,6 +13,7 @@ const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
 const packageJSON = JSON.parse(await readFile(join(root, 'relay-tmux/package.json'), 'utf8'));
 const digest = async (path) => createHash('sha256').update(await readFile(path)).digest('hex');
 const safeFile = (name) => { if (!/^[\w.-]+$/.test(name)) throw new Error(`Invalid artifact filename: ${name}`); return name; };
+await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await copyFile(join(root, 'LICENSE'), join(root, 'relay-tmux/LICENSE'));
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', output], { cwd: join(root, 'relay-tmux'), encoding: 'utf8' }))[0];
@@ -28,12 +30,7 @@ const apkPath = join(root, 'client/build/android', androidFile);
 if (await digest(apkPath) !== settings.android.sha256) throw new Error('Android APK checksum mismatch');
 await copyFile(apkPath, join(output, androidFile));
 await copyFile(apkPath, join(output, 'panecast-latest.apk'));
-if (settings.desktop) {
-  const desktopPath = join(root, 'build/desktop', safeFile(settings.desktop.file));
-  if (await digest(desktopPath) !== settings.desktop.sha256) throw new Error('Desktop archive checksum mismatch');
-  await copyFile(desktopPath, join(output, settings.desktop.file));
-  await writeFile(join(output, settings.desktop.file + '.sha256'), `${settings.desktop.sha256}  ${settings.desktop.file}\n`);
-}
+const desktopArtifacts = await stageDesktopArtifacts(root, output, settings.desktop);
 for (const artifact of [mac, settings.android]) await writeFile(join(output, artifact.file + '.sha256'), `${artifact.sha256}  ${artifact.file}\n`);
 const template = await readFile(join(root, 'distribution/install.sh.in'), 'utf8');
 const values = { CLI_VERSION: mac.version, CLI_FILE: mac.file, CLI_SHA: mac.sha256, NODE_VERSION: settings.node.version,
@@ -105,7 +102,7 @@ execFileSync('git', ['--git-dir', bare, 'update-server-info']);
 // Remove the build machine's local path from the publicly served Git config.
 try { execFileSync('git', ['--git-dir', bare, 'config', '--remove-section', 'remote.origin'], { stdio: 'ignore' }); } catch {}
 const checksums = [];
-for (const filename of [cliFile, androidFile, ...(settings.desktop ? [settings.desktop.file] : []), ...['arm64', 'x64'].map((arch) => `node-v${settings.node.version}-darwin-${arch}.tar.gz`)]) {
+for (const filename of [cliFile, androidFile, ...desktopArtifacts.map(({ file }) => file), ...['arm64', 'x64'].map((arch) => `node-v${settings.node.version}-darwin-${arch}.tar.gz`)]) {
   checksums.push(`${await digest(join(output, filename))}  ${filename}`);
 }
 await writeFile(join(output, 'SHA256SUMS'), checksums.join('\n') + '\n');

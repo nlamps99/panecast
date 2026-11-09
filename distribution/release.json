@@ -138,20 +138,30 @@
     }
   ],
   "desktop": {
-    "version": "0.2.0",
+    "version": "0.2.1",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.0-mac-arm64.zip",
-    "size": 3371349,
-    "sha256": "5d0f9d0f0fb7761794148c95fafc86ee556faf7b56288bdb793b92fa06b91792",
+    "file": "panecast-desktop-0.2.1-mac-arm64.dmg",
+    "size": 3615200,
+    "sha256": "8868f2c542cf2cc9b30bf91d5f0d239341a096c428ce0c2ed5f2c8d997ca1185",
+    "archive": {
+      "file": "panecast-desktop-0.2.1-mac-arm64.zip",
+      "size": 3366986,
+      "sha256": "9e594c0e805db57517d5af42903c45ecabffea1f6c1a685d7a8d637e63bb6dbf"
+    },
+    "installer": {
+      "file": "install-desktop-0.2.1-mac-arm64.sh",
+      "size": 5630,
+      "sha256": "fdc424fbbfb5a51aa568f4a46dbcce5a636566a661383afd438dd3c8cbd540b8"
+    },
     "minimumMacOS": "13.0",
     "date": "2026-11-09",
     "notarized": false,
     "notes": [
-      "桌面层改用 Tauri 2 与 Rust，安装包从约 121 MB 缩小到 3.37 MB",
-      "继续使用手机端的账号、电脑列表、终端、Codex、工作区和收件箱功能",
-      "自动迁移旧版账号与配对；复制使用系统剪贴板，登录信息由系统钥匙串保护"
+      "新增约 3.6 MB 的 DMG 安装包，内含应用程序入口和中文安装说明",
+      "提供一条命令安装，校验下载文件和签名完整性，处理预览版首次打开限制",
+      "升级保留账号、配对和旧应用备份；提供「已损坏 / 移到废纸篓」处理步骤"
     ]
   }
 }

@@ -1,0 +1,91 @@
+#!/bin/bash
+# Panecast desktop installer. The release archive and checksum are pinned at build time.
+set -euo pipefail
+
+readonly PANECAST_RELEASE_VERSION='@VERSION@'
+readonly PANECAST_RELEASE_ARCH='@ARCH@'
+readonly PANECAST_RELEASE_FILE='@ARCHIVE@'
+readonly PANECAST_RELEASE_SHA256='@SHA256@'
+readonly PANECAST_RELEASE_BASE='@BASE_URL@'
+
+fail() { printf '安装未完成：%s\n' "$*" >&2; exit 1; }
+# Parse the complete installer before acting, even when streamed through curl | bash.
+main() {
+[[ "$(uname -s)" == Darwin ]] || fail '此安装器仅支持 macOS。'
+panecast_system_version=$(/usr/bin/sw_vers -productVersion)
+[[ "${panecast_system_version%%.*}" -ge 13 ]] || fail '需要 macOS 13 或更新版本。'
+panecast_machine=$(uname -m)
+if [[ "$PANECAST_RELEASE_ARCH" == arm64 && "$panecast_machine" != arm64 ]]; then
+  [[ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || true)" == 1 ]] || fail '这个安装包需要 Apple Silicon（M 系列芯片）。'
+fi
+
+panecast_directory=${PANECAST_DESKTOP_INSTALL_DIR:-/Applications}
+if [[ -z "${PANECAST_DESKTOP_INSTALL_DIR:-}" && ! -w "$panecast_directory" ]]; then
+  panecast_directory="$HOME/Applications"
+fi
+[[ "$panecast_directory" == /* && "$panecast_directory" != / ]] || fail '安装目录必须是绝对路径，且不能是根目录。'
+mkdir -p "$panecast_directory"
+panecast_directory=$(cd "$panecast_directory" && pwd -P)
+[[ -w "$panecast_directory" ]] || fail '安装目录不可写。可设置 PANECAST_DESKTOP_INSTALL_DIR 指向自己的 Applications 目录。'
+panecast_target="$panecast_directory/Panecast.app"
+[[ ! -L "$panecast_target" ]] || fail '目标 Panecast.app 是符号链接，请先确认它指向的安装位置。'
+if [[ -e "$panecast_target" ]]; then
+  panecast_existing_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$panecast_target/Contents/Info.plist" 2>/dev/null || true)
+  [[ "$panecast_existing_id" == com.nzx.panecast.desktop ]] || fail '同名应用不是 Panecast，已保留原文件。'
+  panecast_existing_executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$panecast_target/Contents/Info.plist")
+  if /usr/sbin/lsof -t -a -d txt "$panecast_target/Contents/MacOS/$panecast_existing_executable" >/dev/null 2>&1; then
+    fail '请先退出正在运行的 Panecast，再执行安装命令。'
+  fi
+fi
+
+printf '正在安装 Panecast %s 到 %s\n' "$PANECAST_RELEASE_VERSION" "$panecast_directory"
+printf '此预览版尚未经过 Apple 公证。安装器会校验发布文件，仅为这份 Panecast 清除下载隔离标记。\n'
+panecast_temporary=$(mktemp -d "${TMPDIR:-/tmp}/panecast-desktop-install.XXXXXX")
+panecast_stage=''
+panecast_backup=''
+cleanup() {
+  panecast_result=$?
+  if [[ "$panecast_result" -ne 0 && -n "$panecast_backup" && ! -e "$panecast_target" && -d "$panecast_backup/Panecast.app" ]]; then
+    mv "$panecast_backup/Panecast.app" "$panecast_target" || printf '请从 %s 恢复旧版应用。\n' "$panecast_backup" >&2
+  fi
+  if [[ -n "$panecast_stage" ]]; then rm -rf "$panecast_stage"; fi
+  rm -rf "$panecast_temporary"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+panecast_base=${PANECAST_DESKTOP_DOWNLOAD_BASE:-$PANECAST_RELEASE_BASE}
+case "$panecast_base" in
+  https://*) panecast_protocols='=https' ;;
+  http://127.0.0.1:*|http://localhost:*) panecast_protocols='=http,https' ;;
+  *) fail '下载地址必须使用 HTTPS。' ;;
+esac
+curl --fail --show-error --location --retry 2 --connect-timeout 15 --max-time 180 \
+  --proto "$panecast_protocols" --proto-redir '=https' \
+  "${panecast_base%/}/$PANECAST_RELEASE_FILE" --output "$panecast_temporary/release.zip"
+panecast_actual=$(/usr/bin/shasum -a 256 "$panecast_temporary/release.zip")
+panecast_actual=${panecast_actual%% *}
+[[ "$panecast_actual" == "$PANECAST_RELEASE_SHA256" ]] || fail '下载文件的 SHA-256 不匹配，已停止安装。请重新下载。'
+/usr/bin/ditto -x -k "$panecast_temporary/release.zip" "$panecast_temporary/unpacked"
+panecast_source="$panecast_temporary/unpacked/Panecast.app"
+[[ -d "$panecast_source" && ! -L "$panecast_source" ]] || fail '安装包中缺少 Panecast.app。'
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$panecast_source/Contents/Info.plist")" == com.nzx.panecast.desktop ]] || fail '应用标识不匹配。'
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$panecast_source/Contents/Info.plist")" == "$PANECAST_RELEASE_VERSION" ]] || fail '应用版本不匹配。'
+/usr/bin/codesign --verify --deep --strict "$panecast_source" || fail '应用签名完整性校验失败。'
+
+# Prepare on the destination filesystem, verify, then replace the bundle by rename.
+panecast_stage=$(mktemp -d "$panecast_directory/.Panecast-install.XXXXXX")
+/usr/bin/ditto "$panecast_source" "$panecast_stage/Panecast.app"
+/usr/bin/codesign --verify --deep --strict "$panecast_stage/Panecast.app" || fail '安装副本校验失败。'
+/usr/bin/xattr -dr com.apple.quarantine "$panecast_stage/Panecast.app" || fail '无法清除该应用的隔离标记。'
+if [[ -e "$panecast_target" ]]; then
+  panecast_backup=$(mktemp -d "$panecast_directory/.Panecast-previous.XXXXXX")
+  mv "$panecast_target" "$panecast_backup/Panecast.app"
+fi
+mv "$panecast_stage/Panecast.app" "$panecast_target"
+printf '\n安装完成：%s\n' "$panecast_target"
+printf '在访达中打开 Panecast 即可。账号和电脑配对数据会保留。\n'
+if [[ -n "$panecast_backup" ]]; then printf '旧应用备份：%s/Panecast.app\n' "$panecast_backup"; fi
+}
+main "$@"

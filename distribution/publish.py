@@ -17,10 +17,14 @@ parser.add_argument('--desktop-only', action='store_true', help='Publish a deskt
 args = parser.parse_args()
 public = ROOT / ('build/distribution/desktop-public' if args.desktop_only else 'build/distribution/public')
 manifest = json.loads((public / 'releases.json').read_text())
-for item in ([manifest['desktop']] if args.desktop_only else [manifest['android'], manifest['mac'], *([manifest['desktop']] if 'desktop' in manifest else [])]):
+desktop = manifest.get('desktop', {})
+desktop_artifacts = [item for item in [desktop, desktop.get('archive'), desktop.get('installer')] if item]
+for item in (desktop_artifacts if args.desktop_only else [manifest['android'], manifest['mac'], *desktop_artifacts]):
     actual = hashlib.sha256((public / item['file']).read_bytes()).hexdigest()
     if actual != item['sha256']:
         raise SystemExit('Build output does not match releases.json')
+if desktop.get('installer') and (public / 'install-desktop.sh').read_bytes() != (public / desktop['installer']['file']).read_bytes():
+    raise SystemExit('Desktop installer alias does not match the versioned installer')
 
 archive = ROOT / ('build/distribution/desktop-upload.tar.gz' if args.desktop_only else 'build/distribution/upload.tar.gz')
 ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', args.host]
@@ -50,8 +54,10 @@ with tarfile.open(stage / 'upload.tar.gz') as tar:
         if path.is_absolute() or '..' in path.parts or member.issym() or member.islnk():
             raise SystemExit('Unsafe archive entry: ' + member.name)
     tar.extractall(unpacked)
+versioned = set()
 for line in (unpacked / 'SHA256SUMS').read_text().splitlines():
     expected, filename = line.split('  ', 1)
+    versioned.update([filename, filename + '.sha256'])
     candidate = unpacked / filename if (unpacked / filename).exists() else destination / filename
     if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected:
         raise SystemExit('Upload checksum mismatch: ' + filename)
@@ -67,7 +73,7 @@ if desktop_only:
         raise SystemExit('Other releases changed during this build. Prepare the desktop release again.')
 # Versioned packages first. Old packages stay available for existing links.
 for source in unpacked.iterdir():
-    if source.is_file() and source.suffix in ('.apk', '.gz', '.tgz', '.zip', '.sha256') and source.name != 'panecast-latest.apk':
+    if source.is_file() and source.name in versioned:
         target = destination / source.name
         shutil.copyfile(source, str(target) + '.new')
         os.chmod(str(target) + '.new', 0o644)
@@ -86,7 +92,7 @@ if not desktop_only:
             os.replace(str(target) + '.new', target)
 # Metadata and page files are small atomic replacements.
 for source in unpacked.iterdir():
-    if source.is_file() and source.name != 'panecast-latest.apk' and source.suffix not in ('.apk', '.gz', '.tgz', '.zip', '.sha256'):
+    if source.is_file() and source.name != 'panecast-latest.apk' and source.name not in versioned:
         if desktop_only and source.name == 'SHA256SUMS':
             existing = dict(line.split('  ', 1)[::-1] for line in (destination / 'SHA256SUMS').read_text().splitlines())
             existing.update(dict(line.split('  ', 1)[::-1] for line in source.read_text().splitlines()))

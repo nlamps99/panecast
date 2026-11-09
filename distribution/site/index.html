@@ -39,10 +39,16 @@
           <div class="card-top"><span class="tag">桌面客户端 · 预览版</span></div>
           <h3>Mac 桌面版</h3><p class="card-description">和手机使用相同的终端、Codex、工作区与收件箱功能。在这台 Mac 上连接另一台电脑。</p>
           <div class="version-row"><strong id="desktop-version"></strong><span id="desktop-size"></span></div>
-          <a class="download-button" id="desktop-download" download><span>下载 Mac 桌面版</span><span aria-hidden="true">↓</span></a>
+          <a class="download-button" id="desktop-download" download><span>下载 Mac 安装包 · DMG</span><span aria-hidden="true">↓</span></a>
           <p class="requirement">macOS 13 及以上 · Apple Silicon（M 系列芯片）</p>
-          <p class="small-note">解压后将 Panecast 拖入「应用程序」。此预览版尚未经过 Apple 公证；系统可能要求在「隐私与安全性」中确认打开。</p>
-          <div class="fine-links"><a id="desktop-checksum">SHA-256 校验文件 ↗</a><a href="#desktop-connect">账号与连接说明 ↗</a></div>
+          <p class="small-note">打开 DMG，将 Panecast 拖入「应用程序」。预览版尚未经过 Apple 公证；如果提示「已损坏」或「移到废纸篓」，请按安装说明处理。</p>
+          <div class="fine-links"><a href="./mac-install.html">安装与打开说明 ↗</a><a id="desktop-checksum">SHA-256 ↗</a><a id="desktop-archive" hidden download>ZIP 下载 ↗</a></div>
+          <div class="card-divider"></div>
+          <div class="install-panel" id="desktop-install-panel" hidden>
+            <div class="code-top"><span>也可在终端安装桌面版</span><button class="copy-button" id="copy-desktop-install" aria-label="复制桌面版安装命令">复制 <span aria-hidden="true">⧉</span></button></div>
+            <pre><code id="desktop-install-command"></code></pre>
+          </div>
+          <p class="small-note">按 ⌘ + 空格，输入「终端」并回车；粘贴命令后回车。安装器会校验文件，再为这份预览版处理打开限制。<a href="#desktop-connect">账号与连接说明 ↗</a></p>
         </article>
         <article class="download-card android-card">
           <div class="card-top"><div class="platform-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 9h16v17H8zM11 5h10v4H11zM12 29v-3m8 3v-3M5 12v10m22-10v10M11 2l2 3m8-3-2 3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">手机端</span></div>

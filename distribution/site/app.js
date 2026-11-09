@@ -39,6 +39,21 @@ byId('copy-install').addEventListener('click', async () => {
     byId('copy-install').textContent = '请按 ⌘C';
   }
 });
+byId('copy-desktop-install').addEventListener('click', async () => {
+  const code = byId('desktop-install-command');
+  if (!code.textContent) return;
+  try {
+    await navigator.clipboard.writeText(code.textContent);
+    byId('copy-desktop-install').textContent = '已复制 ✓';
+    byId('copy-status').textContent = '桌面版安装命令已复制，请在终端粘贴并按回车。';
+    setTimeout(() => { byId('copy-desktop-install').textContent = '复制 ⧉'; }, 1800);
+  } catch {
+    const selection = window.getSelection(), range = document.createRange();
+    range.selectNodeContents(code); selection.removeAllRanges(); selection.addRange(range);
+    byId('copy-status').textContent = '请按 Command+C 复制选中的桌面版安装命令。';
+    byId('copy-desktop-install').textContent = '请按 ⌘C';
+  }
+});
 
 function releaseRow(release, platform) {
   const item = document.createElement('article'); item.className = 'release-item';
@@ -69,6 +84,14 @@ async function loadReleases() {
     byId('desktop-size').textContent = `${(data.desktop.size / 1000000).toFixed(1)} MB`;
     byId('desktop-download').href = `./${data.desktop.file}`;
     byId('desktop-checksum').href = `./${data.desktop.file}.sha256`;
+    if (data.desktop.archive) {
+      byId('desktop-archive').hidden = false;
+      byId('desktop-archive').href = `./${data.desktop.archive.file}`;
+    }
+    if (data.desktop.installer) {
+      byId('desktop-install-panel').hidden = false;
+      byId('desktop-install-command').textContent = `curl -fsSL ${base}/install-desktop.sh | bash`;
+    }
   }
   commands = {
     brew: { command: `brew tap panecast/tap ${base}/homebrew-tap.git\nbrew install panecast/tap/panecast`, note: '需要已安装 Homebrew；自动处理 Node.js 和 tmux 依赖，支持 Apple Silicon 与 Intel。' },

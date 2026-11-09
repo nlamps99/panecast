@@ -1,7 +1,7 @@
 {
   "name": "panecast-desktop",
   "productName": "Panecast",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "build": "npm run export && node scripts/build.mjs",
     "test": "node --test && cargo test --manifest-path src-tauri/Cargo.toml",
+    "verify:installer": "node scripts/verify-installer.mjs",
     "check": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"
   },
   "devDependencies": { "@tauri-apps/cli": "2.12.4" }

@@ -1,0 +1,32 @@
+Panecast Mac 安装说明
+====================
+
+需要 macOS 13 或更新版本；当前安装包适用于 Apple Silicon（M 系列芯片）。
+
+安装
+1. 将 Panecast.app 拖到旁边的 Applications（应用程序）文件夹。
+2. 从「应用程序」打开 Panecast。升级前先退出旧版，替换应用会保留账号和配对。
+
+如果提示「已损坏」「移到废纸篓」或「无法验证开发者」
+这个预览版只有本地签名，尚未经过 Apple 公证。请先尝试：系统设置 → 隐私与安全性
+→ 找到 Panecast → 仍要打开。
+
+若仍无法打开，而且安装包来自 https://ningzx.cn/panecast/ ：
+1. 按 Command（⌘）+ 空格，输入「终端」或 Terminal，按回车。
+2. 确认 Panecast 已移入「应用程序」，复制以下三行，粘贴到终端后按回车：
+
+codesign --verify --deep --strict "/Applications/Panecast.app" &&
+xattr -dr com.apple.quarantine "/Applications/Panecast.app" &&
+open "/Applications/Panecast.app"
+
+命令会先验证签名完整性，再仅清除 Panecast 的下载隔离标记并打开应用。
+如果校验失败，请重新下载安装包。若系统明确报告恶意软件或「将损坏你的电脑」，
+请停止运行并联系开发者，不要使用上述命令。
+
+也可以使用命令安装
+在终端粘贴下面一行并回车。安装器会下载官方版本、校验 SHA-256 和签名完整性，
+安装到「应用程序」，并处理这份预览版的隔离标记。无需 sudo。
+
+curl -fsSL https://ningzx.cn/panecast/install-desktop.sh | bash
+
+详细说明：https://ningzx.cn/panecast/mac-install.html

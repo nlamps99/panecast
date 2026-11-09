@@ -6,7 +6,7 @@
 
 ## 使用
 
-1. 从 [下载页](https://ningzx.cn/panecast/) 下载 Mac 桌面版，解压并移入「应用程序」。
+1. 从 [下载页](https://ningzx.cn/panecast/) 下载 DMG，打开后把 Panecast 拖入旁边的 Applications（应用程序）。安装包内附中文安装说明。
 2. 打开「账号登录与电脑管理」，确认服务器地址，注册或登录账号。
 3. 在已配置网关的目标电脑运行 `panecast pair --url-only`，输入已有配对码，将输出的完整链接粘贴到桌面版，把电脑绑定到账号。旧 Swift 网关使用 `cmux-relay pair --url-only`。
 4. 在另一台设备登录相同服务器上的同一账号，选择电脑即可连接。
@@ -15,8 +15,20 @@
 账号按服务器隔离；不同服务器上的同名用户名不是同一个账号。桌面版不会安装或授权
 本机的终端网关。要让其他设备访问本机，请按 [Mac 接入指南](../docs/MAC-SETUP.md) 配置。
 
-此预览包使用本地签名，尚未经过 Apple 公证。macOS 可能需要在「系统设置 → 隐私与安全性」
-中确认打开。当前没有 Windows / Linux 安装包。桌面端支持连接期间的收件箱和应用内提醒，
+此预览包使用本地签名，尚未经过 Apple 公证。如果 macOS 提示「已损坏」「移到废纸篓」或
+「无法验证开发者」，请按 [安装与打开说明](https://ningzx.cn/panecast/mac-install.html) 操作。
+DMG 只是安装载体，正式消除这类提示仍需 Developer ID Application 签名与 Apple 公证。
+也可以在「终端」执行以下命令，校验官方压缩包的固定 SHA-256 与签名完整性后自动安装：
+
+```sh
+curl -fsSL https://ningzx.cn/panecast/install-desktop.sh | bash
+```
+
+脚本只清除本次验证通过的 Panecast 的下载隔离标记，不修改系统 Gatekeeper 设置；无需
+sudo，不自动启动应用。默认安装到 `/Applications`，没有写权限时使用 `~/Applications`。
+升级前需退出旧版；替换后保留旧应用备份，并打印备份路径。账号与配对数据不在应用包内。
+
+当前没有 Windows / Linux 安装包。桌面端支持连接期间的收件箱和应用内提醒，
 不接入 APNs，关闭应用后不会接收手机推送。
 
 ## 开发与验证
@@ -34,9 +46,11 @@ npm run export
 npm test
 npm run check
 npm run build
+npm run verify:installer
 ```
 
-产物在 `build/desktop/`，包含 `.app`、带版本号的 ZIP、SHA-256 和元数据。
+产物在 `build/desktop/`，包含 `.app`、带版本号的 DMG、ZIP、固定哈希的安装脚本、
+各文件 SHA-256 和元数据。DMG 内含 Applications 链接及离线 HTML / TXT 中文安装说明。
 `npm start` 导出界面并启动开发客户端；`PANECAST_DESKTOP_ARCH=x64 npm run build`
 可以构建 Intel 包（先安装 Rust 的 `x86_64-apple-darwin` target），需在相应机器上验证后再发布。
 
