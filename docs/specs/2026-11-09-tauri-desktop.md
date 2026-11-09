@@ -44,3 +44,11 @@ release 保留符号表（本身不生成调试信息），解决构建产物格
   仅为 macOS 系统库，包含 WebKit / AppKit / Security。
 - SHA-256：`5d0f9d0f0fb7761794148c95fafc86ee556faf7b56288bdb793b92fa06b91792`。
 - ZIP 完整性、arm64 架构、最低系统版本和 codesign 深度严格校验通过。
+
+## 发布记录
+
+实现提交 `4c2906f` 已推送至现有 main。0.2.0 已通过桌面独立流程发布到
+<https://ningzx.cn/panecast/>，公网重新下载的 ZIP 大小和 SHA-256 均与上述产物一致。
+下载页面可访问，版本清单为 `Cache-Control: no-cache`。发布前后除 desktop 字段外的
+线上元数据完全一致，Android build 13、CLI 0.1.1 和原版本化下载保留。
+本次未修改或重启 broker；临时下载连接代理已关闭。
