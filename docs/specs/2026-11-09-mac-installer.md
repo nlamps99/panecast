@@ -57,3 +57,19 @@ HTML 的 ID、复制目标与 JavaScript 语法检查通过；桌面 JS 桥接�
 | install-desktop-0.2.1-mac-arm64.sh | 5,630 | fdc424fbbfb5a51aa568f4a46dbcce5a636566a661383afd438dd3c8cbd540b8 |
 
 适用 macOS 13+ / Apple Silicon。包内应用仍是未公证预览版。
+
+## 发布记录
+
+实现提交 `e027e83` 已推送到现有 main，并通过桌面独立发布流程上线到
+<https://ningzx.cn/panecast/>。公网重新下载 DMG、ZIP 和版本化脚本，大小及 SHA-256 与上表
+一致；每个校验文件与总清单一致，可变 `install-desktop.sh` 与版本化脚本完全一致。
+首页、样式、脚本和安装说明与本次源文件一致，`releases.json` 返回 `Cache-Control: no-cache`。
+
+直接执行公网下载的安装脚本，从正式 HTTPS 地址下载 ZIP 并安装到临时 Applications 目录，
+版本、签名与隔离属性检查通过，没有打开应用。公网 DMG 只读挂载后，应用签名、arm64 架构、
+Applications 链接及两份离线说明再次确认通过。测试目录与挂载均已清理。
+
+发布前后除 desktop 外的线上元数据完全一致，Android build 13 与 CLI 0.1.1 保留；两个 broker
+容器均为 running，本次未修改或重启。发布暂存目录为
+`/tmp/panecast-publish-c3ca71624a0f4d13832cc5cc54becea4`，线上校验记录在忽略的
+`build/evidence/desktop-0.2.1/`。
