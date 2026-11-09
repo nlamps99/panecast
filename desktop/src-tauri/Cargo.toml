@@ -1,6 +1,6 @@
 [package]
 name = "panecast-desktop"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.90"
 
@@ -35,6 +35,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSS
 
 [dev-dependencies]
 tempfile = "3"
+tauri = { version = "2.12.5", features = ["test"] }
 
 [profile.release]
 codegen-units = 1

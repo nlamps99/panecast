@@ -56,6 +56,11 @@ npm run verify:installer
 
 Expo 的桌面构建使用 SPA 输出，普通 Web 演示继续使用静态输出。WKWebView 加载包内
 资源，Tauri IPC 只接受应用主窗口的调用，外部链接交给默认浏览器。
+React Native Web 在运行时生成样式表，React 同时使用内联样式。CSP 的 `style-src` 保留
+`'self' 'unsafe-inline'`，仅关闭 Tauri 对这一条的 nonce / hash 注入：同一条中出现 nonce
+会让 WebKit 忽略 `unsafe-inline`，导致页面退回无样式的默认控件。脚本的自动 nonce / hash
+注入和其它 CSP 规则保持启用。`npm test` 使用正式打包的 custom-protocol 资源路径，
+检查实际生成的 HTML 与 CSP；测试用 MockRuntime，不打开窗口、不访问账号或钥匙串。
 Rust 通过 reqwest 和 tokio-tungstenite 处理认证 HTTP/WebSocket，保持 Authorization
 请求头、子协议、hello 顺序和连接取消语义。终端数据使用有序 Tauri Channel 回传。
 复制操作使用系统剪贴板，确认弹窗使用 NSAlert，破坏性操作默认选择取消。

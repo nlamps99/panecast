@@ -138,30 +138,30 @@
     }
   ],
   "desktop": {
-    "version": "0.2.1",
+    "version": "0.2.2",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.1-mac-arm64.dmg",
-    "size": 3615200,
-    "sha256": "8868f2c542cf2cc9b30bf91d5f0d239341a096c428ce0c2ed5f2c8d997ca1185",
+    "file": "panecast-desktop-0.2.2-mac-arm64.dmg",
+    "size": 3617749,
+    "sha256": "3312abc995467159d167feb5e37a2dd1777a6b3e0ca0e9b0f66547f275e5d0b8",
     "archive": {
-      "file": "panecast-desktop-0.2.1-mac-arm64.zip",
-      "size": 3366986,
-      "sha256": "9e594c0e805db57517d5af42903c45ecabffea1f6c1a685d7a8d637e63bb6dbf"
+      "file": "panecast-desktop-0.2.2-mac-arm64.zip",
+      "size": 3371640,
+      "sha256": "aa0201b6a1190ab4e1867e28c8be527e2843da86cdb75faf0dba508d847b3fdd"
     },
     "installer": {
-      "file": "install-desktop-0.2.1-mac-arm64.sh",
+      "file": "install-desktop-0.2.2-mac-arm64.sh",
       "size": 5630,
-      "sha256": "fdc424fbbfb5a51aa568f4a46dbcce5a636566a661383afd438dd3c8cbd540b8"
+      "sha256": "b3e3c875e663de6bfad36ccfb2271e9df6ad5e553e5dbacc3f2424687c855a39"
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-09",
     "notarized": false,
     "notes": [
-      "新增约 3.6 MB 的 DMG 安装包，内含应用程序入口和中文安装说明",
-      "提供一条命令安装，校验下载文件和签名完整性，处理预览版首次打开限制",
-      "升级保留账号、配对和旧应用备份；提供「已损坏 / 移到废纸篓」处理步骤"
+      "修复桌面版全局样式被拦截，恢复深色主题、字体、按钮、间距和居中布局",
+      "修复覆盖账号、电脑列表、终端等共享页面，并增加正式打包资源的样式回归检查",
+      "继续提供 DMG 中文安装说明和一条命令升级，保留账号与电脑配对"
     ]
   }
 }

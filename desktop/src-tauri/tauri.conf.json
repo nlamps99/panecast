@@ -9,6 +9,7 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost 'self' data: blob:; media-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'",
+      "dangerousDisableAssetCspModification": ["style-src"],
       "capabilities": [{ "identifier": "main-window", "windows": ["main"], "permissions": ["core:default"] }]
     }
   },

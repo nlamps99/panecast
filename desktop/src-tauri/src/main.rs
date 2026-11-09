@@ -3,6 +3,8 @@ mod transport;
 mod vault;
 
 #[cfg(test)]
+mod asset_tests;
+#[cfg(test)]
 mod production_tests;
 
 use serde::Deserialize;
