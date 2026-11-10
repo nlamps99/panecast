@@ -50,3 +50,14 @@ Publication uses `publish.py`, followed by HTTPS size/hash verification of
 all four artifacts, installer alias comparison, existing-download inventory
 comparison, and dr2 service health checks. Local build and deployment
 receipts are retained under the ignored `build/cmux/verification/` directory.
+
+Published and verified on 2026-11-10 at
+https://ningzx.cn/panecast/cmux/ from website commit
+`ec316e8fef95ef52846afce38b1e3f5165f99084`. All four artifacts were read back
+in full over public HTTPS and matched the recorded byte sizes and SHA-256
+values. The download pages, metadata, checksum files and installer alias
+matched their local sources. All 116 pre-existing download files retained
+their sizes and modification times, and existing text metadata retained its
+hashes. Both dr2 device and presence health endpoints returned HTTP 200 with
+the expected service responses. The previous download-center index remains
+available in the deployment staging backup for recovery.
