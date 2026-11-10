@@ -110,7 +110,9 @@ export function parseConversation(records, provider, sessionId, options = {}) {
           put(b.tool_use_id, old?.type ?? 'toolExecution', { aggregatedOutput: clipped(output, 6000), text: clipped(output, 6000), status: b.is_error ? 'failed' : 'completed' }, record, i);
         }
       }
-      if (r.type === 'user' && content.some(c => c.type === 'text')) active = true;
+      // Claude stores compaction context as a user record even while idle.
+      // Only an actual user turn can start work; metadata and summaries cannot.
+      if (r.type === 'user' && !r.isMeta && !r.isCompactSummary && content.some(c => c.type === 'text')) active = true;
       if (r.type === 'assistant' && (message.stop_reason === 'end_turn' || (content.some(c => c.type === 'text') && !content.some(c => c.type === 'tool_use')))) active = false;
     }
   }

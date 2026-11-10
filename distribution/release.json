@@ -3,8 +3,8 @@
   "mac": {
     "date": "2026-11-09",
     "notes": [
-      "修复后台服务缺少 UTF-8 环境时 tmux 终端编号解析错误、无法输入的问题",
-      "保留中文工作区、终端标题与输出，验证中文和多行输入完整送达"
+      "修复 Claude 历史压缩摘要被误判为正在处理",
+      "按当前终端来源提供真实的文件上传大小限制"
     ]
   },
   "android": {
@@ -28,6 +28,30 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS 桌面",
+      "version": "0.2.2",
+      "file": "panecast-desktop-0.2.2-mac-arm64.dmg",
+      "size": 3617749,
+      "sha256": "3312abc995467159d167feb5e37a2dd1777a6b3e0ca0e9b0f66547f275e5d0b8",
+      "date": "2026-11-09",
+      "notes": [
+        "修复桌面版全局样式被拦截，恢复深色主题、字体、按钮、间距和居中布局",
+        "修复覆盖账号、电脑列表、终端等共享页面，并增加正式打包资源的样式回归检查",
+        "继续提供 DMG 中文安装说明和一条命令升级，保留账号与电脑配对"
+      ]
+    },
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.2",
+      "file": "panecast-cli-0.1.2.tgz",
+      "sha256": "118ffcfffa4331f7378f9b76b336ad0af90ee57736af49b3ca5e4db6b326352b",
+      "date": "2026-11-09",
+      "notes": [
+        "修复后台服务缺少 UTF-8 环境时 tmux 终端编号解析错误、无法输入的问题",
+        "保留中文工作区、终端标题与输出，验证中文和多行输入完整送达"
+      ]
+    },
     {
       "platform": "macOS CLI",
       "version": "0.1.1",
@@ -148,30 +172,30 @@
     }
   ],
   "desktop": {
-    "version": "0.2.2",
+    "version": "0.2.3",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.2-mac-arm64.dmg",
-    "size": 3617749,
-    "sha256": "3312abc995467159d167feb5e37a2dd1777a6b3e0ca0e9b0f66547f275e5d0b8",
+    "file": "panecast-desktop-0.2.3-mac-arm64.dmg",
+    "size": 3617184,
+    "sha256": "0eb8488e0149db7d58bd8c4b00fc2cb95502b130cf27e23825cb1d1275fb456d",
     "archive": {
-      "file": "panecast-desktop-0.2.2-mac-arm64.zip",
-      "size": 3371640,
-      "sha256": "aa0201b6a1190ab4e1867e28c8be527e2843da86cdb75faf0dba508d847b3fdd"
+      "file": "panecast-desktop-0.2.3-mac-arm64.zip",
+      "size": 3370447,
+      "sha256": "00897114a25c246baefa44585f29b06a72919639c0b270ea25f86b4e84306e05"
     },
     "installer": {
-      "file": "install-desktop-0.2.2-mac-arm64.sh",
+      "file": "install-desktop-0.2.3-mac-arm64.sh",
       "size": 5630,
-      "sha256": "b3e3c875e663de6bfad36ccfb2271e9df6ad5e553e5dbacc3f2424687c855a39"
+      "sha256": "ff456867388b4ab25cb18cbad285bf02d8d7684f9ccc1c1047e75fabd77f915c"
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-09",
     "notarized": false,
     "notes": [
-      "修复桌面版全局样式被拦截，恢复深色主题、字体、按钮、间距和居中布局",
-      "修复覆盖账号、电脑列表、终端等共享页面，并增加正式打包资源的样式回归检查",
-      "继续提供 DMG 中文安装说明和一条命令升级，保留账号与电脑配对"
+      "支持把文件拖入终端或对话区域，直接粘贴截图和剪贴板图片",
+      "附件上传后把远端路径填入当前输入框，支持多文件与展开编辑",
+      "普通文件和小图片保留原内容，超过连接上限的图片自动压缩"
     ]
   }
 }

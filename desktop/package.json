@@ -1,7 +1,7 @@
 {
   "name": "panecast-desktop",
   "productName": "Panecast",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "scripts": {

@@ -12,13 +12,16 @@ type Props = {
   initialText: string;
   title: string;
   connected: boolean;
+  inputRef?: React.RefObject<TerminalInputHandle | null>;
+  attachmentMessage?: string | null;
+  uploading?: boolean;
   onChange(state: Pick<TerminalInputSnapshot, 'text' | 'composing'>): void;
   onSave(text: string): Promise<void>;
   onSend(text: string): Promise<SendReceipt | undefined>;
 };
 
 /** The same IME-aware input as the command bar; only its Return behavior changes. */
-export function ExpandedComposer({ initialText, title, connected, onChange, onSave, onSend }: Props) {
+export function ExpandedComposer({ initialText, title, connected, inputRef, attachmentMessage, uploading = false, onChange, onSave, onSend }: Props) {
   const insets = useSafeAreaInsets();
   const input = useRef<TerminalInputHandle>(null);
   const locked = useRef(false);
@@ -56,21 +59,21 @@ export function ExpandedComposer({ initialText, title, connected, onChange, onSa
     finally { locked.current = false; if (mounted.current) setBusy(false); }
   };
   // Ref callback cleanup is synchronous when the editor's native view goes away.
-  const setInput = useCallback((value: TerminalInputHandle | null) => { input.current = value; mounted.current = value !== null; }, []);
+  const setInput = useCallback((value: TerminalInputHandle | null) => { input.current = value; if (inputRef) inputRef.current = value; mounted.current = value !== null; }, [inputRef]);
   return <Modal visible presentationStyle="fullScreen" animationType="slide" supportedOrientations={['portrait', 'portrait-upside-down', 'landscape']}
     onRequestClose={() => void action('save')} onShow={() => void input.current?.focus()}>
-    <KeyboardAvoidingView style={styles.screen} behavior="padding">
+    <KeyboardAvoidingView nativeID="panecast-expanded-composer" style={styles.screen} behavior="padding">
       <View style={[styles.header, { paddingTop: insets.top + 8, paddingLeft: insets.left + 14, paddingRight: insets.right + 14 }]}>
         <Pressable onPress={() => void action('save')} disabled={busy} accessibilityRole="button" accessibilityLabel="保存草稿并返回终端" style={styles.button}><Text style={styles.link}>保存并返回</Text></Pressable>
         <Text style={styles.title} numberOfLines={1}>{title || '编辑输入'}</Text>
-        <Pressable onPress={() => void action('send')} disabled={busy || !connected} accessibilityRole="button" accessibilityLabel="发送完整输入到当前终端" style={[styles.send, (busy || !connected) && styles.dim]}><Text style={styles.sendText}>{busy ? '处理中…' : '发送'}</Text></Pressable>
+        <Pressable onPress={() => void action('send')} disabled={busy || !connected || uploading} accessibilityRole="button" accessibilityLabel="发送完整输入到当前终端" style={[styles.send, (busy || !connected || uploading) && styles.dim]}><Text style={styles.sendText}>{busy ? '处理中…' : '发送'}</Text></Pressable>
       </View>
       <View style={[styles.tools, { paddingLeft: insets.left + 14, paddingRight: insets.right + 14 }]}>
         <Pressable onPress={() => void action('indent')} disabled={busy} style={styles.button} accessibilityRole="button" accessibilityLabel="所选行增加两个空格缩进"><Text style={styles.link}>增加缩进</Text></Pressable>
         <Pressable onPress={() => void action('outdent')} disabled={busy} style={styles.button} accessibilityRole="button" accessibilityLabel="所选行减少缩进"><Text style={styles.link}>减少缩进</Text></Pressable>
         <Text style={styles.note}>{size.toLocaleString()} 字符</Text>
       </View>
-      <Text style={[styles.note, styles.hint]}>{size > MAX_INPUT_TEXT ? `内容超过 ${MAX_INPUT_TEXT.toLocaleString()} 个字符，当前编辑尚未保存；请缩短后保存。` : message ?? (connected ? '回车换行，发送按钮提交全部内容。草稿自动保存。' : '当前离线，可以继续编辑并保存草稿。')}</Text>
+      <Text style={[styles.note, styles.hint]}>{size > MAX_INPUT_TEXT ? `内容超过 ${MAX_INPUT_TEXT.toLocaleString()} 个字符，当前编辑尚未保存；请缩短后保存。` : attachmentMessage ?? message ?? (connected ? '回车换行，发送按钮提交全部内容。草稿自动保存。' : '当前离线，可以继续编辑并保存草稿。')}</Text>
       <View style={[styles.editor, { marginLeft: insets.left + 14, marginRight: insets.right + 14, marginBottom: Math.max(insets.bottom, 12) }]}>
         <TerminalInputView ref={setInput} mode="line" submitOnEnter={false} initialText={initialText} editable={!busy}
           fontFamily={fonts.mono} fontSize={16} placeholder="输入命令或长提示词，回车换行" placeholderColor={colors.muted}

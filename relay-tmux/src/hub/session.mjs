@@ -91,7 +91,19 @@ export class HubSession extends RelaySession {
   async dispatch(method, p) {
     if (!p || typeof p !== 'object' || Array.isArray(p)) throw new RpcError('invalid_params', '无效请求');
     if (method === 'source.list') return this.sources();
-    if (method === 'relay.info') return { backend: 'hub', protocol_version: 1, sources: [...this.registry.sources.values()].map((s) => this.registry.info(s)) };
+    if (method === 'relay.info') {
+      const info = { backend: 'hub', protocol_version: 1, sources: [...this.registry.sources.values()].map((s) => this.registry.info(s)) };
+      const { source } = targetParams(p);
+      if (!source) return info;
+      const entry = this.registry.get(source);
+      if (!['cmux', 'tmux'].includes(entry.config.type)) return info;
+      const limits = await this.client(source).call('relay.info', {});
+      if (Number.isFinite(limits.max_message_bytes) && Number.isFinite(limits.max_upload_bytes)) {
+        info.max_message_bytes = Math.min(32 * 1024 * 1024, limits.max_message_bytes);
+        info.max_upload_bytes = limits.max_upload_bytes;
+      }
+      return info;
+    }
     if (method === 'relay.snippets') return { snippets: this.config.snippets ?? [] };
     if (method === 'relay.diagnostics') { const result = await this.sources(); return { backend: 'hub', backend_ready: result.sources.some((s) => s.status === 'online'), ...result }; }
     if (method === 'host.battery') return { available: false };

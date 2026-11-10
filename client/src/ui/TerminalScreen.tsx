@@ -127,7 +127,7 @@ function TerminalPane() {
 
   return (
     // Android too: edge-to-edge (forced from API 35) stops adjustResize from shrinking the window.
-    <KeyboardAvoidingView style={styles.screen} behavior="padding">
+    <KeyboardAvoidingView nativeID="panecast-terminal" style={styles.screen} behavior="padding">
       <View style={[styles.header, side, { paddingTop: insets.top }]}>
         <View style={styles.titleRow}>
           <Pressable

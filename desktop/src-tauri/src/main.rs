@@ -218,6 +218,8 @@ fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
             .inner_size(1280.0, 860.0)
             .min_inner_size(760.0, 600.0)
             .background_color(tauri::window::Color(26, 27, 38, 255))
+            // Let WebKit deliver OS-selected files to the shared HTML drop zone.
+            .disable_drag_drop_handler()
             .on_navigation(move |url| {
                 if security::app_url(url) {
                     return true;

@@ -18,11 +18,13 @@ async function upstream(t, codex = false) {
   await once(server, 'listening');
   t.after(async () => { for (const ws of server.clients) ws.terminate(); await new Promise((resolve) => server.close(resolve)); });
   const calls = [], responses = [], bindings = new Map();
+  const limits = { max_message_bytes: 24 * 1024 * 1024, max_upload_bytes: 12 * 1024 * 1024 };
   server.on('connection', (ws) => ws.on('message', (raw) => {
     const m = JSON.parse(raw); if (!m.method) { if ('result' in m) responses.push(m); return; }
     calls.push(m);
     if (m.id == null) return;
     let result = {};
+    if (m.method === 'relay.info') result = limits;
     if (m.method === 'window.list') result = { windows: [{ id: 'window', ref: 'window:1', key: true }] };
     if (m.method === 'workspace.list') result = { window_id: 'window', workspaces: [{ id: '$0', title: 'cmux workspace', selected: true }] };
     if (m.method === 'surface.list') result = { surfaces: [{ id: '%0', title: 'cmux shell', type: 'terminal' }] };
@@ -36,7 +38,7 @@ async function upstream(t, codex = false) {
     if (m.method === 'turn/start') result = { turn: { id: 'turn-2', status: 'inProgress', items: [] } };
     ws.send(JSON.stringify({ id: m.id, ...(codex ? {} : { ok: true }), result }));
   }));
-  return { server, calls, responses, bindings, url: `ws://127.0.0.1:${server.address().port}`, emit(message) { for (const ws of server.clients) ws.send(JSON.stringify(message)); } };
+  return { server, calls, responses, bindings, limits, url: `ws://127.0.0.1:${server.address().port}`, emit(message) { for (const ws of server.clients) ws.send(JSON.stringify(message)); } };
 }
 
 async function fixture(t) {
@@ -78,6 +80,22 @@ test('cmux application history forwards replay and scrolling with target and acc
   assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', delta_lines: 10, col: 40, row: 10 });
   await assert.rejects(peer.call('terminal.scroll', { ...target, surface_id: scoped('tmux', fx.surface.id), delta_lines: 10 }), { code: 'invalid_target' });
   await assert.rejects(peer.call('terminal.replay', { workspace_id: scoped('tmux', fx.workspace_id), surface_id: scoped('tmux', fx.surface.id) }), { code: 'method_not_found' });
+});
+
+test('attachment limits come from the selected source and respect the hub transport', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'panecast-upload-info-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const cmux = await upstream(t);
+  const source = { id: 'cmux', type: 'cmux', enabled: true, access: 'control', url: cmux.url, token: 'fixture-only', device_id: 'fixture' };
+  const { peer, hub } = await connect(t, { state_directory: directory, port: 0, lan: { pairing_code: 'pair-secret' }, sources: [source] });
+  const target = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
+  assert.equal((await peer.call('relay.info')).backend, 'hub');
+  const info = await peer.call('relay.info', target);
+  assert.equal(info.max_upload_bytes, 12 * 1024 * 1024); assert.equal(info.max_message_bytes, 24 * 1024 * 1024);
+  cmux.limits.max_message_bytes = 64 * 1024 * 1024;
+  assert.equal((await peer.call('relay.info', target)).max_message_bytes, 32 * 1024 * 1024);
+  await assert.rejects(peer.call('relay.info', { ...target, surface_id: scoped('other', '%0') }), { code: 'invalid_target' });
+  hub.reloadSources([{ ...source, enabled: false }]);
+  await assert.rejects(peer.call('relay.info', target), { code: 'source_revoked' });
 });
 
 test('terminal chat reads only the selected binding and honors source scope, read-only access and revocation', async t => {

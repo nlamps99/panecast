@@ -62,10 +62,10 @@ const FRAME_OVERHEAD = 64 * 1024;
  * gets the legacy client's 6 MiB preference; an older one, through the
  * broker, stays under its 1 MiB tunnel frames.
  */
-export function base64Budget(transport: UploadTransport, limits: RelayLimits | null = null): number {
+export function base64Budget(transport: UploadTransport, limits: RelayLimits | null = null, preferredBytes = LAN_BYTES_BUDGET): number {
   const uploadMax = limits ? Math.min(limits.maxUploadBytes, RELAY_UPLOAD_MAX_BYTES) : RELAY_UPLOAD_MAX_BYTES;
   const relayMax = Math.floor(uploadMax / 3) * 4;
-  const preferred = Math.ceil(LAN_BYTES_BUDGET / 3) * 4;
+  const preferred = Math.ceil(preferredBytes / 3) * 4;
   if (limits) return Math.max(0, Math.min(preferred, relayMax, limits.maxMessageBytes - FRAME_OVERHEAD));
   const wanted = transport === 'lan' ? preferred : BROKER_BASE64_BUDGET;
   return Math.min(wanted, relayMax);
@@ -191,7 +191,7 @@ export class AttachmentError extends Error {
 export function parseUploadResult(value: unknown): UploadedFile {
   const record = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
   const path = record && typeof record.path === 'string' ? record.path : '';
-  if (!record || path.length === 0) throw new AttachmentError('电脑没有返回图片保存的位置');
+  if (!record || path.length === 0) throw new AttachmentError('电脑没有返回文件保存的位置');
   const filename =
     typeof record.filename === 'string' && record.filename.length > 0
       ? record.filename

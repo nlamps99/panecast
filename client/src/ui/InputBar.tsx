@@ -5,6 +5,8 @@ import { Alert } from '../platform/alert';
 
 import { TerminalInputView, type TerminalInputHandle, type TerminalInputKey } from '../../modules/terminal-input';
 import { encodeImage, pickImage, type ImageSource } from '../input/attachImage';
+import { uploadAttachments, type AttachmentFile } from '../input/fileAttachments';
+import { pickFiles, useWebAttachments } from '../input/webAttachments';
 import {
   AttachmentError,
   attachmentFilename,
@@ -44,7 +46,7 @@ type AttachState = { kind: 'idle' } | { kind: 'busy'; label: string } | { kind: 
 const ATTACH_IDLE: AttachState = { kind: 'idle' };
 
 /** SF Symbol on iOS, Material Symbol on Android and the web. */
-const ATTACH_ICON = { ios: 'photo.badge.plus', android: 'add_photo_alternate', web: 'add_photo_alternate' } as const;
+const ATTACH_ICON = { ios: 'photo.badge.plus', android: 'add_photo_alternate', web: 'attach_file' } as const;
 
 type Props = {
   session: TerminalSession;
@@ -82,6 +84,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   const savedKey = target ? draftKey(target.workspaceId, target.surfaceId) : '';
   const sheet = useSheet();
   const [expanded, setExpanded] = useState<{ text: string } | null>(null);
+  const expandedInput = useRef<TerminalInputHandle>(null);
   const [ready, setReady] = useState(false);
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
@@ -121,6 +124,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   const submit = async (text: string): Promise<SendReceipt | undefined> => {
     const current = session.getState().target;
     if (!mounted.current || !ready || sendingRef.current || disabled || !target || current?.workspaceId !== target.workspaceId || current.surfaceId !== target.surfaceId) return;
+    if (attaching.current) { setHint('附件正在上传，完成后再发送'); return; }
     if (draft.current.composing) {
       setHint('输入法还在选字，先选好再发送');
       return;
@@ -200,7 +204,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
 
   /** Puts the uploaded file's Mac path where the user is typing. */
   const insertPath = async (path: string) => {
-    if (!mounted.current) {
+    const current = session.getState().target;
+    if (!mounted.current || current?.workspaceId !== target?.workspaceId || current?.surfaceId !== target?.surfaceId) {
       library.setDraft(savedKey, (library.getState().drafts[savedKey] ?? '') + pathInsertion(library.getState().drafts[savedKey] ?? '', path));
       return;
     }
@@ -208,11 +213,38 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
       session.sendText(`${shellQuotePath(path)} `);
       return;
     }
-    const input = inputRef.current;
+    const input = expandedInput.current ?? inputRef.current;
     if (!input) return;
-    await input.insertText(pathInsertion(draft.current.text, path));
+    const state = await input.getState();
+    await input.insertText(pathInsertion(state.text.slice(0, state.selectionStart), path));
     void input.focus();
   };
+
+  const attachFiles = async (files: AttachmentFile[]) => {
+    if (!files.length || !mounted.current || !ready || disabled || sendingRef.current || !target) return;
+    if (attaching.current) { setHint('正在上传附件，请稍候再添加'); return; }
+    if (!channel.isOpen) { setAttach({ kind: 'error', message: '还没有连上电脑，连上后再上传文件' }); return; }
+    attaching.current = true; setHint(null); setAttach({ kind: 'busy', label: '正在准备附件…' });
+    try {
+      const count = await uploadAttachments(channel, target, files, {
+        current: () => mounted.current,
+        progress: label => { if (mounted.current) setAttach({ kind: 'busy', label }); },
+        uploaded: async file => {
+          try { await insertPath(file.path); }
+          catch { throw new AttachmentError(`文件已存到电脑上的 ${file.path}，但没能填进输入框`); }
+        },
+      });
+      if (mounted.current) { setAttach(ATTACH_IDLE); setHint(count ? `已上传 ${count} 个附件，路径已填入输入框` : null); }
+    } catch (failure) {
+      if (mounted.current) setAttach({ kind: 'error', message: failure instanceof AttachmentError ? failure.message : `文件没有发出去：${describeError(failure)}` });
+    } finally { attaching.current = false; }
+  };
+
+  const dragging = useWebAttachments({
+    enabled: ready && !disabled && !sending && attach.kind !== 'busy' && channel.isOpen,
+    files: files => { void attachFiles(files); },
+    error: message => { if (attaching.current) setHint(message); else setAttach({ kind: 'error', message }); },
+  });
 
   const attachFrom = async (source: ImageSource) => {
     if (attaching.current) return;
@@ -231,7 +263,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
       }
       setAttach({ kind: 'busy', label: '正在压缩图片…' });
       // Newer relays say how large a message they take; older ones fail the call.
-      const limits = parseRelayLimits(await channel.call('relay.info', {}, 5_000).catch(() => null));
+      const limits = parseRelayLimits(await channel.call('relay.info', target ? { workspace_id: target.workspaceId, surface_id: target.surfaceId } : {}, 5_000).catch(() => null));
       const image = await encodeImage(uri, base64Budget(uploadTransportOf(channel), limits));
       if (!image) throw new AttachmentError('图片太大，压缩后还是发不了，换一张小一点的试试');
       setAttach({ kind: 'busy', label: `正在发送图片（${formatBytes(decodedByteLength(image.base64))}）…` });
@@ -257,7 +289,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   const chooseImageSource = () => {
     if (attaching.current) return;
     if (Platform.OS === 'web') {
-      void attachFrom('library');
+      void pickFiles().then(attachFiles).catch(failure => setAttach({ kind: 'error', message: describeError(failure) }));
       return;
     }
     if (Platform.OS === 'ios') {
@@ -300,6 +332,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
 
   return (
     <View>
+      {dragging ? <View style={{ padding: 14, borderWidth: 1, borderColor: colors.green, borderRadius: 10, backgroundColor: colors.surfaceRaised }}><Text style={{ color: colors.green, textAlign: 'center' }}>松开文件，上传到 {computer?.name ?? '当前电脑'}</Text></View> : null}
       {message ? <Text style={[styles.message, messageStyle]}>{message}</Text> : null}
       <View style={styles.libraryRow}>
         {chat ? <Pressable onPress={() => setKeysOpen(!keysOpen)} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
@@ -359,7 +392,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
           disabled={disabled || attachBusy || sending || !ready}
           style={({ pressed }) => [styles.attach, disabled && styles.attachDisabled, pressed && styles.sendPressed]}
           accessibilityRole="button"
-          accessibilityLabel="发送图片到电脑"
+          accessibilityLabel={Platform.OS === 'web' ? '上传文件或图片到电脑' : '发送图片到电脑'}
           accessibilityState={{ disabled: disabled || attachBusy, busy: attachBusy }}
           hitSlop={4}
         >
@@ -372,7 +405,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
         {mode === 'line' ? (
           <Pressable
             onPress={() => void submitCurrent().catch(() => setHint('暂时无法发送，草稿已保留'))}
-            disabled={disabled || !ready || sending || (chat && !hasText)}
+            disabled={disabled || !ready || sending || attachBusy || (chat && !hasText)}
             style={({ pressed }) => [styles.send, !hasText && styles.sendEmpty, pressed && styles.sendPressed]}
             accessibilityRole="button"
             accessibilityLabel={chat ? '发送消息到当前终端' : hasText ? '发送命令' : '发送回车'}
@@ -394,7 +427,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             void inputRef.current?.focus();
           }
         })} />
-      {expanded ? <ExpandedComposer initialText={expanded.text} title="编辑输入" connected={session.isConnected}
+      {expanded ? <ExpandedComposer initialText={expanded.text} title="编辑输入" connected={session.isConnected} inputRef={expandedInput}
+        uploading={attachBusy} attachmentMessage={dragging ? `松开文件，上传到 ${computer?.name ?? '当前电脑'}` : message}
         onChange={(state) => {
           if (!mounted.current) return;
           draft.current = state;

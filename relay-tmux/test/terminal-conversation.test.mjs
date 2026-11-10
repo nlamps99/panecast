@@ -96,6 +96,26 @@ test('Claude pagination preserves ancestors and detects a rewind without changin
   assert.equal(rewound.items.some(i => i.text === 'message 95'), false);
 });
 
+test('Claude compaction context and metadata do not start a new user turn', async t => {
+  const values = [claude('u', null, 'user', 'work'),
+    claude('done', 'u', 'assistant', 'finished', { message: { content: 'finished', stop_reason: 'end_turn' } }),
+    { sessionId: id, uuid: 'boundary', parentUuid: null, logicalParentUuid: 'done', type: 'system', subtype: 'compact_boundary' },
+    claude('summary', 'boundary', 'user', 'Previous work summary', { isCompactSummary: true }),
+    { type: 'last-prompt', sessionId: id, leafUuid: 'summary' }];
+  const fx = await fixture(t, 'claude', values);
+  const page = await fx.reader.read(fx.binding);
+  assert.equal(page.active, false);
+  assert.ok(page.items.some(item => item.content?.[0]?.text === 'Previous work summary'));
+  const cached = await fx.reader.read(fx.binding, { revision: page.revision });
+  assert.equal(cached.unchanged, true); assert.equal(cached.active, false);
+  await appendFile(fx.file, jsonl([claude('meta', 'summary', 'user', 'Context update', { isMeta: true })]));
+  assert.equal((await fx.reader.read(fx.binding)).active, false);
+  await appendFile(fx.file, jsonl([claude('next', 'meta', 'user', 'Continue the task')]));
+  assert.equal((await fx.reader.read(fx.binding)).active, true);
+  await appendFile(fx.file, jsonl([claude('answer', 'next', 'assistant', 'done')]));
+  assert.equal((await fx.reader.read(fx.binding)).active, false);
+});
+
 test('reader crosses giant records without losing preceding text', async t => {
   const fx = await fixture(t, 'codex', [{ type: 'session_meta', payload: { id } }, completed(agent('before'), 'before'),
     { type: 'response_item', payload: { type: 'function_call_output', output: 'x'.repeat(5 * 1024 * 1024) } }, completed(agent('after'), 'after')]);
