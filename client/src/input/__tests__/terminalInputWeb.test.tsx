@@ -2,6 +2,8 @@ import { act, createRef, type ReactNode } from 'react';
 
 import TerminalInputView from '../../../modules/terminal-input/src/TerminalInputView.web';
 import type { TerminalInputHandle, TerminalInputProps } from '../../../modules/terminal-input';
+import { terminalHardwareKey } from '../hardwareKeys';
+import { encodeKey } from '../../protocol/keys';
 
 jest.mock('react-native', () => ({ StyleSheet: { flatten: (style: unknown) => style } }));
 
@@ -59,4 +61,67 @@ it('applies an indentation edit atomically and refuses to overwrite a newer edit
   expect(await handle.getState()).toMatchObject({ text: '  line', selectionStart: 2, selectionEnd: 6 });
   await act(async () => { expect(await handle.applyEdit('line', '', 0, 0)).toBe(false); });
   expect((await handle.getState()).text).toBe('  line');
+});
+
+it('maps physical terminal keys once, preserving order and modifiers without moving local focus', async () => {
+  const sent: string[] = [];
+  const { textarea } = await render({ mode: 'live', onKeyAction: key => sent.push(`duplicate:${key}`),
+    onCommitText: text => sent.push(text), onHardwareKey: event => {
+      const key = terminalHardwareKey(event);
+      if (!key) return false;
+      sent.push(encodeKey(key)); return true;
+    } });
+  textarea.focus();
+  textarea.value = 'hello';
+  await act(async () => { textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+  for (const options of [{ key: 'Tab' }, { key: 'ArrowUp' }, { key: 'ArrowLeft', altKey: true },
+    { key: 'Tab', shiftKey: true }, { key: 'c', ctrlKey: true }, { key: 'r', ctrlKey: true },
+    { key: 'Backspace' }, { key: 'Delete' }, { key: 'Escape' }, { key: 'F5' }, { key: 'Enter' }]) {
+    const event = new KeyboardEvent('keydown', { ...options, bubbles: true, cancelable: true });
+    await act(async () => { textarea.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+  }
+  expect(sent).toEqual(['hello', 'tab', 'up', 'alt-left', 'shift-tab', 'ctrl-c', 'ctrl-r', 'backspace', 'delete', 'escape', 'f5', 'enter']);
+  expect(document.activeElement).toBe(textarea);
+});
+
+it('commits Chinese text once and leaves candidate navigation and confirmation to the input method', async () => {
+  const onCommitText = jest.fn(), onHardwareKey = jest.fn(() => true), onKeyAction = jest.fn();
+  const { textarea } = await render({ mode: 'live', onCommitText, onHardwareKey, onKeyAction });
+  await act(async () => {
+    textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    textarea.value = 'ni'; textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    for (const key of ['ArrowDown', 'Enter']) textarea.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+  });
+  expect(onCommitText).not.toHaveBeenCalled(); expect(onHardwareKey).not.toHaveBeenCalled();
+  await act(async () => {
+    textarea.value = '你好';
+    textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  expect(onCommitText.mock.calls).toEqual([['你好']]); expect(onKeyAction).not.toHaveBeenCalled();
+  expect(textarea.value).toBe('');
+});
+
+it('keeps Command copy/paste and Option text input local, and lets Shift+Enter edit a draft', async () => {
+  const remote = jest.fn(), onKeyAction = jest.fn();
+  const onHardwareKey: NonNullable<TerminalInputProps['onHardwareKey']> = event => {
+    const key = terminalHardwareKey(event); if (!key) return false; remote(key); return true;
+  };
+  const { textarea } = await render({ mode: 'live', onHardwareKey, onKeyAction });
+  for (const options of [{ key: 'c', metaKey: true }, { key: 'v', metaKey: true }, { key: 'Enter', metaKey: true },
+    { key: 'Dead', altKey: true }, { key: 'å', altKey: true }, { key: 'a' }]) {
+    const event = new KeyboardEvent('keydown', { ...options, bubbles: true, cancelable: true });
+    await act(async () => { textarea.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+  }
+  expect(remote).not.toHaveBeenCalled(); expect(onKeyAction).not.toHaveBeenCalled();
+  const onSubmit = jest.fn();
+  await act(async () => root.render(<TerminalInputView mode="line" onSubmit={onSubmit} onHardwareKey={onHardwareKey} />));
+  for (const options of [{ key: 'ArrowUp' }, { key: 'Tab' }, { key: 'Enter', shiftKey: true }]) {
+    const event = new KeyboardEvent('keydown', { ...options, bubbles: true, cancelable: true });
+    await act(async () => { textarea.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+  }
+  expect(remote).not.toHaveBeenCalled(); expect(onSubmit).not.toHaveBeenCalled();
 });

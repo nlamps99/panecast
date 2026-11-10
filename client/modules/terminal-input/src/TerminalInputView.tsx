@@ -7,7 +7,7 @@ type NativeEvent<T> = { nativeEvent: T };
 
 type NativeProps = Omit<
   TerminalInputProps,
-  'onCommitText' | 'onKeyAction' | 'onChangeState' | 'onSubmit' | 'onContentSizeChange'
+  'onCommitText' | 'onKeyAction' | 'onHardwareKey' | 'onChangeState' | 'onSubmit' | 'onContentSizeChange'
 > & {
   ref?: Ref<TerminalInputHandle>;
   onCommitText?: (event: NativeEvent<{ text: string }>) => void;
@@ -20,7 +20,7 @@ type NativeProps = Omit<
 const NativeView: ComponentType<NativeProps> = requireNativeView('TerminalInput');
 
 const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(function TerminalInputView(
-  { onCommitText, onKeyAction, onChangeState, onSubmit, onContentSizeChange, ...rest },
+  { onCommitText, onKeyAction, onHardwareKey: _onHardwareKey, onChangeState, onSubmit, onContentSizeChange, ...rest },
   ref,
 ) {
   const nativeRef = useRef<TerminalInputHandle>(null);

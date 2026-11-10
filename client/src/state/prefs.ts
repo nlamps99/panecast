@@ -5,6 +5,8 @@ import { useSyncExternalStore } from 'react';
 export type Prefs = {
   fontSize: number;
   inputMode: 'line' | 'live';
+  /** Desktop terminals use the physical keyboard; mobile keeps its own input choice. */
+  desktopInputMode: 'line' | 'live';
   /** Rows the relay keeps live for the terminal (`surface.subscribe` `lines`). */
   historyLines: number;
   /** A light tap on each key-row press. */
@@ -26,6 +28,7 @@ export const HISTORY_LINES_STEP = 20;
 export const DEFAULT_PREFS: Prefs = {
   fontSize: 13,
   inputMode: 'line',
+  desktopInputMode: 'live',
   historyLines: 120,
   keyHaptics: true,
   extraKeyRow: false,
@@ -59,6 +62,7 @@ export function sanitizePrefs(value: unknown): Prefs {
   return {
     fontSize: typeof v.fontSize === 'number' ? clampFontSize(v.fontSize) : DEFAULT_PREFS.fontSize,
     inputMode: v.inputMode === 'live' ? 'live' : 'line',
+    desktopInputMode: v.desktopInputMode === 'line' ? 'line' : 'live',
     historyLines: typeof v.historyLines === 'number' ? clampHistoryLines(v.historyLines) : DEFAULT_PREFS.historyLines,
     keyHaptics: typeof v.keyHaptics === 'boolean' ? v.keyHaptics : DEFAULT_PREFS.keyHaptics,
     extraKeyRow: typeof v.extraKeyRow === 'boolean' ? v.extraKeyRow : DEFAULT_PREFS.extraKeyRow,

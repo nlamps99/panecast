@@ -38,7 +38,7 @@ type Props = {
   onFontSizeChange: (size: number) => void;
   /** Shown while there is nothing to draw yet. */
   placeholder: string | null;
-  /** Tap on the terminal: hide the keyboard. */
+  /** Tap on terminal text: focus desktop input or hide the phone keyboard. */
   onTap: () => void;
   readOnly?: boolean;
   active?: boolean;
@@ -395,17 +395,17 @@ function keyForIndex(_: VisualLine, index: number): string {
 
 const TerminalLine = memo(function TerminalLine({ line, style, onPress }: { line: VisualLine; style: TextStyle; onPress: () => void }) {
   if (line.spans.length === 0) {
-    return <Text style={style} onPress={onPress} allowFontScaling={false}> </Text>;
+    return <Text style={style} onPress={onPress} selectable={Platform.OS === 'web'} allowFontScaling={false}> </Text>;
   }
   if (line.spans.length === 1 && line.spans[0].attr === DEFAULT_ATTR) {
     return (
-      <Text style={style} onPress={onPress} numberOfLines={1} ellipsizeMode="clip" allowFontScaling={false}>
+      <Text style={style} onPress={onPress} selectable={Platform.OS === 'web'} numberOfLines={1} ellipsizeMode="clip" allowFontScaling={false}>
         {line.spans[0].text}
       </Text>
     );
   }
   return (
-    <Text style={style} onPress={onPress} numberOfLines={1} ellipsizeMode="clip" allowFontScaling={false}>
+    <Text style={style} onPress={onPress} selectable={Platform.OS === 'web'} numberOfLines={1} ellipsizeMode="clip" allowFontScaling={false}>
       {line.spans.map((span, index) => (
         <Text key={index} style={styleForAttr(span.attr)}>
           {span.text}

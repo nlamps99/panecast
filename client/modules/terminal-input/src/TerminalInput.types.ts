@@ -11,6 +11,15 @@ export type TerminalInputMode = 'line' | 'live';
 
 export type TerminalInputKey = 'enter' | 'backspace';
 
+export type TerminalHardwareKey = {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  metaKey: boolean;
+  altGraphKey: boolean;
+};
+
 /** UTF-16 selection offsets, matching UITextView, Android Editable, and textarea. */
 export type TerminalInputSnapshot = { text: string; composing: boolean; selectionStart: number; selectionEnd: number };
 
@@ -46,6 +55,8 @@ export type TerminalInputProps = {
   style?: StyleProp<ViewStyle>;
   onCommitText?: (text: string) => void;
   onKeyAction?: (key: TerminalInputKey) => void;
+  /** Web live input only. Return true when the remote terminal consumed the key. */
+  onHardwareKey?: (event: TerminalHardwareKey) => boolean;
   onChangeState?: (state: { text: string; composing: boolean }) => void;
   onSubmit?: (text: string) => void;
   /** Height in points the text needs, including the 8 pt top and bottom inset. Native only. */

@@ -36,6 +36,7 @@ describe('sanitizePrefs', () => {
     expect(sanitizePrefs({ fontSize: 15, inputMode: 'live' })).toEqual({
       fontSize: 15,
       inputMode: 'live',
+      desktopInputMode: 'live',
       historyLines: 120,
       keyHaptics: true,
       extraKeyRow: false,

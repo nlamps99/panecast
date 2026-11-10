@@ -172,30 +172,30 @@
     }
   ],
   "desktop": {
-    "version": "0.2.3",
+    "version": "0.2.4",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.3-mac-arm64.dmg",
-    "size": 3617184,
-    "sha256": "0eb8488e0149db7d58bd8c4b00fc2cb95502b130cf27e23825cb1d1275fb456d",
+    "file": "panecast-desktop-0.2.4-mac-arm64.dmg",
+    "size": 3595143,
+    "sha256": "0048c41d145e0a98fb4a63d03120c79ef7157ee5f9517b8a3a84b13fb9420d88",
     "archive": {
-      "file": "panecast-desktop-0.2.3-mac-arm64.zip",
-      "size": 3370447,
-      "sha256": "00897114a25c246baefa44585f29b06a72919639c0b270ea25f86b4e84306e05"
+      "file": "panecast-desktop-0.2.4-mac-arm64.zip",
+      "size": 3348243,
+      "sha256": "a47bcada838ab4ece9fb4cd52c57998baf2f4f76f7168395b8496c1942269b41"
     },
     "installer": {
-      "file": "install-desktop-0.2.3-mac-arm64.sh",
+      "file": "install-desktop-0.2.4-mac-arm64.sh",
       "size": 5630,
-      "sha256": "ff456867388b4ab25cb18cbad285bf02d8d7684f9ccc1c1047e75fabd77f915c"
+      "sha256": "25670001d4e9c57e5fc44e559af09f033eb61e1bff7f270c92c89b8feebc274c"
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-09",
     "notarized": false,
     "notes": [
-      "支持把文件拖入终端或对话区域，直接粘贴截图和剪贴板图片",
-      "附件上传后把远端路径填入当前输入框，支持多文件与展开编辑",
-      "普通文件和小图片保留原内容，超过连接上限的图片自动压缩"
+      "修复侧栏窗口按钮被工作区列表挤压、显示不完整的问题",
+      "桌面默认使用实体键盘，直接传递 Tab、方向键、Esc 与 Ctrl 组合键，收起手机按键栏",
+      "支持中文选字、系统复制粘贴和编辑命令；对话中 Shift+Enter 换行，保留文件拖放与图片粘贴"
     ]
   }
 }

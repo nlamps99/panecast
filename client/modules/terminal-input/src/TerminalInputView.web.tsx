@@ -106,10 +106,18 @@ const TerminalInputView = forwardRef<TerminalInputHandle, TerminalInputProps>(fu
       }}
       onKeyDown={(event) => {
         // keyCode 229: the input method is handling this key.
-        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-        const { mode: currentMode, onKeyAction, onSubmit } = latest.current;
+        if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229 || latest.current.editable === false) return;
+        const { mode: currentMode, onKeyAction, onHardwareKey, onSubmit } = latest.current;
+        if (currentMode === 'live' && onHardwareKey) {
+          flushLive();
+          if (onHardwareKey({ key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey,
+            shiftKey: event.shiftKey, metaKey: event.metaKey, altGraphKey: event.getModifierState('AltGraph') })) {
+            event.preventDefault();
+          }
+          return;
+        }
         if (event.key === 'Enter') {
-          if (currentMode === 'line' && latest.current.submitOnEnter === false) return;
+          if (currentMode === 'line' && (latest.current.submitOnEnter === false || event.shiftKey)) return;
           event.preventDefault();
           if (currentMode === 'live') {
             flushLive();

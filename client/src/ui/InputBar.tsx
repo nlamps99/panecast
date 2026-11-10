@@ -7,6 +7,8 @@ import { TerminalInputView, type TerminalInputHandle, type TerminalInputKey } fr
 import { encodeImage, pickImage, type ImageSource } from '../input/attachImage';
 import { uploadAttachments, type AttachmentFile } from '../input/fileAttachments';
 import { pickFiles, useWebAttachments } from '../input/webAttachments';
+import { terminalHardwareKey } from '../input/hardwareKeys';
+import { desktopBridge } from '../platform/desktop';
 import {
   AttachmentError,
   attachmentFilename,
@@ -73,9 +75,10 @@ type Props = {
  * mode.
  */
 export function InputBar({ session, disabled, error, inputRef, presentation = 'terminal', onSubmitLine }: Props) {
-  const { inputMode } = usePrefs();
+  const { inputMode, desktopInputMode } = usePrefs();
+  const desktop = desktopBridge() !== null;
   const chat = presentation === 'chat';
-  const mode = chat ? 'line' : inputMode;
+  const mode = chat ? 'line' : desktop ? desktopInputMode : inputMode;
   const [keysOpen, setKeysOpen] = useState(false);
   const { channel, computer } = useMachine();
   const target = session.getState().target;
@@ -199,7 +202,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
     setHasText(false);
     draft.current = { text: '', composing: false };
     setInputHeight(INPUT_MIN_HEIGHT);
-    setPrefs({ inputMode: next });
+    setPrefs(desktop ? { desktopInputMode: next } : { inputMode: next });
   };
 
   /** Puts the uploaded file's Mac path where the user is typing. */
@@ -234,7 +237,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
           catch { throw new AttachmentError(`文件已存到电脑上的 ${file.path}，但没能填进输入框`); }
         },
       });
-      if (mounted.current) { setAttach(ATTACH_IDLE); setHint(count ? `已上传 ${count} 个附件，路径已填入输入框` : null); }
+      if (mounted.current) { setAttach(ATTACH_IDLE); setHint(count ? `已上传 ${count} 个附件，${modeRef.current === 'live' ? '路径已写入终端，按 Enter 提交' : '路径已填入输入框'}` : null); }
     } catch (failure) {
       if (mounted.current) setAttach({ kind: 'error', message: failure instanceof AttachmentError ? failure.message : `文件没有发出去：${describeError(failure)}` });
     } finally { attaching.current = false; }
@@ -335,15 +338,17 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
       {dragging ? <View style={{ padding: 14, borderWidth: 1, borderColor: colors.green, borderRadius: 10, backgroundColor: colors.surfaceRaised }}><Text style={{ color: colors.green, textAlign: 'center' }}>松开文件，上传到 {computer?.name ?? '当前电脑'}</Text></View> : null}
       {message ? <Text style={[styles.message, messageStyle]}>{message}</Text> : null}
       <View style={styles.libraryRow}>
-        {chat ? <Pressable onPress={() => setKeysOpen(!keysOpen)} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
+        {desktop ? <Text style={styles.libraryText}>{mode === 'live' ? '直接输入 · Tab、方向键、Ctrl 快捷键' : 'Enter 发送 · Shift+Enter 换行'}</Text> : null}
+        {chat && !desktop ? <Pressable onPress={() => setKeysOpen(!keysOpen)} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
         <Pressable onPress={sheet.open} disabled={!ready} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
+        {desktop && !chat ? <Pressable onPress={() => switchMode(mode === 'live' ? 'line' : 'live')} disabled={!ready || sending || attachBusy} accessibilityRole="button"><Text style={styles.libraryText}>{mode === 'live' ? '编辑命令' : '直接输入'}</Text></Pressable> : null}
         {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
         {libraryState.error ? <Text style={styles.messageError}>{libraryState.error}</Text> : null}
         {!session.isConnected ? <Text style={styles.libraryText}>离线 · 可以继续写草稿</Text> : null}
       </View>
-      {!chat || keysOpen ? <KeyBar session={session} disabled={disabled || !session.isConnected || sending} /> : null}
+      {!desktop && (!chat || keysOpen) ? <KeyBar session={session} disabled={disabled || !session.isConnected || sending} /> : null}
       <View style={styles.row}>
-        {!chat ? <View style={styles.segment} accessibilityRole="tablist">
+        {!chat && !desktop ? <View style={styles.segment} accessibilityRole="tablist">
           {(['line', 'live'] as const).map((item) => (
             <Pressable
               key={item}
@@ -365,7 +370,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             ref={inputRef}
             mode={mode}
             editable={!disabled && ready && !sending && (mode === 'line' || session.isConnected)}
-            placeholder={chat ? '发消息到当前终端…' : mode === 'live' ? '打字直接发到终端' : '输入命令'}
+            placeholder={chat ? '发消息到当前终端…' : mode === 'live' ? desktop ? '直接操作终端，支持中文输入…' : '打字直接发到终端' : '输入命令'}
             placeholderColor={colors.muted}
             textColor={colors.ink}
             caretColor={colors.green}
@@ -385,6 +390,15 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             onSubmit={(text) => void submit(text)}
             onCommitText={sendCommitted}
             onKeyAction={sendKeyAction}
+            onHardwareKey={desktop && mode === 'live' ? event => {
+              const key = terminalHardwareKey(event);
+              if (!key) return false;
+              if (!disabled && ready && !sending && session.isConnected) {
+                if (key.name === 'enter' && attaching.current) setHint('附件正在上传，完成后再发送');
+                else session.sendKey(key);
+              }
+              return true;
+            } : undefined}
           />
         </View>
         <Pressable
@@ -421,7 +435,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
           if (!mounted.current) return;
           if (mode === 'live') {
             library.setDraft(savedKey, text);
-            setPrefs({ inputMode: 'line' });
+            setPrefs(desktop ? { desktopInputMode: 'line' } : { inputMode: 'line' });
           } else {
             void inputRef.current?.insertText(text);
             void inputRef.current?.focus();

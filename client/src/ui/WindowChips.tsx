@@ -16,7 +16,7 @@ type Props = {
 export function WindowChips({ windows, selectedId, onSelect }: Props) {
   if (windows.length < 2) return null;
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} keyboardShouldPersistTaps="handled">
+    <ScrollView horizontal style={styles.scroller} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} keyboardShouldPersistTaps="handled">
       {windows.map((window) => {
         const selected = window.id === selectedId;
         const label = windowLabel(window);
@@ -45,6 +45,7 @@ export function WindowChips({ windows, selectedId, onSelect }: Props) {
 }
 
 const styles = StyleSheet.create({
+  scroller: { height: 34, flexGrow: 0, flexShrink: 0 },
   row: { gap: 8 },
   chip: {
     flexDirection: 'row',

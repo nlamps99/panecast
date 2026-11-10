@@ -2,6 +2,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Alert } from '../platform/alert';
+import { desktopBridge } from '../platform/desktop';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { TerminalInputHandle } from '../../modules/terminal-input';
@@ -52,7 +53,8 @@ function TerminalPane() {
   const status = useConnectionStatus(channel);
   const state = useStore(session);
   const { workspaces, surfaces, known } = useStore(machine.workspaces);
-  const { fontSize, inputMode, terminalPresentation } = usePrefs();
+  const { fontSize, inputMode, desktopInputMode, terminalPresentation } = usePrefs();
+  const desktop = desktopBridge() !== null;
   const chat = terminalPresentation === 'chat';
   const conversation = useMemo(() => new TerminalConversationStore(channel, session), [channel, session]);
   const inputRef = useRef<TerminalInputHandle>(null);
@@ -233,12 +235,15 @@ function TerminalPane() {
           fontSize={fontSize}
           onFontSizeChange={(size) => setPrefs({ fontSize: size })}
           placeholder={placeholderFor(status, Boolean(target))}
-          onTap={() => void inputRef.current?.blur()}
+          onTap={() => {
+            if (!desktop) void inputRef.current?.blur();
+            else if (!readOnly && window.getSelection()?.isCollapsed !== false) void inputRef.current?.focus();
+          }}
         />}
       </View>
       <View style={[styles.bottom, side, { paddingBottom: keyboardVisible ? 0 : Math.max(insets.bottom - 10, 0) }]}>
         {readOnly ? <Text style={{ color: colors.yellow, padding: 12 }}>这个连接源只允许读取</Text> : null}
-        <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${terminalPresentation}:${inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef}
+        <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${terminalPresentation}:${desktop ? desktopInputMode : inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef}
           presentation={terminalPresentation} onSubmitLine={chat ? text => conversation.send(text) : undefined} />
       </View>
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
