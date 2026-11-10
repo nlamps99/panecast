@@ -43,7 +43,9 @@ export class TmuxBackend {
     if (configFile) this.prefix.push('-f', configFile);
     this.executable = executable; this.execute = execute;
   }
-  tmux(args, input) { return this.execute(this.executable, [...this.prefix, ...args], input); }
+  // launchd may supply no UTF-8 locale; tmux otherwise replaces tabs and Unicode
+  // in its output, corrupting both the field separators and terminal contents.
+  tmux(args, input) { return this.execute(this.executable, ['-u', ...this.prefix, ...args], input); }
   async workspaces() {
     let output;
     try { output = await this.tmux(['list-sessions', '-F', '#{session_id}\t#{session_name}\t#{session_attached}']); }

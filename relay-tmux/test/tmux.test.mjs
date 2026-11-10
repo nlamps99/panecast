@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, writeFile, rm, symlink, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, symlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { TmuxBackend, tmuxKey, project, projectPath } from '../src/tmux.mjs';
+import { TmuxBackend, tmuxKey, project, projectPath, run } from '../src/tmux.mjs';
 import { createTmuxRelay, RelaySession } from '../src/server.mjs';
 import { PushService } from '../src/push.mjs';
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'panecast-tmux-'));
-  const backend = new TmuxBackend({ socketName: `panecast-test-${randomUUID()}`, configFile: '/dev/null' });
+  const backend = new TmuxBackend({ socketName: `panecast-test-${randomUUID()}`, configFile: '/dev/null', ...options });
   t.after(async () => { await backend.tmux(['kill-server']).catch(() => {}); await rm(directory, { recursive: true, force: true }); });
   return { directory, backend };
 }
@@ -47,6 +47,46 @@ test('Ctrl + Up arrives at the target program as the actual terminal escape sequ
   for (let attempt = 0; attempt < 20; attempt++) { if ((await backend.capture(target)).rows.join('\n').includes('READY')) break; await delay(50); }
   await backend.dispatch('surface.send_key', { ...target, key: 'ctrl-up' }); await delay(100);
   assert.match((await backend.capture(target)).rows.join('\n'), /27,91,49,59,53,65/);
+});
+test('a C locale preserves tmux identifiers, Unicode output and multiline input', async (t) => {
+  const { backend, directory } = await fixture(t, {
+    execute: (command, args, input) => run('env', ['LANG=C', 'LC_ALL=C', 'LC_CTYPE=C', command, ...args], input),
+  });
+  const reader = join(directory, 'reader.cjs'), received = join(directory, 'received');
+  await writeFile(received, '');
+  await writeFile(reader, `
+    const fs = require('node:fs');
+    process.stdin.setRawMode(true);
+    process.stdin.on('data', data => fs.appendFileSync(${JSON.stringify(received)}, data));
+    console.log('READY 中文输出');
+  `);
+  const workspace_id = (await backend.tmux(['new-session', '-d', '-P', '-F', '#{session_id}', '-s', '中文工作区', '--', process.execPath, reader])).trim();
+  const workspaces = await backend.workspaces();
+  assert.equal(workspaces[0].id, workspace_id);
+  assert.equal(workspaces[0].title, '中文工作区');
+  const pane = (await backend.surfaces(workspace_id))[0];
+  assert.match(pane.id, /^%\d+$/);
+  assert.ok(pane.cols > 0 && pane.height > 0);
+  assert.ok(Number.isFinite(pane.cursor.x) && Number.isFinite(pane.cursor.y));
+  const target = { workspace_id, surface_id: pane.id };
+  await backend.tmux(['select-pane', '-t', pane.id, '-T', '中文标题']);
+  assert.equal((await backend.surface(target)).title, '中文标题');
+  let output = '';
+  for (let attempt = 0; attempt < 40; attempt++) {
+    output = (await backend.capture(target)).rows.join('\n');
+    if (output.includes('READY 中文输出')) break;
+    await delay(50);
+  }
+  assert.match(output, /READY 中文输出/);
+  const text = '中文\t first line\n第二行\r';
+  await backend.dispatch('surface.send_text', { ...target, text });
+  let actual;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    actual = await readFile(received);
+    if (actual.length >= Buffer.byteLength(text)) break;
+    await delay(50);
+  }
+  assert.deepEqual(actual, Buffer.from(text));
 });
 test('project preview rejects traversal and symlinks escaping the project', async (t) => {
   const { directory } = await fixture(t);

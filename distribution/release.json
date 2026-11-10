@@ -1,11 +1,10 @@
 {
   "baseUrl": "https://ningzx.cn/panecast",
   "mac": {
-    "date": "2026-11-07",
+    "date": "2026-11-09",
     "notes": [
-      "支持 cmux 对话模式的结构化正文与工具记录读取",
-      "根据精确会话绑定定位 Codex 和 Claude Code 记录",
-      "保留当前终端发送、来源权限检查及旧客户端兼容"
+      "修复后台服务缺少 UTF-8 环境时 tmux 终端编号解析错误、无法输入的问题",
+      "保留中文工作区、终端标题与输出，验证中文和多行输入完整送达"
     ]
   },
   "android": {
@@ -29,6 +28,17 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.1",
+      "file": "panecast-cli-0.1.1.tgz",
+      "sha256": "5a32eb52bf0fe14ee856760e55c5c565251b72d966fbbaefb220aea097f4a2fc",
+      "date": "2026-11-07",
+      "notes": [
+        "支持 cmux 对话模式的结构化正文与工具记录读取",
+        "根据精确会话绑定定位 Codex 和 Claude Code 记录"
+      ]
+    },
     {
       "platform": "Android",
       "version": "0.1.0",
