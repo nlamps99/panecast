@@ -1,0 +1,35 @@
+{
+  "upstreamVersion": "0.65.2.2",
+  "appVersion": "0.65.2",
+  "revision": "r1",
+  "sourceCommit": "aec9a774bbafca28c0037e79c3513d00c7c979ba",
+  "upstreamCommit": "12023d89feb5425c766ba05e8d8e4cfc176e3991",
+  "publishedAt": "2026-11-10T14:24:49.545306+00:00",
+  "architecture": "arm64",
+  "minimumMacOS": "14.0",
+  "bundleIdentifier": "com.cmuxterm.app.debug.dr2.selfhost",
+  "serverOrigin": "https://ipcraft.drinklake.com",
+  "signing": "ad-hoc",
+  "notarized": false,
+  "dmg": {
+    "file": "cmux-dr2-0.65.2.2-r1-macos-arm64.dmg",
+    "size": 110908105,
+    "sha256": "a7de855a97cde1b8b37579ffbcf79204106fbc48c60ddaa2a8f3f99506e83d2d"
+  },
+  "archive": {
+    "file": "cmux-dr2-0.65.2.2-r1-macos-arm64.zip",
+    "size": 105296950,
+    "sha256": "d3c4bc280dcc992facb993f6d28de2c1408efc01f3977becca7dff2089b2f875"
+  },
+  "source": {
+    "file": "cmux-dr2-0.65.2.2-r1-source.tar.gz",
+    "size": 191303397,
+    "sha256": "fad454a1e1d938f32b323d95bf6bd4556d070b6291a4b81af548759bc203ec95"
+  },
+  "installer": {
+    "file": "install-cmux-dr2-0.65.2.2-r1-macos-arm64.sh",
+    "size": 5610,
+    "sha256": "62abf72e66f407f99239a738f5722cd1532a9501a0b23ee97e690b141e9cee93"
+  },
+  "bundledTerminalHelperCommit": "786ab29824b470de376a8030d60f1445dde241cc"
+}

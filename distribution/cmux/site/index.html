@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#131722">
+  <meta name="description" content="下载 cmux DR2 自建版。基于 cmux 稳定版，使用自己的账号服务连接多台 Mac。">
+  <title>cmux DR2 · 自己的终端，自己的连接</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <header class="wrap"><a class="brand" href="./"><span class="mark">›_</span>cmux <b>DR2</b></a><a class="back" href="../">Panecast 下载中心 ↗</a></header>
+  <main class="wrap">
+    <section class="hero">
+      <div><p class="eyebrow">NATIVE TERMINAL / SELF-HOSTED</p><h1>熟悉的终端，<br>连接自己的 <em>Mac。</em></h1><p class="lead">保留 cmux 的原生终端体验，账号和设备连接接入自己的 dr2 服务。让桌面上的工作，在另一台 Mac 上继续。</p><div class="badges"><span>Swift 原生应用</span><span>基于稳定版源码</span><span>Apple Silicon</span></div></div>
+      <div class="connection" aria-label="设备连接示意">
+        <div class="connection-head"><span class="lights">● ● ●</span><span>MY DEVICES</span><span class="online">● ONLINE</span></div>
+        <div class="device"><span class="device-icon">⌘</span><div><strong>这台 Mac</strong><small>你的终端与工作区</small></div><span class="status">本机</span></div>
+        <div class="route"><span></span><p>同一个自建账号</p><span></span></div>
+        <div class="device"><span class="device-icon">⌘</span><div><strong>另一台 Mac</strong><small>发现设备 · 建立连接</small></div><span class="status">远程</span></div>
+        <div class="server"><i></i><span>账号与连接服务</span><code>dr2 / ipcraft.drinklake.com</code></div>
+      </div>
+    </section>
+    <section class="download" id="download">
+      <div class="download-info"><p class="eyebrow">DOWNLOAD</p><h2>cmux DR2 自建版</h2><p><strong id="version">正在读取版本…</strong><span id="size"></span></p><p class="muted">macOS 14+ · Apple Silicon（M1 / M2 / M3 / M4 等）</p><p class="muted">独立安装为「cmux DR2」，使用独立的应用标识和账号存储。</p></div>
+      <div class="download-actions"><a class="primary" id="dmg" hidden download>下载 Mac 安装包 <span>↓</span></a><div class="links"><a id="archive" hidden download>ZIP 压缩包</a><a id="checksum" hidden>SHA-256</a><a id="source" hidden download>对应源代码</a></div><p class="notice">此自建包尚未经过 Apple 公证。若提示「已损坏」或「移到废纸篓」，请使用下方安装器。</p></div>
+    </section>
+    <p id="load-error" role="alert" hidden></p>
+    <section class="setup" id="install">
+      <div><p class="eyebrow">GET STARTED</p><h2>三步接入自己的设备。</h2></div>
+      <div class="steps">
+        <article><span>01</span><h3>安装应用</h3><p>打开 DMG，将 cmux DR2 拖进「应用程序」。如果系统拦截打开，使用下面的终端安装器。</p></article>
+        <article><span>02</span><h3>登录个人账号</h3><p>打开应用的账号登录界面，输入管理员为你建立的邮箱和密码。两台 Mac 使用同一个账号。</p></article>
+        <article><span>03</span><h3>允许设备连接</h3><p>打开「设置 → 设备」。被控制的 Mac 开启「让此 Mac 可被发现」；操作端开启「发现其他设备」，再在列表中选择它连接。</p></article>
+      </div>
+      <div class="installer"><div class="code-title"><span>终端安装器</span><button id="copy" type="button">复制命令</button></div><pre><code id="install-command">curl -fsSL https://ningzx.cn/panecast/cmux/install.sh | bash</code></pre><p>按 ⌘ + 空格，输入「终端」并回车，粘贴以上命令。安装器会校验固定 SHA-256 和应用签名完整性，再处理这份应用的下载隔离标记；升级时保留旧应用备份。</p></div>
+    </section>
+    <section class="details">
+      <article><p class="eyebrow">YOUR SERVER</p><h2>连接信息</h2><dl><div><dt>服务地址</dt><dd><a href="https://ipcraft.drinklake.com/projects">ipcraft.drinklake.com ↗</a></dd></div><div><dt>登录方式</dt><dd>个人账号与密码</dd></div><div><dt>传输方式</dt><dd>设备直连 / dr2 中继</dd></div></dl><p class="muted">管理后台使用管理员账号；应用使用个人设备账号。安装包内包含公开连接配置，登录凭据保存在本机的独立账号存储中。</p></article>
+      <article><p class="eyebrow">OPEN SOURCE</p><h2>版本与来源</h2><p class="muted">本版本是基于 <a id="upstream" href="https://github.com/manaflow-ai/cmux">cmux 开源项目</a>制作的独立自建发行版。此下载不属于 cmux 官方发布渠道。</p><p class="muted">下载同时提供对应源代码、修改内容和构建说明。原生客户端遵循 GPL-3.0-or-later；仓库中各部分的许可证见源码包中的 LICENSE。</p><div class="links"><a href="./release.json">发布记录 ↗</a><a href="./SHA256SUMS">文件校验清单 ↗</a><a href="./README.txt">离线安装说明 ↗</a></div></article>
+    </section>
+  </main>
+  <footer class="wrap"><span class="brand">cmux <b>DR2</b></span><span>自己的终端，自己的连接。</span><a href="../">返回下载中心 ↗</a></footer>
+</body>
+</html>

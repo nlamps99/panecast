@@ -1,0 +1,91 @@
+#!/bin/bash
+# cmux DR2 installer. The release archive and checksum are pinned at build time.
+set -euo pipefail
+
+readonly CMUX_DR2_RELEASE_VERSION='@VERSION@'
+readonly CMUX_DR2_RELEASE_ARCH='@ARCH@'
+readonly CMUX_DR2_RELEASE_FILE='@ARCHIVE@'
+readonly CMUX_DR2_RELEASE_SHA256='@SHA256@'
+readonly CMUX_DR2_RELEASE_BASE='@BASE_URL@'
+
+fail() { printf '安装未完成：%s\n' "$*" >&2; exit 1; }
+# Parse the complete installer before acting, even when streamed through curl | bash.
+main() {
+[[ "$(uname -s)" == Darwin ]] || fail '此安装器仅支持 macOS。'
+cmux_dr2_system_version=$(/usr/bin/sw_vers -productVersion)
+[[ "${cmux_dr2_system_version%%.*}" -ge 14 ]] || fail '需要 macOS 14 或更新版本。'
+cmux_dr2_machine=$(uname -m)
+if [[ "$CMUX_DR2_RELEASE_ARCH" == arm64 && "$cmux_dr2_machine" != arm64 ]]; then
+  [[ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || true)" == 1 ]] || fail '这个安装包需要 Apple Silicon（M 系列芯片）。'
+fi
+
+cmux_dr2_directory=${CMUX_DR2_INSTALL_DIR:-/Applications}
+if [[ -z "${CMUX_DR2_INSTALL_DIR:-}" && ! -w "$cmux_dr2_directory" ]]; then
+  cmux_dr2_directory="$HOME/Applications"
+fi
+[[ "$cmux_dr2_directory" == /* && "$cmux_dr2_directory" != / ]] || fail '安装目录必须是绝对路径，且不能是根目录。'
+mkdir -p "$cmux_dr2_directory"
+cmux_dr2_directory=$(cd "$cmux_dr2_directory" && pwd -P)
+[[ -w "$cmux_dr2_directory" ]] || fail '安装目录不可写。可设置 CMUX_DR2_INSTALL_DIR 指向自己的 Applications 目录。'
+cmux_dr2_target="$cmux_dr2_directory/cmux DR2.app"
+[[ ! -L "$cmux_dr2_target" ]] || fail '目标 cmux DR2.app 是符号链接，请先确认它指向的安装位置。'
+if [[ -e "$cmux_dr2_target" ]]; then
+  cmux_dr2_existing_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$cmux_dr2_target/Contents/Info.plist" 2>/dev/null || true)
+  [[ "$cmux_dr2_existing_id" == @BUNDLE_ID@ ]] || fail '同名应用不是 cmux DR2，已保留原文件。'
+  cmux_dr2_existing_executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$cmux_dr2_target/Contents/Info.plist")
+  if /usr/sbin/lsof -t -a -d txt "$cmux_dr2_target/Contents/MacOS/$cmux_dr2_existing_executable" >/dev/null 2>&1; then
+    fail '请先退出正在运行的 cmux DR2，再执行安装命令。'
+  fi
+fi
+
+printf '正在安装 cmux DR2 %s 到 %s\n' "$CMUX_DR2_RELEASE_VERSION" "$cmux_dr2_directory"
+printf '此预览版尚未经过 Apple 公证。安装器会校验发布文件，仅为这份 cmux DR2 清除下载隔离标记。\n'
+cmux_dr2_temporary=$(mktemp -d "${TMPDIR:-/tmp}/cmux-dr2-install.XXXXXX")
+cmux_dr2_stage=''
+cmux_dr2_backup=''
+cleanup() {
+  cmux_dr2_result=$?
+  if [[ "$cmux_dr2_result" -ne 0 && -n "$cmux_dr2_backup" && ! -e "$cmux_dr2_target" && -d "$cmux_dr2_backup/cmux DR2.app" ]]; then
+    mv "$cmux_dr2_backup/cmux DR2.app" "$cmux_dr2_target" || printf '请从 %s 恢复旧版应用。\n' "$cmux_dr2_backup" >&2
+  fi
+  if [[ -n "$cmux_dr2_stage" ]]; then rm -rf "$cmux_dr2_stage"; fi
+  rm -rf "$cmux_dr2_temporary"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+cmux_dr2_base=${CMUX_DR2_DOWNLOAD_BASE:-$CMUX_DR2_RELEASE_BASE}
+case "$cmux_dr2_base" in
+  https://*) cmux_dr2_protocols='=https' ;;
+  http://127.0.0.1:*|http://localhost:*) cmux_dr2_protocols='=http,https' ;;
+  *) fail '下载地址必须使用 HTTPS。' ;;
+esac
+curl --fail --show-error --location --retry 2 --connect-timeout 15 --max-time 900 \
+  --proto "$cmux_dr2_protocols" --proto-redir '=https' \
+  "${cmux_dr2_base%/}/$CMUX_DR2_RELEASE_FILE" --output "$cmux_dr2_temporary/release.zip"
+cmux_dr2_actual=$(/usr/bin/shasum -a 256 "$cmux_dr2_temporary/release.zip")
+cmux_dr2_actual=${cmux_dr2_actual%% *}
+[[ "$cmux_dr2_actual" == "$CMUX_DR2_RELEASE_SHA256" ]] || fail '下载文件的 SHA-256 不匹配，已停止安装。请重新下载。'
+/usr/bin/ditto -x -k "$cmux_dr2_temporary/release.zip" "$cmux_dr2_temporary/unpacked"
+cmux_dr2_source="$cmux_dr2_temporary/unpacked/cmux DR2.app"
+[[ -d "$cmux_dr2_source" && ! -L "$cmux_dr2_source" ]] || fail '安装包中缺少 cmux DR2.app。'
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$cmux_dr2_source/Contents/Info.plist")" == @BUNDLE_ID@ ]] || fail '应用标识不匹配。'
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$cmux_dr2_source/Contents/Info.plist")" == "$CMUX_DR2_RELEASE_VERSION" ]] || fail '应用版本不匹配。'
+/usr/bin/codesign --verify --deep --strict "$cmux_dr2_source" || fail '应用签名完整性校验失败。'
+
+# Prepare on the destination filesystem, verify, then replace the bundle by rename.
+cmux_dr2_stage=$(mktemp -d "$cmux_dr2_directory/.cmux DR2-install.XXXXXX")
+/usr/bin/ditto "$cmux_dr2_source" "$cmux_dr2_stage/cmux DR2.app"
+/usr/bin/codesign --verify --deep --strict "$cmux_dr2_stage/cmux DR2.app" || fail '安装副本校验失败。'
+/usr/bin/xattr -dr com.apple.quarantine "$cmux_dr2_stage/cmux DR2.app" || fail '无法清除该应用的隔离标记。'
+if [[ -e "$cmux_dr2_target" ]]; then
+  cmux_dr2_backup=$(mktemp -d "$cmux_dr2_directory/.cmux DR2-previous.XXXXXX")
+  mv "$cmux_dr2_target" "$cmux_dr2_backup/cmux DR2.app"
+fi
+mv "$cmux_dr2_stage/cmux DR2.app" "$cmux_dr2_target"
+printf '\n安装完成：%s\n' "$cmux_dr2_target"
+printf '在访达中打开 cmux DR2 即可。账号和电脑配对数据会保留。\n'
+if [[ -n "$cmux_dr2_backup" ]]; then printf '旧应用备份：%s/cmux DR2.app\n' "$cmux_dr2_backup"; fi
+}
+main "$@"
