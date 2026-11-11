@@ -103,3 +103,15 @@ available in the deployment staging backup for recovery.
 账号没有团队时自动创建个人团队（直接走 Stack Auth，自建服务没有 cmux web 后端），并选中。自建登录页把
 Stack Auth 错误（密码错误、格式错误、请求过多、网络）显示为可读文案，替代 `StackAuthError error 1`。
 认证模块团队测试 17 项、自建登录验证 3 项、9 语言本地化检查通过。大文件经 COS 发布，服务器端 SHA 一致。
+
+## r6（2026-11-11）
+
+源码提交 `b4bc39c32d863062e4e1b574e8e0ab51cde6153d`，构建号 `113.6`。修复同一账号的两台 Mac 互相发现不了：
+Release 版把 v2 设备身份（安装 ID、Ed25519 密钥）只存在数据保护钥匙串，而 ad-hoc 签名的 App 没有钥匙串访问组
+entitlement，写入一律返回 `-34018`（errSecMissingEntitlement）。v2 主机一直以 `persistence_failed` 重试，从未连接
+`/v2/` 登记设备或拉取设备目录。自建版改为存放在 `~/Library/Application Support/<bundle id>/cmux-iroh-v2/selfhost-keys/`
+（目录 0700、文件 0600），与上游开发版做法一致；登录凭证原本就有文件兜底，不变。
+
+验证：Release 构建通过；本机运行打包后的 r6，1 秒内 `session-ready`，设备目录与中继凭证刷新成功，iroh 端点经
+`ipcraft.drinklake.com` 中继上线。发布后 appcast、release.json、安装器与本地一致，COS 上 dmg、zip、源码完整下载
+SHA 一致，下载中心首页未改动。两台 Mac 之间的实际连接要等另一台升级 r6 后验证。
