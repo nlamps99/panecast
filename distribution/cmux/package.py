@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -140,7 +141,15 @@ origin 必须是 HTTPS 根地址；后面三项由你自己的服务部署提供
         dmg_path = output / f'{stem}-macos-arm64.dmg'
         run('/usr/bin/hdiutil', 'create', '-volname', f'cmux DR2 {version}', '-srcfolder', dmg_root,
             '-format', 'UDZO', '-imagekey', 'zlib-level=9', dmg_path)
-        run('/usr/bin/hdiutil', 'verify', dmg_path)
+        # A just-written image can be briefly held by Spotlight or malware
+        # scanning; hdiutil then reports EAGAIN instead of a checksum result.
+        for attempt in range(6):
+            verified = subprocess.run(['/usr/bin/hdiutil', 'verify', str(dmg_path)])
+            if verified.returncode == 0:
+                break
+            time.sleep(5)
+        else:
+            raise SystemExit('DMG verification failed')
     source_path = output / f'{stem}-source.tar.gz'
     shutil.copyfile(args.source, source_path)
     installer = (HERE / 'install.sh.in').read_text()
