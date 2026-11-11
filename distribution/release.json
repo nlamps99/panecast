@@ -246,5 +246,22 @@
       "桌面默认使用实体键盘，直接传递 Tab、方向键、Esc 与 Ctrl 组合键，收起手机按键栏",
       "支持中文选字、系统复制粘贴和编辑命令；对话中 Shift+Enter 换行，保留文件拖放与图片粘贴"
     ]
+  },
+  "windows": {
+    "version": "0.2.5",
+    "platform": "Windows",
+    "architecture": "x64",
+    "framework": "Tauri 2",
+    "file": "panecast-desktop-0.2.5-windows-x64-setup.exe",
+    "size": 4449384,
+    "sha256": "c88b28a57983efca2509822092ffc59b36a8e66ad3cb1cb96fd09c8d3d184809",
+    "minimumWindows": "10",
+    "sourceCommit": "8c44c63",
+    "date": "2026-11-11",
+    "notes": [
+      "首个 Windows 版本：与 Mac 桌面版相同的终端、Codex、工作区与收件箱",
+      "安装到当前用户，无需管理员权限；缺少 WebView2 时自动安装",
+      "终端内 Ctrl+V 粘贴，选中文字时 Ctrl+C 复制，未选中时 Ctrl+C 中断程序"
+    ]
   }
 }
