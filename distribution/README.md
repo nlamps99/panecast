@@ -36,6 +36,12 @@ python3 distribution/publish.py --desktop-only --host USER@SERVER --directory /a
 发布后重新下载三种产物核对哈希；若修改账号或连接功能，再核对 broker 的账号与撤销流程。
 安装说明在 `/panecast/mac-install.html`，同一文件作为离线说明放入 DMG。
 
+Windows 桌面版写在 `release.json` 的 `windows` 字段（`desktop-windows-x64.json` 元数据加日期与
+更新说明），随同一流程发布。安装程序取自 GitHub Actions `desktop windows` 工作流在 Windows 上构建并
+通过安装启动验证的产物，放入 `build/desktop/` 后核对 SHA-256。Mac 产物不在本机时，从已发布地址下载
+并按 `release.json` 校验后放入同一目录。只更新 Windows 时 `desktop` 字段保持不变，已发布的 Mac 文件
+不会被重新上传或改写。
+
 1. 修改 CLI 时递增 `relay-tmux/package.json` 版本，运行 `npm install --package-lock-only --ignore-scripts`。
 2. Android 按 `client/ANDROID.md` 构建。将其元数据更新到 `release.json`，旧版加入 `history`
    （每条包含 `platform`、`version`、`file`、`date`、`notes`）。不要改写同一版本的二进制。

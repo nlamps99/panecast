@@ -7,3 +7,4 @@
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
 
 #desktop-install-panel{border-radius:7px}#desktop-install-panel .code-top{font:11px var(--font);letter-spacing:0;gap:12px}#desktop-card .small-note a{color:var(--green)}
+.wide-card{grid-column:1/-1}.wide-card .download-button{max-width:380px}.wide-card .card-description{max-width:560px}

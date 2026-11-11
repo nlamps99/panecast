@@ -1,8 +1,9 @@
 # Panecast 桌面版
 
 复用手机客户端的终端、工作区、Codex 来源、收件箱、图片附件和项目文件功能。
-0.2.0 起使用 **Tauri 2 + Rust + 系统 WKWebView**，安装包不附带 Chromium 或 Node.js。
-安装包面向 macOS 13+ 的 Apple Silicon 电脑。目标电脑继续运行已有 relay / hub。
+0.2.0 起使用 **Tauri 2 + Rust + 系统 WebView**（Mac 上是 WKWebView，Windows 上是 WebView2），
+安装包不附带 Chromium 或 Node.js。Mac 安装包面向 macOS 13+ 的 Apple Silicon 电脑；0.2.5 起提供
+Windows 10 / 11 x64 安装程序。目标电脑继续运行已有 relay / hub。
 
 ## 使用
 
@@ -36,7 +37,18 @@ curl -fsSL https://ningzx.cn/panecast/install-desktop.sh | bash
 sudo，不自动启动应用。默认安装到 `/Applications`，没有写权限时使用 `~/Applications`。
 升级前需退出旧版；替换后保留旧应用备份，并打印备份路径。账号与配对数据不在应用包内。
 
-当前没有 Windows / Linux 安装包。桌面端支持连接期间的收件箱和应用内提醒，
+### Windows
+
+从下载页下载 `panecast-desktop-<版本>-windows-x64-setup.exe` 并运行。安装程序装到当前用户
+（`%LOCALAPPDATA%\Panecast`），不需要管理员权限；缺少 WebView2 时自动安装。预览版没有代码
+签名，SmartScreen 提示「Windows 已保护你的电脑」时点「更多信息」→「仍要运行」。卸载在
+「设置 → 应用」中进行，可选同时删除登录数据。
+
+Windows 上终端快捷键与 Windows Terminal 一致：Ctrl+V、Ctrl+Shift+V 粘贴；选中文字时 Ctrl+C
+复制，未选中时 Ctrl+C 发往终端；Ctrl+Shift+C 复制；Alt+F4 关闭窗口。其余 Ctrl 组合键发往终端。
+没有菜单栏，关闭窗口即退出应用。
+
+当前没有 Linux 安装包。桌面端支持连接期间的收件箱和应用内提醒，
 不接入 APNs，关闭应用后不会接收手机推送。
 
 ## 开发与验证
@@ -62,6 +74,15 @@ npm run verify:installer
 `npm start` 导出界面并启动开发客户端；`PANECAST_DESKTOP_ARCH=x64 npm run build`
 可以构建 Intel 包（先安装 Rust 的 `x86_64-apple-darwin` target），需在相应机器上验证后再发布。
 
+Windows 安装程序在 Windows 上用 `npm run build:windows` 构建（NSIS，按当前用户安装），产物与
+`desktop-windows-x64.json` 元数据同样放在 `build/desktop/`。GitHub Actions 的
+`desktop windows` 工作流在 Windows 机器上完成导出、桥接与原生测试、凭据管理器往返测试、
+clippy 和打包，然后用 `scripts/smoke-windows.mjs` 静默安装并启动真实应用：通过 WebView2
+调试端口确认页面在 `http://tauri.localhost` 加载，经原生桥完成带认证头的 HTTP 请求和凭据
+读写，确认不在允许范围内的地址被拒绝，截图后卸载。发布用的安装程序取自该工作流的产物。
+在 Mac 上可以用 `cargo clippy --target x86_64-pc-windows-msvc` 做类型检查（构建脚本需要
+`llvm-rc`）。
+
 Expo 的桌面构建使用 SPA 输出，普通 Web 演示继续使用静态输出。WKWebView 加载包内
 资源，Tauri IPC 只接受应用主窗口的调用，外部链接交给默认浏览器。
 React Native Web 在运行时生成样式表，React 同时使用内联样式。CSP 的 `style-src` 保留
@@ -71,7 +92,9 @@ React Native Web 在运行时生成样式表，React 同时使用内联样式。
 检查实际生成的 HTML 与 CSP；测试用 MockRuntime，不打开窗口、不访问账号或钥匙串。
 Rust 通过 reqwest 和 tokio-tungstenite 处理认证 HTTP/WebSocket，保持 Authorization
 请求头、子协议、hello 顺序和连接取消语义。终端数据使用有序 Tauri Channel 回传。
-复制操作使用系统剪贴板，确认弹窗使用 NSAlert，破坏性操作默认选择取消。
+复制操作使用系统剪贴板，确认弹窗在 Mac 上使用 NSAlert，在 Windows 上使用带自定义按钮的
+任务对话框（运行时解析，缺失时退回消息框）；破坏性操作默认选择取消。WKWebView 的应用来源是
+`tauri://localhost`，WebView2 是 `http://tauri.localhost`，原生命令只接受对应来源的主窗口。
 
 凭据文件位于 `~/Library/Application Support/Panecast/credentials-v2.enc`，使用随机
 nonce 的 AES-256-GCM 加密；密钥只保存在 macOS 钥匙串，读写串行化并原子替换。
@@ -79,6 +102,8 @@ nonce 的 AES-256-GCM 加密；密钥只保存在 macOS 钥匙串，读写串行
 配对和客户端 ID。首次访问可能需要允许系统钥匙串提示。迁移失败会明确报错并保留
 原文件，不会用空数据或明文替代；成功后仍保留旧加密文件，便于回退。
 旧 WebView 的显示偏好和本机历史缓存不迁移，连接后重新同步历史。
+Windows 上凭据文件位于 `%LOCALAPPDATA%\com.nzx.panecast.desktop\credentials-v2.enc`，格式相同；
+密钥保存在当前用户的 Windows 凭据管理器（普通凭据，仅限本机，不随漫游配置同步）。
 
 发布见 [下载页维护说明](../distribution/README.md)。Mac 预览版不具备自动更新功能，
 升级时下载新版本并替换应用，登录信息保留。

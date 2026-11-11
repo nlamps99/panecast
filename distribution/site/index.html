@@ -50,12 +50,16 @@
           </div>
           <p class="small-note">按 ⌘ + 空格，输入「终端」并回车；粘贴命令后回车。安装器会校验文件，再为这份预览版处理打开限制。<a href="#desktop-connect">账号与连接说明 ↗</a></p>
         </article>
-        <article class="download-card">
-          <div class="card-top"><span class="tag">原生终端 · 自建服务</span></div>
-          <h3>cmux DR2</h3><p class="card-description">基于 cmux 稳定版，使用自己的 dr2 账号服务。在熟悉的原生终端里连接其他 Mac。</p>
-          <a class="download-button" href="./cmux/"><span>下载 cmux 自建版</span><span aria-hidden="true">↗</span></a>
-          <p class="requirement">macOS 14 及以上 · Apple Silicon（M 系列芯片）</p>
-          <p class="small-note">独立安装为 cmux DR2。下载页提供安装说明、校验值和对应源代码。</p>
+        <article class="download-card" id="windows-card" hidden>
+          <div class="card-top"><span class="tag">桌面客户端 · 预览版</span></div>
+          <h3>Windows 桌面版</h3><p class="card-description">与 Mac 桌面版功能相同。在 Windows 电脑上连接你的 Mac，查看终端、输入指令和处理待办。</p>
+          <div class="version-row"><strong id="windows-version"></strong><span id="windows-size"></span></div>
+          <a class="download-button" id="windows-download" download><span>下载 Windows 安装程序 · EXE</span><span aria-hidden="true">↓</span></a>
+          <p class="requirement">Windows 10 / 11 · 64 位（x64） · 安装到当前用户，无需管理员权限</p>
+          <p class="small-note">预览版尚未代码签名。如果出现「Windows 已保护你的电脑」，点「更多信息」，再点「仍要运行」。安装程序会在需要时自动安装系统组件 WebView2。</p>
+          <div class="fine-links"><a id="windows-checksum">SHA-256 ↗</a><a href="#desktop-connect">账号与连接说明 ↗</a></div>
+          <div class="card-divider"></div>
+          <p class="small-note">终端内 Ctrl+V 粘贴；选中文字后 Ctrl+C 复制，未选中时 Ctrl+C 中断程序。也可以用 Ctrl+Shift+C / Ctrl+Shift+V。</p>
         </article>
         <article class="download-card android-card">
           <div class="card-top"><div class="platform-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 9h16v17H8zM11 5h10v4H11zM12 29v-3m8 3v-3M5 12v10m22-10v10M11 2l2 3m8-3-2 3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div><span class="tag">手机端</span></div>
@@ -85,6 +89,13 @@
           <div class="card-divider"></div>
           <div class="fine-links"><a href="#connect">安装后如何连接 ↗</a><a href="#manage">升级与卸载 ↗</a></div>
           <p class="small-note">首次运行 <code>panecast setup</code> 登录账号，这台电脑上的 tmux、cmux 和 Codex 自动接入，拥有全部权限。</p>
+        </article>
+        <article class="download-card wide-card">
+          <div class="card-top"><span class="tag">原生终端 · 自建服务</span></div>
+          <h3>cmux DR2</h3><p class="card-description">基于 cmux 稳定版，使用自己的 dr2 账号服务。在熟悉的原生终端里连接其他 Mac。</p>
+          <a class="download-button" href="./cmux/"><span>下载 cmux 自建版</span><span aria-hidden="true">↗</span></a>
+          <p class="requirement">macOS 14 及以上 · Apple Silicon（M 系列芯片）</p>
+          <p class="small-note">独立安装为 cmux DR2。下载页提供安装说明、校验值和对应源代码。</p>
         </article>
       </div>
       <p id="load-error" class="load-error" hidden>暂时无法读取版本信息，请刷新页面。Android 下载链接仍可使用。</p>
