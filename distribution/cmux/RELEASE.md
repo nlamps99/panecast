@@ -96,3 +96,10 @@ available in the deployment staging backup for recovery.
 
 注意：构建目录中的原始 App 的构建号是未打包的 `113`，运行后会被线上 appcast 当作旧版而自动更新覆盖；
 本地验证应使用打包后的 App。
+
+## r5（2026-11-11）
+
+源码提交 `139bd2599614de15fe023d841144314fe3d5c4ae`，构建号 `113.5`。设备发现与连接凭证按团队签发：自建版在已登录
+账号没有团队时自动创建个人团队（直接走 Stack Auth，自建服务没有 cmux web 后端），并选中。自建登录页把
+Stack Auth 错误（密码错误、格式错误、请求过多、网络）显示为可读文案，替代 `StackAuthError error 1`。
+认证模块团队测试 17 项、自建登录验证 3 项、9 语言本地化检查通过。大文件经 COS 发布，服务器端 SHA 一致。
