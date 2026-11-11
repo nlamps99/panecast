@@ -2,11 +2,13 @@ import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
+const verified = (artifact) => /^[a-f0-9]{64}$/.test(artifact.sha256) && Number.isSafeInteger(artifact.size) && artifact.size > 0;
+
 export function desktopArtifacts(desktop) {
   if (!desktop) return [];
   const artifacts = [desktop, desktop.archive, desktop.installer].filter(Boolean);
   for (const artifact of artifacts) {
-    if (!/^[\w.-]+\.(?:dmg|zip|sh)$/.test(artifact.file) || !/^[a-f0-9]{64}$/.test(artifact.sha256) || !Number.isSafeInteger(artifact.size) || artifact.size <= 0) {
+    if (!/^[\w.-]+\.(?:dmg|zip|sh)$/.test(artifact.file) || !verified(artifact)) {
       throw new Error('Set verified desktop artifact metadata in distribution/release.json first');
     }
   }
@@ -16,8 +18,17 @@ export function desktopArtifacts(desktop) {
   return artifacts;
 }
 
-export async function stageDesktopArtifacts(root, output, desktop) {
-  const artifacts = desktopArtifacts(desktop);
+/** The Windows desktop app ships as one versioned per-user installer. */
+export function windowsArtifacts(windows) {
+  if (!windows) return [];
+  if (!/^panecast-desktop-\d+\.\d+\.\d+-windows-x64-setup\.exe$/.test(windows.file) || !verified(windows)) {
+    throw new Error('Set verified Windows desktop metadata in distribution/release.json first');
+  }
+  return [windows];
+}
+
+export async function stageDesktopArtifacts(root, output, desktop, windows) {
+  const artifacts = [...desktopArtifacts(desktop), ...windowsArtifacts(windows)];
   // Verify all inputs before copying any to the release staging directory.
   for (const artifact of artifacts) {
     const bytes = await readFile(join(root, 'build/desktop', artifact.file));

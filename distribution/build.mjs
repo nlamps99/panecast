@@ -45,7 +45,7 @@ const apkPath = join(root, 'client/build/android', androidFile);
 if (await digest(apkPath) !== settings.android.sha256) throw new Error('Android APK checksum mismatch');
 await copyFile(apkPath, join(output, androidFile));
 await copyFile(apkPath, join(output, 'panecast-latest.apk'));
-const desktopArtifacts = await stageDesktopArtifacts(root, output, settings.desktop);
+const desktopArtifacts = await stageDesktopArtifacts(root, output, settings.desktop, settings.windows);
 for (const artifact of [mac, settings.android]) await writeFile(join(output, artifact.file + '.sha256'), `${artifact.sha256}  ${artifact.file}\n`);
 const template = await readFile(join(root, 'distribution/install.sh.in'), 'utf8');
 const values = { CLI_VERSION: mac.version, CLI_FILE: mac.file, CLI_SHA: mac.sha256, NODE_VERSION: settings.node.version,
@@ -56,7 +56,7 @@ const installer = template.replace(/__([A-Z0-9_]+)__/g, (_, key) => { if (!value
 await writeFile(join(output, 'install.sh'), installer, { mode: 0o755 });
 await cp(join(root, 'distribution/site'), output, { recursive: true });
 await copyFile(join(root, 'client/assets/images/icon.png'), join(output, 'icon.png'));
-await writeFile(join(output, 'releases.json'), JSON.stringify({ schemaVersion: 1, ...(settings.downloadBase ? { downloadBase: settings.downloadBase } : {}), android: settings.android, mac, ...(settings.desktop ? { desktop: settings.desktop } : {}), history: settings.history }, null, 2) + '\n');
+await writeFile(join(output, 'releases.json'), JSON.stringify({ schemaVersion: 1, ...(settings.downloadBase ? { downloadBase: settings.downloadBase } : {}), android: settings.android, mac, ...(settings.desktop ? { desktop: settings.desktop } : {}), ...(settings.windows ? { windows: settings.windows } : {}), history: settings.history }, null, 2) + '\n');
 
 const tap = join(root, 'build/distribution/tap');
 await mkdir(join(tap, 'Formula'), { recursive: true });

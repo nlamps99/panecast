@@ -18,7 +18,7 @@ args = parser.parse_args()
 public = ROOT / ('build/distribution/desktop-public' if args.desktop_only else 'build/distribution/public')
 manifest = json.loads((public / 'releases.json').read_text())
 desktop = manifest.get('desktop', {})
-desktop_artifacts = [item for item in [desktop, desktop.get('archive'), desktop.get('installer')] if item]
+desktop_artifacts = [item for item in [desktop, desktop.get('archive'), desktop.get('installer'), manifest.get('windows')] if item]
 for item in (desktop_artifacts if args.desktop_only else [manifest['android'], manifest['mac'], *desktop_artifacts]):
     actual = hashlib.sha256((public / item['file']).read_bytes()).hexdigest()
     if actual != item['sha256']:
@@ -83,7 +83,7 @@ if desktop_only:
     import json
     before = json.loads((destination / 'releases.json').read_text())
     after = json.loads((unpacked / 'releases.json').read_text())
-    if {k:v for k,v in before.items() if k != 'desktop'} != {k:v for k,v in after.items() if k != 'desktop'}:
+    if {k:v for k,v in before.items() if k not in ('desktop', 'windows')} != {k:v for k,v in after.items() if k not in ('desktop', 'windows')}:
         raise SystemExit('Other releases changed during this build. Prepare the desktop release again.')
 # Versioned packages first. Old packages stay available for existing links.
 for source in unpacked.iterdir():
