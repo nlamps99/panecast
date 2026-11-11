@@ -1,8 +1,12 @@
-// Installs the built Windows package silently, starts the installed app and
-// checks it through WebView2's DevTools port: the bundled page loads at the
-// app origin, and the native bridge accepts its commands (authenticated HTTP
-// transport, credential vault backed by Credential Manager). Then uninstalls.
+// End-to-end check of the built Windows package on a Windows machine:
+// installs it silently, starts the installed app, and pairs it through its own
+// interface (UI Automation types a pairing link) with a stand-in relay served
+// here. That exercises the native bridge from the app origin: authenticated
+// HTTP registration, the credential vault, and the WebSocket with its
+// Authorization header, subprotocol and hello. A restart must reconnect with
+// the stored credentials alone. Then the app is uninstalled.
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -15,28 +19,84 @@ const metadata = JSON.parse(readFileSync(join(output, 'desktop-windows-x64.json'
 const results = join(output, 'smoke');
 mkdirSync(results, { recursive: true });
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+async function until(check, timeout, message) {
+  for (const deadline = Date.now() + timeout; !(await check());) {
+    if (Date.now() > deadline) throw new Error(message);
+    await wait(500);
+  }
+}
 
+// ---- Stand-in relay: registration over HTTP, then the WebSocket protocol.
+const RELAY = 'smoke-relay', CODE = 'smoke-code', DEVICE = 'smoke-device', TOKEN = 'smoke-token-7f3a';
+const relay = { registrations: [], sockets: [], requests: [] };
+const server = createServer((request, response) => {
+  let body = '';
+  request.on('data', (chunk) => { body += chunk; });
+  request.on('end', () => {
+    relay.requests.push(`${request.method} ${request.url}`);
+    let reply = { ok: true };
+    if (request.method === 'POST' && request.url === '/v1/devices/me/register') {
+      relay.registrations.push({ body: JSON.parse(body || '{}'), contentType: request.headers['content-type'] ?? null });
+      reply = { device_id: DEVICE, token: TOKEN };
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(reply));
+  });
+});
+function frame(text) {
+  const payload = Buffer.from(text);
+  const header = payload.length < 126 ? Buffer.from([0x81, payload.length])
+    : payload.length < 65536 ? Buffer.from([0x81, 126, payload.length >> 8, payload.length & 255])
+      : Buffer.concat([Buffer.from([0x81, 127]), (() => { const size = Buffer.alloc(8); size.writeBigUInt64BE(BigInt(payload.length)); return size; })()]);
+  return Buffer.concat([header, payload]);
+}
+server.on('upgrade', (request, socket) => {
+  const record = { path: request.url, authorization: request.headers.authorization ?? null,
+    protocol: request.headers['sec-websocket-protocol'] ?? null, hello: null, helloAfterMs: null, methods: [] };
+  relay.sockets.push(record);
+  const accept = createHash('sha1').update(`${request.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+  socket.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade',
+    `Sec-WebSocket-Accept: ${accept}`, 'Sec-WebSocket-Protocol: cmuxremote.v1', '', ''].join('\r\n'));
+  const opened = Date.now();
+  let buffer = Buffer.alloc(0);
+  socket.on('error', () => {});
+  socket.on('data', (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (;;) {
+      if (buffer.length < 2) return;
+      const opcode = buffer[0] & 15;
+      let length = buffer[1] & 127, offset = 2;
+      if (length === 126) { if (buffer.length < 4) return; length = buffer.readUInt16BE(2); offset = 4; }
+      else if (length === 127) { if (buffer.length < 10) return; length = Number(buffer.readBigUInt64BE(2)); offset = 10; }
+      const masked = buffer[1] & 128;
+      if (buffer.length < offset + (masked ? 4 : 0) + length) return;
+      const mask = masked ? buffer.subarray(offset, offset + 4) : null;
+      offset += masked ? 4 : 0;
+      const payload = Buffer.from(buffer.subarray(offset, offset + length));
+      if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+      buffer = buffer.subarray(offset + length);
+      if (opcode === 8) { socket.end(); return; }
+      if (opcode === 9) { socket.write(Buffer.concat([Buffer.from([0x8a, payload.length]), payload])); continue; }
+      if (opcode !== 1) continue;
+      const message = JSON.parse(payload.toString());
+      if (!record.hello) { record.hello = message; record.helloAfterMs = Date.now() - opened; continue; }
+      if (message.type === 'ping') { socket.write(frame(JSON.stringify({ type: 'pong' }))); continue; }
+      if (message.id === undefined) continue;
+      record.methods.push(message.method);
+      const result = message.method === 'workspace.list' ? { workspaces: [] } : {};
+      socket.write(frame(JSON.stringify({ id: message.id, ok: true, result })));
+    }
+  });
+});
+await new Promise((done) => server.listen(0, '127.0.0.1', done));
+const pairing = `cmux://pair?server=http://127.0.0.1:${server.address().port}&relay=${RELAY}&code=${CODE}`;
+
+// ---- Install, start, pair, restart.
 execFileSync(join(output, metadata.file), ['/S'], { stdio: 'inherit' });
 const installation = join(process.env.LOCALAPPDATA, 'Panecast');
 const program = readdirSync(installation).find((name) => /\.exe$/i.test(name) && !/^uninstall/i.test(name));
 if (!program) throw new Error(`No program installed in ${installation}`);
-
-const server = createServer((request, response) => {
-  response.writeHead(200, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({ path: request.url, authorization: request.headers.authorization ?? null }));
-});
-await new Promise((done) => server.listen(0, '127.0.0.1', done));
-const port = 9333;
-// The app sets its own WebView2 browser arguments, so open the DevTools port
-// through WebView2's per-app policy as well (CI machine only; removed below).
-const policy = 'HKCU\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
-execFileSync('reg', ['add', policy, '/v', program, '/t', 'REG_SZ', '/d', `--remote-debugging-port=${port}`, '/f'], { stdio: 'inherit' });
-const app = spawn(join(installation, program), [], {
-  env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
-  detached: true, stdio: 'ignore',
-});
-let exited = null;
-app.on('exit', (code) => { exited = code; });
+const vaultFile = join(process.env.LOCALAPPDATA, 'com.nzx.panecast.desktop', 'credentials-v2.enc');
 
 function screenshot(name) {
   const script = `Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -46,89 +106,68 @@ $i=New-Object System.Drawing.Bitmap $b.Width,$b.Height
 $i.Save('${join(results, name).replace(/'/g, "''")}')`;
   try { execFileSync('powershell', ['-NoProfile', '-Command', script], { stdio: 'inherit' }); } catch { console.log('Screenshot unavailable'); }
 }
+function launch() {
+  const child = spawn(join(installation, program), [], { detached: true, stdio: 'ignore' });
+  child.exited = null;
+  child.on('exit', (code) => { child.exited = code; });
+  return child;
+}
+function quit(child) {
+  try { execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already closed */ }
+}
+const mainWindow = (child) => {
+  try {
+    return execFileSync('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${child.pid}).MainWindowTitle`], { encoding: 'utf8' }).trim();
+  } catch { return ''; }
+};
 
-let report;
+const problems = [];
+const check = (ok, name) => { if (!ok) problems.push(name); };
+let app = launch();
 try {
-  let page;
-  let last = 'no response';
-  for (const deadline = Date.now() + 90_000; !page;) {
-    if (exited !== null) throw new Error(`The app exited with code ${exited}`);
-    if (Date.now() > deadline) {
-      console.log('Last DevTools response:', last);
-      try {
-        execFileSync('powershell', ['-NoProfile', '-Command',
-          "Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | Select-Object -First 3 -ExpandProperty CommandLine"], { stdio: 'inherit' });
-      } catch { /* diagnostics only */ }
-      throw new Error('The app page did not appear');
-    }
-    try {
-      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      last = JSON.stringify(targets.map(({ type, url }) => ({ type, url })));
-      page = targets.find((target) => target.type === 'page' && target.url.startsWith('http://tauri.localhost/'));
-    } catch (error) { last = String(error.cause ?? error); }
-    if (!page) await wait(1000);
-  }
-  const socket = new WebSocket(page.webSocketDebuggerUrl);
-  await new Promise((done, fail) => { socket.onopen = done; socket.onerror = fail; });
-  const pending = new Map();
-  let next = 0;
-  socket.onmessage = ({ data }) => { const message = JSON.parse(data); pending.get(message.id)?.(message); pending.delete(message.id); };
-  const evaluate = (expression) => new Promise((done, fail) => {
-    const id = ++next;
-    pending.set(id, (message) => {
-      const details = message.result?.exceptionDetails;
-      if (message.error || details) fail(new Error(JSON.stringify(message.error ?? details.exception?.description ?? details)));
-      else done(message.result.result.value);
-    });
-    socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
-  });
-  let text = '';
-  for (const deadline = Date.now() + 60_000; text.trim().length < 2;) {
-    if (Date.now() > deadline) throw new Error('The interface did not render');
-    text = await evaluate('document.body ? document.body.innerText : ""');
-    if (text.trim().length < 2) await wait(1000);
-  }
-  await wait(3000);
+  await until(() => app.exited === null && mainWindow(app) === 'Panecast', 60_000, 'The app window did not appear');
+  await wait(5000);
   screenshot('launch.png');
-  report = await evaluate(`(async () => {
-    const desktop = window.panecastDesktop;
-    const response = await desktop.request('smoke-request', 'http://127.0.0.1:${server.address().port}/v1/health',
-      { method: 'GET', authorization: 'Bearer smoke-token' });
-    const previous = await desktop.getSecret('panecast.pairing.v1');
-    await desktop.setSecret('panecast.pairing.v1', 'smoke-value');
-    const stored = await desktop.getSecret('panecast.pairing.v1');
-    if (previous === null) await desktop.deleteSecret('panecast.pairing.v1');
-    else await desktop.setSecret('panecast.pairing.v1', previous);
-    const restored = await desktop.getSecret('panecast.pairing.v1');
-    let rejected = false;
-    try { await desktop.request('smoke-reject', 'http://example.com/v1/health', { method: 'GET' }); } catch { rejected = true; }
-    return { origin: location.origin, userAgent: navigator.userAgent, status: response.status, body: JSON.parse(response.body),
-      stored, restored: restored === previous, rejected, text: document.body.innerText.slice(0, 600) };
-  })()`);
-  const problems = [];
-  if (report.origin !== 'http://tauri.localhost') problems.push('origin');
-  if (report.status !== 200 || report.body.path !== '/v1/health' || report.body.authorization !== 'Bearer smoke-token') problems.push('transport');
-  if (report.stored !== 'smoke-value' || !report.restored) problems.push('vault');
-  if (!report.rejected) problems.push('transport scope');
-  if (!/\bWindows\b/.test(report.userAgent)) problems.push('platform detection');
-  if (exited !== null) problems.push('app exited');
-  writeFileSync(join(results, 'result.json'), `${JSON.stringify({ ...report, program, problems }, null, 2)}\n`);
-  console.log(JSON.stringify({ ...report, program, problems }, null, 2));
-  socket.close();
-  if (problems.length) throw new Error(`Smoke test failed: ${problems.join(', ')}`);
+  execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/smoke-windows-type.ps1'),
+    '-ProcessId', String(app.pid), '-Text', pairing], { stdio: 'inherit' });
+  await until(() => relay.sockets.some((socket) => socket.hello), 60_000, 'The app did not pair and connect');
+  await wait(3000);
+  screenshot('paired.png');
+  const [registration] = relay.registrations;
+  check(registration?.body.relay_id === RELAY && registration.body.pairing_code === CODE && registration.body.client_id, 'registration');
+  const first = relay.sockets.find((socket) => socket.hello);
+  check(first.path === `/v1/ws?relay_id=${RELAY}`, 'socket path');
+  check(first.authorization === `Bearer ${TOKEN}`, 'socket authorization');
+  check(first.protocol?.split(/,\s*/).includes('cmuxremote.v1'), 'socket subprotocol');
+  check(first.hello.deviceId === DEVICE && first.hello.protocolVersion === 1, 'hello');
+  check(existsSync(vaultFile) && !readFileSync(vaultFile).includes(TOKEN), 'encrypted vault');
+
+  // The stored credentials alone must bring the connection back after a restart.
+  quit(app);
+  await until(() => app.exited !== null, 15_000, 'The app did not quit');
+  const before = relay.sockets.length;
+  app = launch();
+  await until(() => relay.sockets.slice(before).some((socket) => socket.hello), 60_000, 'The app did not reconnect after a restart');
+  const again = relay.sockets.slice(before).find((socket) => socket.hello);
+  check(again.authorization === `Bearer ${TOKEN}` && again.hello.deviceId === DEVICE, 'reconnect with stored credentials');
+  check(relay.registrations.length === 1, 'no second pairing');
+  await wait(3000);
+  screenshot('restarted.png');
+  check(app.exited === null, 'app still running');
 } catch (error) {
   screenshot('failure.png');
-  throw error;
+  problems.push(error.message);
 } finally {
+  quit(app);
   server.close();
-  try { execFileSync('reg', ['delete', policy, '/v', program, '/f'], { stdio: 'ignore' }); } catch { /* already removed */ }
-  try { execFileSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already closed */ }
 }
+const report = { program, problems, requests: relay.requests,
+  sockets: relay.sockets.map(({ authorization, hello, ...rest }) => ({ ...rest, authorized: authorization === `Bearer ${TOKEN}`, hello: Boolean(hello) })) };
+writeFileSync(join(results, 'result.json'), `${JSON.stringify(report, null, 2)}\n`);
+console.log(JSON.stringify(report, null, 2));
+if (problems.length) throw new Error(`Smoke test failed: ${problems.join('; ')}`);
 
 await wait(2000);
 execFileSync(join(installation, 'uninstall.exe'), ['/S'], { stdio: 'inherit' });
-for (const deadline = Date.now() + 30_000; existsSync(join(installation, program));) {
-  if (Date.now() > deadline) throw new Error('Uninstall left the program in place');
-  await wait(1000);
-}
-console.log('Installed, launched, verified and uninstalled', metadata.file);
+await until(() => !existsSync(join(installation, program)), 30_000, 'Uninstall left the program in place');
+console.log('Installed, paired, reconnected and uninstalled', metadata.file);
