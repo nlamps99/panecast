@@ -18,6 +18,9 @@ from xml.sax.saxutils import escape, quoteattr
 
 HERE = Path(__file__).resolve().parent
 FEED_URL = 'https://ningzx.cn/panecast/cmux/appcast.xml'
+# Installers, archives and source are served from object storage; pages and
+# metadata stay on the web server.
+DOWNLOAD_BASE = 'https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast/cmux'
 # Updates are signed with the dr2 key. The private key never enters the
 # repository, the source archive or the public directory.
 DEFAULT_SPARKLE_KEY = Path.home() / '.cmuxremote/dr2-release/sparkle-ed25519-private.key'
@@ -232,7 +235,7 @@ origin 必须是 HTTPS 根地址；后面三项由你自己的服务部署提供
     shutil.copyfile(args.source, source_path)
     installer = (HERE / 'install.sh.in').read_text()
     values = {'VERSION': version, 'ARCH': 'arm64', 'ARCHIVE': zip_path.name,
-              'SHA256': sha256(zip_path), 'BASE_URL': base, 'BUNDLE_ID': bundle_id}
+              'SHA256': sha256(zip_path), 'BASE_URL': DOWNLOAD_BASE, 'BUNDLE_ID': bundle_id}
     for key, value in values.items():
         installer = installer.replace(f'@{key}@', value)
     if re.search(r'@[A-Z_]+@', installer):
@@ -255,13 +258,14 @@ origin 必须是 HTTPS 根地址；后面三项由你自己的服务部署提供
                 'serverOrigin': profile['origin'], 'signing': 'ad-hoc', 'notarized': False, **artifacts}
     manifest['bundledTerminalHelperCommit'] = '786ab29824b470de376a8030d60f1445dde241cc'
     manifest['bundleVersion'] = bundle_version
+    manifest['downloadBase'] = DOWNLOAD_BASE
     manifest['update'] = {'feed': args.test_feed_url or FEED_URL, 'edSignature': signature, 'notes': args.notes}
     if args.test_feed_url:
         manifest['testFeedOnly'] = True
     (output / 'appcast.xml').write_text(appcast(
         title=f'cmux DR2 {version} {args.revision}', bundle_version=bundle_version,
         display_version=f'{version} {args.revision}', notes=args.notes,
-        url=f'{base}/{zip_path.name}', length=zip_path.stat().st_size, signature=signature))
+        url=f'{DOWNLOAD_BASE}/{zip_path.name}', length=zip_path.stat().st_size, signature=signature))
     (output / 'release.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     (output / 'SHA256SUMS').write_text(''.join(item['sha256'] + '  ' + item['file'] + '\n' for item in artifacts.values()))
     print(json.dumps(manifest, ensure_ascii=False, indent=2))

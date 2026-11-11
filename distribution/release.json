@@ -1,5 +1,6 @@
 {
   "baseUrl": "https://ningzx.cn/panecast",
+  "downloadBase": "https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast",
   "mac": {
     "date": "2026-11-11",
     "notes": [

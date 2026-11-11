@@ -35,14 +35,37 @@ for item in artifacts:
         raise SystemExit('Artifact does not match the manifest: ' + item['file'])
 if (public / 'install.sh').read_bytes() != (public / manifest['installer']['file']).read_bytes():
     raise SystemExit('Installer alias differs from versioned installer')
+# Upload and verify the large files on object storage before any page or
+# feed links to them.
+if manifest.get('downloadBase'):
+    import sys
+    sys.path.insert(0, str(ROOT / 'distribution'))
+    import cos
+    from urllib.parse import urlparse
+    location = urlparse(manifest['downloadBase'])
+    if location.scheme != 'https' or location.netloc != cos.HOST:
+        raise SystemExit('downloadBase must be the configured COS bucket over HTTPS')
+    for key in ['dmg', 'archive', 'source']:
+        print(cos.upload(location.path.strip('/'), str(public / manifest[key]['file'])), manifest[key]['file'])
+ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', args.host]
+# Artifacts already published with the same content are not sent again; the
+# server checks them in place against the manifest.
+names = [item['file'] for item in artifacts]
+query = ('import pathlib,hashlib,json; root=pathlib.Path(' + repr(args.directory) + ')/"cmux"; '
+         'print(json.dumps({n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in ' + repr(names) + ' if (root/n).is_file()}))')
+published = json.loads(subprocess.check_output([*ssh, 'python3 -c ' + shlex.quote(query)], text=True))
+for item in artifacts:
+    if item['file'] in published and published[item['file']] != item['sha256']:
+        raise SystemExit('Refusing to replace an immutable artifact: ' + item['file'])
 archive = public.parent / 'cmux-upload.tar'
 with tarfile.open(archive, 'w') as tar:
     for path in sorted(public.iterdir()):
         if not path.is_file() or path.is_symlink():
             raise SystemExit('Only regular release files belong in the public directory')
+        if path.name in published:
+            continue
         tar.add(path, arcname='cmux/' + path.name)
     tar.add(ROOT / 'distribution/site/index.html', arcname='index.html')
-ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', args.host]
 stage = '/tmp/cmux-dr2-publish-' + uuid.uuid4().hex
 subprocess.run([*ssh, 'mkdir -m 700 ' + shlex.quote(stage)], check=True)
 subprocess.run(['scp', '-q', str(archive), args.host + ':' + stage + '/upload.tar'], check=True)
@@ -67,8 +90,8 @@ artifacts=[release[k] for k in ['dmg','archive','source','installer']]
 if digest(root/'index.html') not in [previous,digest(unpacked/'index.html')]:
     raise SystemExit('Live download index changed; review before publishing')
 for item in artifacts:
-    p=source/item['file']
-    if p.parent != source or digest(p)!=item['sha256'] or p.stat().st_size!=item['size']:
+    p=source/item['file'] if (source/item['file']).exists() else target/item['file']
+    if p.parent not in (source, target) or digest(p)!=item['sha256'] or p.stat().st_size!=item['size']:
         raise SystemExit('Uploaded artifact mismatch')
     if (target/p.name).exists() and digest(target/p.name)!=item['sha256']:
         raise SystemExit('Refusing to replace an immutable artifact: '+p.name)
@@ -83,7 +106,7 @@ immutable={item['file'] for item in artifacts}
 def publish(p,destination):
     temporary=destination.with_name('.'+destination.name+'.new')
     shutil.copyfile(p,temporary);os.chmod(temporary,0o644);os.replace(temporary,destination)
-for name in sorted(immutable): publish(source/name,target/name)
+for name in sorted(n for n in immutable if (source/n).exists()): publish(source/name,target/name)
 # Publish metadata only after every referenced artifact exists.
 for p in sorted(source.iterdir()):
     if p.name not in immutable and p.name not in ['index.html','release.json']:

@@ -49,3 +49,15 @@ SHA-256 `1ad5ae565927e0ee1981f5a2cf2f080cf3b43473555cc211e696fa4d4037b78b`。Hom
 0.1.6，0.1.5 保留可下载；公网安装脚本在临时目录安装得到 0.1.6，relay 签名有效。远程暂存
 `/tmp/panecast-publish-65af979339a1414b94e0652a8b45f392` 保留以便回滚。broker 未改动，本机日常
 网关和 cmux relay 未重启。
+
+## CLI 0.1.7 与 COS 下载上线记录
+
+源码提交 `b3cc7b7`（每个 cmux 应用各一个来源）及之后的文档提交。包 `panecast-cli-0.1.7.tgz`，SHA-256
+`5912d760f044a69c8fc2ec23de3b54bc3575d6427d48b1568680f4f763050e33`，内含 relay SHA-256
+`d44fd70315122e55fb682faa404a899f99c6db17d308f25ef183dfbea7f9c09d`。网关 107 项、relay 42 项测试通过；以发布产物
+实测正式版与 DR2 r3 同时在线，DR2 退出后显示「没有找到正在运行的 cmux」。
+
+下载改走 COS：ningzx.cn 实测约 0.7 MB/s，COS 约 7.7 MB/s。`distribution/cos.py` 只写 `panecast/` 前缀、对象级
+公开读、`x-cos-meta-sha256` 记录 SHA，拒绝以不同内容覆盖；两个发布脚本在更新元数据前先上传并校验。
+`releases.json` 与 DR2 `release.json` 的 `downloadBase` 指向 COS，页面、安装脚本、Homebrew 配方与 appcast
+使用它；历史版本、页面、校验和与元数据仍在 ningzx.cn。公网安装命令实测 14 秒装好 0.1.7。

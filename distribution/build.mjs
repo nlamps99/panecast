@@ -49,19 +49,21 @@ const desktopArtifacts = await stageDesktopArtifacts(root, output, settings.desk
 for (const artifact of [mac, settings.android]) await writeFile(join(output, artifact.file + '.sha256'), `${artifact.sha256}  ${artifact.file}\n`);
 const template = await readFile(join(root, 'distribution/install.sh.in'), 'utf8');
 const values = { CLI_VERSION: mac.version, CLI_FILE: mac.file, CLI_SHA: mac.sha256, NODE_VERSION: settings.node.version,
-  NODE_ARM64_SHA: settings.node['darwin-arm64'], NODE_X64_SHA: settings.node['darwin-x64'], BASE_URL: settings.baseUrl };
+  NODE_ARM64_SHA: settings.node['darwin-arm64'], NODE_X64_SHA: settings.node['darwin-x64'],
+  // The installer downloads the package and runtime from object storage when configured.
+  BASE_URL: settings.downloadBase ?? settings.baseUrl };
 const installer = template.replace(/__([A-Z0-9_]+)__/g, (_, key) => { if (!values[key]) throw new Error(`Unknown template field ${key}`); return values[key]; });
 await writeFile(join(output, 'install.sh'), installer, { mode: 0o755 });
 await cp(join(root, 'distribution/site'), output, { recursive: true });
 await copyFile(join(root, 'client/assets/images/icon.png'), join(output, 'icon.png'));
-await writeFile(join(output, 'releases.json'), JSON.stringify({ schemaVersion: 1, android: settings.android, mac, ...(settings.desktop ? { desktop: settings.desktop } : {}), history: settings.history }, null, 2) + '\n');
+await writeFile(join(output, 'releases.json'), JSON.stringify({ schemaVersion: 1, ...(settings.downloadBase ? { downloadBase: settings.downloadBase } : {}), android: settings.android, mac, ...(settings.desktop ? { desktop: settings.desktop } : {}), history: settings.history }, null, 2) + '\n');
 
 const tap = join(root, 'build/distribution/tap');
 await mkdir(join(tap, 'Formula'), { recursive: true });
 const formula = `class Panecast < Formula
   desc "Connect your Mac's terminals to Panecast"
   homepage "${settings.baseUrl}/"
-  url "${settings.baseUrl}/${mac.file}"
+  url "${settings.downloadBase ?? settings.baseUrl}/${mac.file}"
   version "${mac.version}"
   sha256 "${mac.sha256}"
   license "MIT"
@@ -70,7 +72,7 @@ const formula = `class Panecast < Formula
   depends_on "tmux"
 
   resource "node-runtime" do
-    url "${settings.baseUrl}/node-v${settings.node.version}-darwin-#{Hardware::CPU.arm? ? 'arm64' : 'x64'}.tar.gz"
+    url "${settings.downloadBase ?? settings.baseUrl}/node-v${settings.node.version}-darwin-#{Hardware::CPU.arm? ? 'arm64' : 'x64'}.tar.gz"
     sha256 Hardware::CPU.arm? ? "${settings.node['darwin-arm64']}" : "${settings.node['darwin-x64']}"
   end
 

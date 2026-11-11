@@ -55,7 +55,7 @@ byId('copy-desktop-install').addEventListener('click', async () => {
   }
 });
 
-function releaseRow(release, platform) {
+function releaseRow(release, platform, files = '.') {
   const item = document.createElement('article'); item.className = 'release-item';
   const meta = document.createElement('div'); meta.className = 'release-meta';
   const title = document.createElement('strong'); title.textContent = `${platform} ${release.version}${release.versionCode ? ` · build ${release.versionCode}` : ''}`;
@@ -64,7 +64,7 @@ function releaseRow(release, platform) {
   const list = document.createElement('ul');
   for (const note of release.notes ?? []) { const line = document.createElement('li'); line.textContent = note; list.append(line); }
   item.append(list);
-  const link = document.createElement('a'); link.href = `./${release.file}`; link.textContent = '下载此版本 ↗'; item.append(link);
+  const link = document.createElement('a'); link.href = `${files}/${release.file}`; link.textContent = '下载此版本 ↗'; item.append(link);
   return item;
 }
 
@@ -73,20 +73,22 @@ async function loadReleases() {
   if (!response.ok) throw new Error('Cannot load releases');
   const data = await response.json();
   const base = new URL('./', location.href).href.replace(/\/$/, '');
+  // Current packages are served from object storage; pages, scripts and checksums stay here.
+  const files = data.downloadBase ?? '.';
   byId('android-version').textContent = `v${data.android.version} · build ${data.android.versionCode}`;
   byId('android-size').textContent = `${(data.android.size / 1000000).toFixed(1)} MB`;
-  byId('android-download').href = `./${data.android.file}`;
+  byId('android-download').href = `${files}/${data.android.file}`;
   byId('android-checksum').href = `./${data.android.file}.sha256`;
   byId('mac-version').textContent = `v${data.mac.version} CLI`;
   if (data.desktop) {
     byId('desktop-card').hidden = false;
     byId('desktop-version').textContent = `v${data.desktop.version}`;
     byId('desktop-size').textContent = `${(data.desktop.size / 1000000).toFixed(1)} MB`;
-    byId('desktop-download').href = `./${data.desktop.file}`;
+    byId('desktop-download').href = `${files}/${data.desktop.file}`;
     byId('desktop-checksum').href = `./${data.desktop.file}.sha256`;
     if (data.desktop.archive) {
       byId('desktop-archive').hidden = false;
-      byId('desktop-archive').href = `./${data.desktop.archive.file}`;
+      byId('desktop-archive').href = `${files}/${data.desktop.archive.file}`;
     }
     if (data.desktop.installer) {
       byId('desktop-install-panel').hidden = false;
@@ -96,11 +98,11 @@ async function loadReleases() {
   commands = {
     brew: { command: `brew tap panecast/tap ${base}/homebrew-tap.git\nbrew install panecast/tap/panecast`, note: '需要已安装 Homebrew；自动处理 Node.js 和 tmux 依赖，支持 Apple Silicon 与 Intel。' },
     script: { command: `curl -fsSL ${base}/install.sh | bash`, note: '自带独立 Node.js 运行时，无需 sudo。如使用 tmux 来源，请另行安装 tmux。' },
-    npm: { command: `npm install -g ${base}/${data.mac.file}`, note: '需要 Node.js 22+。这是直接安装官方发布包，无需配置 npm 仓库。' },
+    npm: { command: `npm install -g ${data.downloadBase ?? base}/${data.mac.file}`, note: '需要 Node.js 22+。这是直接安装官方发布包，无需配置 npm 仓库。' },
   };
   selectMethod(activeMethod);
-  const list = byId('release-list'); list.replaceChildren(releaseRow(data.mac, 'Mac CLI'), releaseRow(data.android, 'Android'));
-  if (data.desktop) list.prepend(releaseRow(data.desktop, 'Mac 桌面版'));
+  const list = byId('release-list'); list.replaceChildren(releaseRow(data.mac, 'Mac CLI', files), releaseRow(data.android, 'Android', files));
+  if (data.desktop) list.prepend(releaseRow(data.desktop, 'Mac 桌面版', files));
   for (const release of data.history ?? []) list.append(releaseRow(release, release.platform));
 }
 loadReleases().catch(() => { byId('load-error').hidden = false; byId('android-version').textContent = 'Android APK'; });

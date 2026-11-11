@@ -26,6 +26,20 @@ for item in (desktop_artifacts if args.desktop_only else [manifest['android'], m
 if desktop.get('installer') and (public / 'install-desktop.sh').read_bytes() != (public / desktop['installer']['file']).read_bytes():
     raise SystemExit('Desktop installer alias does not match the versioned installer')
 
+# Packages listed in SHA256SUMS are served from object storage when the manifest
+# names a download base. Upload and verify them before any page links to them.
+if manifest.get('downloadBase'):
+    import cos
+    from urllib.parse import urlparse
+    location = urlparse(manifest['downloadBase'])
+    if location.scheme != 'https' or location.netloc != cos.HOST:
+        raise SystemExit('downloadBase must be the configured COS bucket over HTTPS')
+    names = [item['file'] for item in (desktop_artifacts if args.desktop_only else [manifest['android'], manifest['mac'], *desktop_artifacts])]
+    if not args.desktop_only:
+        names += [line.split('  ', 1)[1] for line in (public / 'SHA256SUMS').read_text().splitlines()]
+    for name in dict.fromkeys(names):
+        print(cos.upload(location.path.strip('/'), str(public / name)), name)
+
 archive = ROOT / ('build/distribution/desktop-upload.tar.gz' if args.desktop_only else 'build/distribution/upload.tar.gz')
 ssh = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', args.host]
 checksums = dict(line.split('  ', 1)[::-1] for line in (public / 'SHA256SUMS').read_text().splitlines())
