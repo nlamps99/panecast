@@ -115,3 +115,17 @@ entitlement，写入一律返回 `-34018`（errSecMissingEntitlement）。v2 主
 验证：Release 构建通过；本机运行打包后的 r6，1 秒内 `session-ready`，设备目录与中继凭证刷新成功，iroh 端点经
 `ipcraft.drinklake.com` 中继上线。发布后 appcast、release.json、安装器与本地一致，COS 上 dmg、zip、源码完整下载
 SHA 一致，下载中心首页未改动。两台 Mac 之间的实际连接要等另一台升级 r6 后验证。
+
+## r7（2026-11-11）
+
+源码提交 `82104d78bb91b37ae2e7db86eaf9addbb2fb19c0`，构建号 `113.7`。移植上游 cmux 尚未合并的 PR #22735
+（manaflow-ai/cmux，2026-11-11 的合并差异）：「我的设备」查看另一台 Mac 时，鼠标移动或滚动会把鼠标报告当文字打进
+Codex、Claude Code 等程序，Esc 变成 Esc 加 `[27u`（上游 #38315、#35720、#21775）。三处原因：查看方恢复鼠标模式时
+先开后关，SGR 程序收到 X10 报告；查看方转发了镜像终端自己的查询回复和焦点报告；被连方把不认识的转义序列拆成 Esc
+加文字。源码与测试原样适用于 v0.65.2.2，只在 Xcode 工程中手工登记新的 app 测试文件。修复分别在查看方和被连方，两台
+Mac 都需要 r7。#35720 中的空白标签、输入丢失、假断开等其他问题上游尚未修复。
+
+验证：CMUXMobileCore 渲染网格回放 99 项（含 5 项新的鼠标模式测试）、CmuxTerminal 输入解析与回复过滤 3 组 18 项通过；
+Release 编译验证与正式构建通过；本机运行打包后的 r7，v2 会话、设备目录与另一台 r6 Mac 的入站连接正常。发布前确认
+cmux 页面文件与线上（含 Windows 区块）一致、包内无 Windows 文件；发布后 appcast、release.json、安装器与页面一致，
+COS 上 dmg、zip、源码完整下载 SHA 一致，`windows.json` 与下载中心首页未改动。两台 Mac 之间的实际鼠标与滚动效果待用户验收。

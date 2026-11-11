@@ -1,10 +1,10 @@
 {
   "upstreamVersion": "0.65.2.2",
   "appVersion": "0.65.2",
-  "revision": "r6",
-  "sourceCommit": "b4bc39c32d863062e4e1b574e8e0ab51cde6153d",
+  "revision": "r7",
+  "sourceCommit": "82104d78bb91b37ae2e7db86eaf9addbb2fb19c0",
   "upstreamCommit": "12023d89feb5425c766ba05e8d8e4cfc176e3991",
-  "publishedAt": "2026-11-11T14:45:42.535991+00:00",
+  "publishedAt": "2026-11-11T16:31:38.540536+00:00",
   "architecture": "arm64",
   "minimumMacOS": "14.0",
   "bundleIdentifier": "com.cmuxterm.app.debug.dr2.selfhost",
@@ -12,34 +12,34 @@
   "signing": "ad-hoc",
   "notarized": false,
   "dmg": {
-    "file": "cmux-dr2-0.65.2.2-r6-macos-arm64.dmg",
-    "size": 110623104,
-    "sha256": "5cbeeda02622c929859fc00338983a686b4a33ba748c0617bd2f7b4dfc5d4be2"
+    "file": "cmux-dr2-0.65.2.2-r7-macos-arm64.dmg",
+    "size": 112730637,
+    "sha256": "2756b5993ff5c0ca0a486009308412efff88d4e5f2e2e2e32d0276dd56930b10"
   },
   "archive": {
-    "file": "cmux-dr2-0.65.2.2-r6-macos-arm64.zip",
-    "size": 106077306,
-    "sha256": "306f367b67f9b7d6b4338d3ed053d869cc3117c6b6e1962e7ead92ed661257b0"
+    "file": "cmux-dr2-0.65.2.2-r7-macos-arm64.zip",
+    "size": 106079194,
+    "sha256": "7be0b20a2ae2216adc6fac38fbef1b72102cefd1fa212781aacfe6be1ef89a66"
   },
   "source": {
-    "file": "cmux-dr2-0.65.2.2-r6-source.tar.gz",
-    "size": 191346781,
-    "sha256": "15906d350477b07168be2f2ef19ea50327ad9cb5674f57455b649d9082f2c6d0"
+    "file": "cmux-dr2-0.65.2.2-r7-source.tar.gz",
+    "size": 191363787,
+    "sha256": "566a07cd7bb8739830715cdcf42a8b9913f805b5481e6fa31968d10bebf1785b"
   },
   "installer": {
-    "file": "install-cmux-dr2-0.65.2.2-r6-macos-arm64.sh",
+    "file": "install-cmux-dr2-0.65.2.2-r7-macos-arm64.sh",
     "size": 5647,
-    "sha256": "9f0ffc218d8537ecd5089f93211e87fdf563099dbb4fd87c1931371431816919"
+    "sha256": "4aabeb80156b79a9c6b450289cca8494919ef10cb66c6de9f6baaece08c27b65"
   },
   "bundledTerminalHelperCommit": "786ab29824b470de376a8030d60f1445dde241cc",
-  "bundleVersion": "113.6",
+  "bundleVersion": "113.7",
   "downloadBase": "https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast/cmux",
   "update": {
     "feed": "https://ningzx.cn/panecast/cmux/appcast.xml",
-    "edSignature": "rSdhDSFToOpDgz3K5THmgPxYG1ysllspAt5p/aAMxVCD27579c0Uhe04U0LXtidJuego0AxJXNWgO8GbbQboAA==",
+    "edSignature": "sujrmJ9Gj+7MTYk76pHU1rRoeBpjQzH5hFihPm0Du3MSRkQ+rELrXfLzmxFJ5CtyOBJHsCiGLOwZG2pKLk7fAA==",
     "notes": [
-      "修复两台 Mac 互相发现不了：ad-hoc 签名的自建版无法写入数据保护钥匙串，设备身份一直保存失败，从未登记到设备目录。现改为保存在仅本人可读的文件中。",
-      "升级后两台 Mac 都需要更新到 r6，并保持登录同一账号。"
+      "修复「我的设备」查看另一台 Mac 时，鼠标移动或滚动会把乱码（如 [<35;12;7M）打进 Codex、Claude Code 等程序的问题；Esc 键不再变成 Esc 加 [27u。移植自上游 cmux PR #22735。",
+      "两台 Mac 都需要更新到 r7：修复分别在查看方和被连方。"
     ]
   }
 }
