@@ -75,6 +75,24 @@ export class CloudIdentity {
     return data.id;
   }
 
+  /**
+   * cmux DR2 issues device registration and connection tickets per team, so an
+   * account without a team can neither be discovered nor discover other Macs.
+   * Accounts that sign up in the app get a personal team; give accounts made
+   * here the same, and select it. Returns the team ID.
+   */
+  async ensurePersonalTeam(id, username) {
+    const teams = await this.call('GET', `/api/v1/teams?user_id=${encodeURIComponent(id)}`, { server: true });
+    if (teams.status >= 400) fail(400, 'account_rejected');
+    const existing = Array.isArray(teams.data.items) ? teams.data.items[0]?.id : undefined;
+    if (typeof existing === 'string') return existing;
+    const created = await this.call('POST', '/api/v1/teams', { server: true, body: { display_name: `${username}'s Team`, creator_user_id: id } });
+    if (created.status >= 400 || typeof created.data.id !== 'string') fail(400, 'account_rejected');
+    const selected = await this.call('PATCH', `/api/v1/users/${encodeURIComponent(id)}`, { server: true, body: { selected_team_id: created.data.id } });
+    if (selected.status >= 400) fail(400, 'account_rejected');
+    return created.data.id;
+  }
+
   async setPassword(id, password) {
     const { status } = await this.call('PATCH', `/api/v1/users/${encodeURIComponent(id)}`, { server: true, body: { password } });
     if (status >= 400) fail(400, 'account_rejected');

@@ -97,10 +97,11 @@ export class AccountStore {
     if (this.cloud) {
       if (this.data.users.some((u) => u.username === username)) fail(409, 'username_taken');
       const cloudId = await this.cloud.create(username, password);
-      return this.write((data) => {
+      return this.write(async (data) => {
         if (data.users.some((u) => u.username === username)) fail(409, 'username_taken');
         const user = { id: randomUUID(), username, cloud_id: cloudId };
         data.users.push(user);
+        await this.ensureTeam(user);
         return this.issue(data, user, name);
       });
     }
@@ -135,8 +136,15 @@ export class AccountStore {
       if (!user) { user = { id: randomUUID(), username }; data.users.push(user); }
       user.cloud_id = cloudId;
       delete user.password;
+      await this.ensureTeam(user);
       return this.issue(data, user, name);
     });
+  }
+  /** Gives a shared account its personal team once; sign-in still succeeds if the service refuses. */
+  async ensureTeam(user) {
+    if (user.team_ready) return;
+    try { await this.cloud.ensurePersonalTeam(user.cloud_id, user.username); user.team_ready = true; }
+    catch (error) { if (error.statusCode !== 400) throw error; }
   }
   /** The signed-in user, checked against its current password (in the account service once shared). */
   async confirmPassword(token, password) {

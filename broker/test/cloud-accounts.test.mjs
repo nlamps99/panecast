@@ -14,7 +14,8 @@ const PROJECT = 'project-1', PUBLISHABLE = 'pck_public', SERVER = 'ssk_secret';
 
 /** A stand-in for the Stack Auth API behind cmux.drinklake.com. */
 async function fakeAccountService(t) {
-  const users = new Map(); // email -> { id, password, display_name }
+  const users = new Map(); // email -> { id, password, display_name, selected_team_id }
+  const teams = []; // { id, display_name, members: [userId] }
   const calls = [];
   let down = false, openSessions = 0, next = 1;
   const server = http.createServer(async (request, response) => {
@@ -44,11 +45,24 @@ async function fakeAccountService(t) {
       users.set(body.primary_email, { id, password: body.password, display_name: body.display_name, verified: body.primary_email_verified });
       return send(201, { id });
     }
+    if (request.method === 'GET' && request.url?.startsWith('/api/v1/teams?user_id=') && kind === 'server') {
+      const userId = decodeURIComponent(request.url.split('=')[1]);
+      return send(200, { items: teams.filter((t) => t.members.includes(userId)).map(({ id, display_name }) => ({ id, display_name })) });
+    }
+    if (request.method === 'POST' && request.url === '/api/v1/teams' && kind === 'server') {
+      const team = { id: `team-${next++}`, display_name: body.display_name, members: body.creator_user_id ? [body.creator_user_id] : [] };
+      teams.push(team);
+      return send(201, { id: team.id, display_name: team.display_name });
+    }
     const match = /^\/api\/v1\/users\/([^/]+)$/.exec(request.url ?? '');
     if (match && kind === 'server') {
       const entry = byId(decodeURIComponent(match[1]));
       if (!entry) return send(404, { code: 'USER_NOT_FOUND' });
-      if (request.method === 'PATCH') { entry[1].password = body.password; return send(200, { id: entry[1].id }); }
+      if (request.method === 'PATCH') {
+        if (body.password !== undefined) entry[1].password = body.password;
+        if (body.selected_team_id !== undefined) entry[1].selected_team_id = body.selected_team_id;
+        return send(200, { id: entry[1].id });
+      }
       if (request.method === 'DELETE') { users.delete(entry[0]); return send(200, { success: true }); }
     }
     send(404, { code: 'ROUTE_NOT_FOUND' });
@@ -57,7 +71,7 @@ async function fakeAccountService(t) {
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
   return {
-    users, calls, origin,
+    users, teams, calls, origin,
     setDown(value) { down = value; },
     get openSessions() { return openSessions; },
     identity: () => new CloudIdentity({ origin, projectId: PROJECT, publishableKey: PUBLISHABLE, serverKey: SERVER, emailDomain: 'users.drinklake.com' }),
@@ -92,8 +106,13 @@ test('a Panecast registration creates one shared account that signs in to both, 
   const [user] = (await accounts()).users;
   assert.equal(user.cloud_id, shared.id);
   assert.equal(user.password, undefined, 'the broker keeps no password');
+  // cmux DR2 registers and discovers devices per team, as for accounts made in the app.
+  assert.deepEqual(cloud.teams.map((t) => [t.display_name, t.members]), [["lesley's Team", [shared.id]]]);
+  assert.equal(shared.selected_team_id, cloud.teams[0].id);
+  assert.equal(user.team_ready, true);
 
   assert.equal((await request('login', 'POST', { username: ' LESLEY ', password, device_name: 'Tablet' })).status, 200);
+  assert.equal(cloud.teams.length, 1, 'signing in again creates no second team');
   assert.equal((await request('login', 'POST', { username: 'lesley', password: 'wrong password, long enough', device_name: 'x' })).status, 401);
   assert.equal(cloud.openSessions, 0, 'checking a password leaves no session open in the account service');
   assert.equal((await request('register', 'POST', { username: 'lesley', password, device_name: 'x' })).status, 409);
@@ -109,10 +128,18 @@ test('a Panecast registration creates one shared account that signs in to both, 
 test('an account created in cmux cloud signs in to Panecast without registering', async (t) => {
   const cloud = await fakeAccountService(t);
   await cloud.identity().create('admin-made', password);
+  const teamless = cloud.users.get('admin-made@users.drinklake.com');
+  // An account that already belongs to a team keeps it.
+  await cloud.identity().create('in-team', password);
+  const member = cloud.users.get('in-team@users.drinklake.com');
+  cloud.teams.push({ id: 'team-existing', display_name: 'Existing', members: [member.id] });
   const { request, accounts } = await broker(t, cloud);
   const login = await request('login', 'POST', { username: 'admin-made', password, device_name: 'Phone' });
   assert.equal(login.status, 200);
-  assert.equal((await accounts()).users[0].cloud_id, cloud.users.get('admin-made@users.drinklake.com').id);
+  assert.equal((await accounts()).users[0].cloud_id, teamless.id);
+  assert.equal(cloud.teams.filter((t) => t.members.includes(teamless.id)).length, 1, 'a team-less account gets its personal team');
+  assert.equal((await request('login', 'POST', { username: 'in-team', password, device_name: 'Phone' })).status, 200);
+  assert.equal(cloud.teams.filter((t) => t.members.includes(member.id)).length, 1, 'an existing team is kept, not duplicated');
   assert.equal((await request('login', 'POST', { username: 'someone@example.com', password, device_name: 'x' })).status, 401, 'emails are not usernames');
 });
 
