@@ -83,3 +83,20 @@ Mac 构建输出 Apple Silicon 的本地签名预览包，尚未经过 Apple 公
 
 公网重新下载的 ZIP 与构建产物 SHA-256 一致：
 `090ecfea69eca6efab4356a9bced31bbcc55a9aed33051cecefb910ee2bddc7a`。
+
+## 自动分配电脑凭据上线记录
+
+实现提交 `ff19c5c` 已推送 main。两个 broker 入口（`/cmux-remote`、`/cmux-remote-air`）于
+2026-11-11 重建为新镜像，对任何账号开放自动分配（未设置 `CMUX_RELAY_ENROLLMENT`）。部署前备份
+源码、镜像和两个数据卷；部署后两边 `devices.json` 与备份逐字节一致，`accounts.json` 除新增空的
+`relays` 外不变。重建后执行 `nginx -t` 并平滑 reload，核对两个上游主机名与容器 IP 对应，
+主入口的现有 relay 自动重连在线。
+
+公网两入口分别用真实 `panecast setup` 注册临时账号验证：自动分配凭据、隧道连接与错误令牌
+拒绝、同账号另一登录看到电脑在线并建立会话、`pair` 免输入配对码及扫码登记、删除账号后
+隧道以 4003 关闭且凭据失效、setup 的临时登录已退出。临时账号、电脑与登记设备均已删除；
+首次脚本错误留下的一个临时账号在短暂停止主 broker 后从数据文件移除，删除前已备份。
+
+CLI 0.1.4 与安装脚本发布到下载站。公网 `releases.json`、`install.sh`、CLI 包、`SHA256SUMS`
+与首页和构建产物一致，0.1.3 保留可下载，Homebrew tap 指向 `762f1f2`。用公网安装脚本在临时
+目录安装得到 0.1.4，安装内容与仓库一致。已有网关配置不受影响，升级后运行 `panecast restart`。
