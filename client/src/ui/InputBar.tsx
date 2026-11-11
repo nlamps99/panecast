@@ -8,7 +8,7 @@ import { encodeImage, pickImage, type ImageSource } from '../input/attachImage';
 import { uploadAttachments, type AttachmentFile } from '../input/fileAttachments';
 import { pickFiles, useWebAttachments } from '../input/webAttachments';
 import { terminalHardwareKey } from '../input/hardwareKeys';
-import { desktopBridge } from '../platform/desktop';
+import { desktopBridge, desktopOnWindows } from '../platform/desktop';
 import {
   AttachmentError,
   attachmentFilename,
@@ -391,7 +391,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             onCommitText={sendCommitted}
             onKeyAction={sendKeyAction}
             onHardwareKey={desktop && mode === 'live' ? event => {
-              const key = terminalHardwareKey(event);
+              const key = terminalHardwareKey(event, { windows: desktopOnWindows(),
+                selection: typeof window !== 'undefined' && window.getSelection()?.isCollapsed === false });
               if (!key) return false;
               if (!disabled && ready && !sending && session.isConnected) {
                 if (key.name === 'enter' && attaching.current) setHint('附件正在上传，完成后再发送');
