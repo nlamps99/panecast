@@ -20,6 +20,8 @@ const { version } = settings;
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid version');
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const run = (command, commandArgs, options = {}) => execFileSync(command, commandArgs, { stdio: 'inherit', ...options });
+// Windows' own tar (bsdtar) writes zip archives and merges tar archives; Git's tar does neither.
+const tar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 
 const output = join(root, 'build/cmux-windows');
 const stage = join(output, 'stage'), app = join(stage, 'cmux-dr2');
@@ -40,14 +42,15 @@ if (!response.ok) throw new Error(`Node download failed: HTTP ${response.status}
 const nodeBytes = Buffer.from(await response.arrayBuffer());
 if (digest(nodeBytes) !== settings.node['win-x64']) throw new Error('Node runtime checksum mismatch');
 await writeFile(nodeZip, nodeBytes);
-run('tar', ['-xf', nodeZip, '-C', output]);
+run(tar, ['-xf', nodeZip, '-C', output]);
 await copyFile(join(output, nodeName, 'node.exe'), join(app, 'node/node.exe'));
 await copyFile(join(output, nodeName, 'LICENSE'), join(app, 'licenses/node-LICENSE.txt'));
 
 // The gateway: the published package's files with production dependencies.
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', output], { cwd: join(root, 'relay-tmux'), encoding: 'utf8', shell: true }))[0];
-run('tar', ['-xzf', join(output, packed.filename), '-C', output]);
+run(tar, ['-xzf', join(output, packed.filename), '-C', output]);
 await cp(join(output, 'package'), join(app, 'panecast'), { recursive: true });
+await rm(join(app, 'panecast/vendor'), { recursive: true, force: true }); // the macOS cmux relay
 await copyFile(join(root, 'relay-tmux/package-lock.json'), join(app, 'panecast/package-lock.json'));
 run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: join(app, 'panecast'), shell: true });
 await rm(join(app, 'panecast/package-lock.json'));
@@ -61,9 +64,20 @@ await writeFile(join(app, 'VERSION.json'), `${JSON.stringify(info, null, 2)}\n`)
 
 // Windows tar (bsdtar) writes zip archives that Expand-Archive reads.
 const file = `cmux-dr2-${version}-windows-x64.zip`;
-run('tar', ['-a', '-cf', join(output, file), '-C', stage, 'cmux-dr2']);
+run(tar, ['-a', '-cf', join(output, file), '-C', stage, 'cmux-dr2']);
 const archive = await readFile(join(output, file));
 const artifact = { file, size: archive.length, sha256: digest(archive) };
+
+// Corresponding source (GPL-3.0-or-later): the cmux TUI and Ghostty at the built
+// commits, the build scripts, and this repository's recipe for the package.
+const sourceFile = `cmux-dr2-${version}-windows-source.tar.gz`;
+run('git', ['-C', cmuxSource, 'archive', '--format=tar', '--prefix=cmux/', '-o', join(output, 'cmux.tar'), 'HEAD', 'cmux-tui', 'scripts', 'LICENSE', 'THIRD_PARTY_LICENSES.md', '.gitmodules']);
+run('git', ['-C', join(cmuxSource, 'ghostty'), 'archive', '--format=tar', '--prefix=cmux/ghostty/', '-o', join(output, 'ghostty.tar'), 'HEAD']);
+run(tar, ['-czf', join(output, sourceFile), `@${join(output, 'cmux.tar')}`, `@${join(output, 'ghostty.tar')}`,
+  '-C', root, '.github/workflows/cmux-dr2-windows.yml', 'distribution/cmux-windows']);
+await rm(join(output, 'cmux.tar')); await rm(join(output, 'ghostty.tar'));
+const sourceBytes = await readFile(join(output, sourceFile));
+const source = { file: sourceFile, size: sourceBytes.length, sha256: digest(sourceBytes) };
 
 const template = await readFile(join(here, 'install.ps1.in'), 'utf8');
 const values = { VERSION: version, FILE: file, SHA256: artifact.sha256, BASE_URL: settings.downloadBase };
@@ -73,7 +87,7 @@ const installerFile = `install-cmux-dr2-${version}-windows-x64.ps1`;
 const installerBytes = Buffer.from(installer.replace(/\r?\n/g, '\r\n'));
 await writeFile(join(output, installerFile), installerBytes);
 await writeFile(join(output, 'install-windows.ps1'), installerBytes);
-const manifest = { ...info, ...artifact, date: new Date().toISOString().slice(0, 10),
+const manifest = { ...info, ...artifact, date: new Date().toISOString().slice(0, 10), source,
   installer: { file: installerFile, size: installerBytes.length, sha256: digest(installerBytes) } };
 await writeFile(join(output, 'cmux-dr2-windows.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 await rm(stage, { recursive: true, force: true });

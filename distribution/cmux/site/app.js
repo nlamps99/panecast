@@ -26,3 +26,25 @@ byId('copy').addEventListener('click', async () => {
     byId('copy').textContent = '请选中下方命令复制';
   }
 });
+// cmux DR2 for Windows is published separately, with its own metadata.
+fetch('./windows.json', { cache: 'no-store' }).then(response => {
+  if (!response.ok) throw new Error('no Windows release');
+  return response.json();
+}).then(windows => {
+  const files = windows.downloadBase ?? '.';
+  byId('windows-version').textContent = `v${windows.version} · cmux ${windows.cmux.commit.slice(0, 7)}`;
+  byId('windows-size').textContent = `${(windows.size / 1024 / 1024).toFixed(1)} MB`;
+  byId('windows-command').textContent = `irm ${files}/${windows.installer.file} | iex`;
+  link('windows-zip', windows.file, files);
+  link('windows-checksum', `${windows.file}.sha256`);
+  if (windows.source) link('windows-source', windows.source.file, files);
+  byId('windows').hidden = false;
+}).catch(() => {});
+byId('windows-copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(byId('windows-command').textContent);
+    byId('windows-copy').textContent = '已复制';
+  } catch {
+    byId('windows-copy').textContent = '请选中下方命令复制';
+  }
+});
