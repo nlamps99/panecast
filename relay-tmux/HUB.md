@@ -109,6 +109,20 @@ node /path/to/panecast/relay-tmux/src/hub/cli.mjs notify \
 任务完成用 `--completed`，失败或阻塞用 `--failed`。普通进度不推送；省略这些标记时，
 只识别明确的“任务完成”“等待确认”等通知标题。APNs 配置沿用 [tmux relay 文档](README.md)。
 
+## cmux TUI（cmux DR2 for Windows）
+
+来源类型 `cmux-tui` 通过 manaflow-ai/cmux 的 `cmux-tui` 公开命令行操作一个命名会话：
+
+```json
+{ "id": "cmux-tui", "type": "cmux-tui", "name": "cmux DR2", "binary": "C:\\Users\\me\\AppData\\Local\\cmux-dr2\\bin\\cmux-tui.exe", "session": "main", "owner": true }
+```
+
+列表用一次 `session current snapshot`；画面用 `terminal … screen read`（cmux 省略屏幕底部空行，
+网关补齐到屏幕高度再拼接历史，按屏幕 revision 缓存历史）；输入用 stdin 写入和按键组合。
+网关在 `PATH` 或 `PANECAST_CMUX_TUI` 找到 `cmux-tui` 时自动加入来源；Windows 上带 `owner`，
+网关在没有窗口时也保持该会话运行，打开的 cmux 窗口 attach 到同一会话。其他系统不自动启动会话。
+Windows 打包与发布见 [distribution/cmux-windows](../distribution/cmux-windows/README.md)。
+
 ## Codex 的两种接入模式
 
 | mode | 数据与能力 | 适用情况 |
