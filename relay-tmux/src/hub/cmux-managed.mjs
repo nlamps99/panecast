@@ -226,10 +226,17 @@ class RelayProcess {
     try {
       child = owner.spawn(owner.binary, ['serve', '--config', join(stateDirectory, 'relay.json'), '--state-dir', stateDirectory],
         { env, stdio: ['ignore', log.fd, log.fd] });
+      // Listen before awaiting anything: a relay that fails at once can exit
+      // within milliseconds, and a missed exit would never be restarted.
+      this.watch(child);
     } finally { await log.close(); }
+    if (child.pid) await writeFile(join(stateDirectory, 'relay.pid'), `${child.pid}\n`, { mode: 0o600 }).catch(() => {});
+  }
+
+  watch(child) {
+    const { owner } = this;
     this.child = child;
     const startedAt = Date.now();
-    if (child.pid) await writeFile(join(stateDirectory, 'relay.pid'), `${child.pid}\n`, { mode: 0o600 }).catch(() => {});
     child.once('error', () => owner.log('cmux relay could not start'));
     child.once('exit', (code, signal) => {
       if (this.child !== child) return;
