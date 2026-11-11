@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { hubPidFile } from '../service.mjs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -7,9 +8,11 @@ import net from 'node:net';
 import qrcode from 'qrcode-terminal';
 import { TmuxBackend } from '../tmux.mjs';
 import { bundledRelay, captureCmuxCapability, ManagedCmuxRelay } from './cmux-managed.mjs';
+import { CmuxTuiOwner } from '../cmux-tui.mjs';
 import { discoverInto } from './discover.mjs';
 import { scoped } from './ids.mjs';
 import { createHub } from './server.mjs';
+import { notifySocketPath } from '../platform.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
@@ -28,6 +31,9 @@ async function main() {
     const cmuxRelay = new ManagedCmuxRelay({ binary: await bundledRelay(), log: (message) => console.error(message) });
     try { await relay.start(); } catch (error) { await relay.close(); throw error; }
     await cmuxRelay.sync(config.sources ?? []).catch(() => console.error('cmux relay could not start'));
+    // cmux DR2 on Windows: keep its session running so the phone sees it without an open window.
+    const cmuxTuiOwner = new CmuxTuiOwner({ log: (message) => console.error(message) });
+    await cmuxTuiOwner.sync(config.sources ?? []).catch(() => console.error('cmux session could not start'));
     console.log('Panecast hub started');
     let previous = raw, loading = false;
     const timer = setInterval(async () => {
@@ -39,6 +45,7 @@ async function main() {
           const sources = JSON.parse(next).sources ?? [];
           relay.reloadSources(sources); previous = next; console.log('Sources updated');
           void cmuxRelay.sync(sources).catch(() => console.error('cmux relay could not start'));
+          void cmuxTuiOwner.sync(sources).catch(() => console.error('cmux session could not start'));
         }
       } catch { console.error('Cannot reload sources; check the local config file'); }
       finally { loading = false; }
@@ -47,8 +54,10 @@ async function main() {
     const rediscover = setInterval(() => {
       void discoverInto(path).then((found) => { if (found.length) console.log(`Added sources: ${found.join(', ')}`); }).catch(() => {});
     }, 60_000);
-    const stop = async () => { clearInterval(timer); clearInterval(rediscover); await cmuxRelay.close().catch(() => {}); await relay.close(); process.exit(0); };
+    const stop = async () => { clearInterval(timer); clearInterval(rediscover); cmuxTuiOwner.close(); await cmuxRelay.close().catch(() => {}); await relay.close(); process.exit(0); };
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
+    // Windows has no SIGTERM; `panecast stop` finds the process through this file.
+    await writeFile(hubPidFile(path), `${process.pid}\n`).catch(() => {});
   } else if (args[0] === 'sources') {
     const action = args[1] ?? 'list';
     if (action === 'list') {
@@ -79,7 +88,7 @@ async function main() {
     const surface = flag('--surface') ?? process.env.TMUX_PANE;
     if (!surface) throw new Error('Run inside tmux or supply --surface');
     const workspace = flag('--workspace') ?? (await backend.tmux(['display-message', '-p', '-t', surface, '#{session_id}'])).trim();
-    const notifyPath = config.notify_socket ?? join(config.state_directory ?? join(homedir(), '.cmuxremote', 'hub'), 'notify.sock');
+    const notifyPath = notifySocketPath(config);
     await new Promise((res, rej) => {
       const socket = net.connect(notifyPath); let response = '';
       socket.setTimeout(5000, () => socket.destroy(new Error('Notification timed out')));

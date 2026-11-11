@@ -99,7 +99,8 @@ def upload(prefix, path):
         if existing.get('x-cos-meta-sha256') == digest and int(existing.get('content-length', -1)) == size:
             return 'unchanged'
         raise SystemExit(f'Refusing to replace a published object with different content: {key}')
-    content_type = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+    # PowerShell installers run as `irm URL | iex`, which needs text with its charset.
+    content_type = 'text/plain; charset=utf-8' if path.endswith('.ps1') else mimetypes.guess_type(path)[0] or 'application/octet-stream'
     headers = {'content-type': content_type, 'x-cos-acl': 'public-read', 'x-cos-meta-sha256': digest}
     with open(path, 'rb') as stream:
         status, _, data = _request('PUT', key, headers, body=stream, length=size)

@@ -1,0 +1,85 @@
+# cmux DR2 for Windows @VERSION@ installer.
+# Run in PowerShell:  irm <this file's URL> | iex
+# Installs to %LOCALAPPDATA%\cmux-dr2 for the current user (no administrator
+# rights), verifies the download's SHA-256, adds `cmux` and `panecast` to the
+# user PATH and a "cmux DR2" Start menu entry, then sets up the Panecast
+# gateway so phones signed in to the same account can use this computer.
+& {
+  $ErrorActionPreference = 'Stop'
+  $ProgressPreference = 'SilentlyContinue'
+  $version = '@VERSION@'
+  $file = '@FILE@'
+  $sha256 = '@SHA256@'
+  $url = '@BASE_URL@/' + $file
+  if (-not [Environment]::Is64BitOperatingSystem) { throw 'cmux DR2 需要 64 位 Windows。' }
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+  $root = Join-Path $env:LOCALAPPDATA 'cmux-dr2'
+  $bin = Join-Path $root 'bin'
+  $temp = Join-Path ([IO.Path]::GetTempPath()) ('cmux-dr2-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $temp | Out-Null
+  try {
+    if ($env:CMUX_DR2_ARCHIVE) { $archive = $env:CMUX_DR2_ARCHIVE }
+    else {
+      $archive = Join-Path $temp $file
+      Write-Host "正在下载 cmux DR2 $version …"
+      Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+    if ($actual -ne $sha256) { throw "下载的文件校验失败（$actual），已停止安装。" }
+    Expand-Archive -LiteralPath $archive -DestinationPath $temp -Force
+
+    # Stop the running gateway so its files can be replaced; it is started again below.
+    $panecast = Join-Path $bin 'panecast.cmd'
+    if (Test-Path -LiteralPath $panecast) { & $panecast stop *> $null }
+    if (Test-Path -LiteralPath $root) {
+      # Running programs lock their files: end the session the gateway kept, then check for open windows.
+      $previous = Join-Path $bin 'cmux-tui.exe'
+      if (Test-Path -LiteralPath $previous) {
+        Write-Host '升级会结束正在运行的 cmux DR2 会话。'
+        & $previous server stop --session main *> $null
+        Start-Sleep -Seconds 1
+      }
+      $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) })
+      if ($busy.Count) { throw '请先关闭所有 cmux DR2 窗口，再重新运行安装命令。' }
+      $backup = "$root.previous"
+      if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+      Rename-Item -LiteralPath $root -NewName (Split-Path $backup -Leaf)
+    }
+    Move-Item -LiteralPath (Join-Path $temp 'cmux-dr2') -Destination $root
+
+    $cmux = Join-Path $bin 'cmux.exe'
+    try { New-Item -ItemType HardLink -Path $cmux -Target (Join-Path $bin 'cmux-tui.exe') | Out-Null }
+    catch { Copy-Item -LiteralPath (Join-Path $bin 'cmux-tui.exe') -Destination $cmux }
+
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = @($userPath -split ';' | Where-Object { $_ })
+    if ($entries -notcontains $bin) { [Environment]::SetEnvironmentVariable('Path', (@($entries) + $bin) -join ';', 'User') }
+    if (($env:Path -split ';') -notcontains $bin) { $env:Path = "$bin;$env:Path" }
+
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'cmux DR2.lnk'))
+    $terminal = Get-Command wt.exe -ErrorAction SilentlyContinue
+    $launcher = Join-Path $bin 'cmux-dr2.cmd'
+    if ($terminal) { $link.TargetPath = $terminal.Source; $link.Arguments = "-w new --title `"cmux DR2`" `"$launcher`"" }
+    else { $link.TargetPath = $launcher }
+    $link.WorkingDirectory = $env:USERPROFILE
+    $link.Description = 'cmux DR2'
+    $link.Save()
+    Write-Host "已安装 cmux DR2 $version：$root"
+
+    if ($env:CMUX_DR2_SKIP_SETUP -ne '1') {
+      $config = Join-Path $env:USERPROFILE '.cmuxremote\hub-relay.json'
+      if (-not (Test-Path -LiteralPath $config)) {
+        Write-Host ''
+        Write-Host '登录 Panecast 账号（与 cmux DR2 / cmux cloud 同一账号），手机登录同一账号即可控制这台电脑：'
+        & $panecast setup
+      }
+      if (Test-Path -LiteralPath $config) { & $panecast restart }
+      else { Write-Host '尚未登录。之后可以运行 panecast setup，再运行 panecast start。' }
+    }
+    Write-Host ''
+    Write-Host '从开始菜单打开「cmux DR2」，或在新的终端窗口输入 cmux。'
+  }
+  finally { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
+}

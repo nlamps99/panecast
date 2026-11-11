@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { lanAddress } from '../installation.mjs';
 import { bundledRelay, cmuxInstallations, pinRelayVariant, provisionManagedCmux, sourceIdentity, stateDirectoryFor, STATE_DIRECTORY_NAME } from './cmux-managed.mjs';
 import { usableCmux } from './registry.mjs';
+import { findCmuxTui } from '../cmux-tui.mjs';
 
 const exists = (path) => access(path).then(() => true, () => false);
 const tmuxInstalled = () => spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
@@ -69,13 +70,18 @@ async function manageCmuxApps({ home, managed, next, add, changed }) {
 }
 
 /** Returns the given sources plus every source this computer can provide. Existing entries are kept as they are. */
-export async function discoverSources(sources = [], { home = homedir(), lanHost = lanAddress(), fetch: request = fetch, tmux = tmuxInstalled, managed } = {}) {
+export async function discoverSources(sources = [], { home = homedir(), lanHost = lanAddress(), fetch: request = fetch, tmux = tmuxInstalled, managed, cmuxTui = findCmuxTui, platform = process.platform } = {}) {
   const next = [...sources], added = [];
   const freeId = (base) => { let id = base; for (let n = 2; next.some((s) => s.id === id); n++) id = `${base}-${n}`; return id; };
   const add = (source) => { const entry = { ...source, id: freeId(source.id) }; next.push(entry); added.push(entry); };
   const changed = (source) => { if (!added.includes(source)) added.push(source); };
   if (!next.some((s) => s.type === 'tmux') && tmux()) add({ id: 'tmux', name: 'tmux', type: 'tmux' });
   if (!next.some((s) => s.type === 'codex' && s.mode !== 'attach') && await exists(join(home, '.codex'))) add({ id: 'codex', name: 'Codex', type: 'codex', mode: 'managed' });
+  if (!next.some((s) => s.type === 'cmux-tui')) {
+    // cmux DR2 for Windows ships the cmux TUI; the gateway keeps its main session running there.
+    const binary = await cmuxTui();
+    if (binary) add({ id: 'cmux-tui', name: platform === 'win32' ? 'cmux DR2' : 'cmux TUI', type: 'cmux-tui', binary, session: 'main', owner: platform === 'win32' });
+  }
   try {
     const { enabled, access: _access, ...desktop } = JSON.parse(await readFile(join(home, '.cmuxremote', 'desktop', 'source.json'), 'utf8'));
     if (desktop.type === 'codex' && typeof desktop.id === 'string' && !next.some((s) => s.id === desktop.id)) add(desktop);

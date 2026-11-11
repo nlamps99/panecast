@@ -1,0 +1,8 @@
+{
+  "version": "0.1.0",
+  "downloadBase": "https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast/cmux",
+  "node": {
+    "version": "22.23.4",
+    "win-x64": "cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20"
+  }
+}

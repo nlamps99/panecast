@@ -9,6 +9,7 @@ import { TmuxBackend, RpcError } from './tmux.mjs';
 import { PushService, writeJSON } from './push.mjs';
 import { InboxJournal } from './inbox.mjs';
 import { notificationSignal } from './notification-signal.mjs';
+import { isNamedPipe, notifySocketPath } from './platform.mjs';
 
 const MAX_MESSAGE = 32 * 1024 * 1024;
 const hash = (value) => createHash('sha256').update(String(value)).digest();
@@ -214,7 +215,8 @@ export async function createTmuxRelay(config, options = {}) {
   });
   const poll = setInterval(() => { for (const session of sessions.values()) session.tick(); }, Math.max(100, clamp(config.poll_ms, 250, 5000)));
   poll.unref();
-  const notifyPath = config.notify_socket ?? join(stateDirectory, 'notify.sock');
+  const notifyPath = notifySocketPath({ ...config, state_directory: stateDirectory });
+  const pipe = isNamedPipe(notifyPath);
   const notifyServer = net.createServer((socket) => {
     let text = ''; socket.setTimeout(2000, () => socket.destroy());
     socket.on('error', () => {});
@@ -230,11 +232,11 @@ export async function createTmuxRelay(config, options = {}) {
   return {
     backend, sessions, notify, ingestEvent, journal,
     async start() {
-      await mkdir(dirname(notifyPath), { recursive: true, mode: 0o700 });
+      await mkdir(pipe ? stateDirectory : dirname(notifyPath), { recursive: true, mode: 0o700 });
       // Refuse an existing socket rather than disconnecting another running relay.
       await new Promise((res, rej) => { notifyServer.once('error', rej); notifyServer.listen(notifyPath, res); });
-      ownsNotifySocket = true;
-      await chmod(notifyPath, 0o600);
+      ownsNotifySocket = !pipe;
+      if (!pipe) await chmod(notifyPath, 0o600);
       if (config.lan) await new Promise((res, rej) => { server.once('error', rej); server.listen(config.port ?? 4399, config.host ?? '127.0.0.1', res); });
       connectBroker(); return server.address();
     },

@@ -1,7 +1,8 @@
 import { RelaySession } from '../server.mjs';
-import { RpcError, TmuxBackend } from '../tmux.mjs';
+import { RpcError } from '../tmux.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scopeResult, scoped, targetParams } from './ids.mjs';
+import { TERMINAL_TYPES, terminalBackend } from './registry.mjs';
 import { TerminalConversationReader, localConversationSource } from './terminal-conversation.mjs';
 
 const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
@@ -53,8 +54,8 @@ export class HubSession extends RelaySession {
     let client = this.clients.get(id);
     if (client?.closed) { client.close(); this.clients.delete(id); client = null; if (this.savedSubscriptions.get(id)?.size) this.restoreNeeded.add(id); }
     if (client) return client;
-    if (c.type === 'tmux') {
-      const backend = new TmuxBackend({ socketName: c.tmux_socket });
+    if (TERMINAL_TYPES.includes(c.type)) {
+      const backend = terminalBackend(c);
       const session = new RelaySession(backend, this.config, (frame) => this.forward(id, frame), () => {}, (payload) => this.notify(scopeResult(id, payload, true)));
       void session.process(JSON.stringify({ protocolVersion: 1, deviceId: 'hub' }));
       client = { call: (method, params) => session.dispatch(method, params), tick: () => session.tick(), close: () => session.dispose() };
@@ -103,7 +104,7 @@ export class HubSession extends RelaySession {
       const { source } = targetParams(p);
       if (!source) return info;
       const entry = this.registry.get(source);
-      if (!['cmux', 'tmux'].includes(entry.config.type)) return info;
+      if (!['cmux', ...TERMINAL_TYPES].includes(entry.config.type)) return info;
       const limits = await this.client(source).call('relay.info', {});
       if (Number.isFinite(limits.max_message_bytes) && Number.isFinite(limits.max_upload_bytes)) {
         info.max_message_bytes = Math.min(32 * 1024 * 1024, limits.max_message_bytes);
@@ -119,7 +120,7 @@ export class HubSession extends RelaySession {
       if (!source) throw new RpcError('invalid_target', '上传前请选择终端来源');
       const entry = this.registry.get(source);
       if (entry.config.type === 'cmux') return this.client(source).call(method, params);
-      if (entry.config.type !== 'tmux') throw new RpcError('invalid_source', '请从终端发送附件');
+      if (!TERMINAL_TYPES.includes(entry.config.type)) throw new RpcError('invalid_source', '请从终端发送附件');
       await this.registry.surface(p);
       return super.dispatch(method, p);
     }

@@ -1,0 +1,76 @@
+name: cmux dr2 windows
+# cmux DR2 for Windows: the cmux TUI from manaflow-ai/cmux at a pinned commit
+# (its experimental Windows build, GNU target), packaged with the Panecast
+# gateway so phones can see and control its terminals.
+on:
+  push:
+    paths: ['relay-tmux/**', 'distribution/cmux-windows/**', '.github/workflows/cmux-dr2-windows.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CMUX_COMMIT: 88b87c0587bd55df269d4204845267710a1c20a9
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=lld
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out cmux
+        shell: bash
+        run: |
+          git init -q cmux && cd cmux
+          git remote add origin https://github.com/manaflow-ai/cmux.git
+          git fetch -q --depth 1 origin "$CMUX_COMMIT" && git checkout -q FETCH_HEAD
+          bash scripts/ci/init-submodule.sh ghostty
+          echo "ZIG_VERSION=$(bash scripts/ghostty-zig-version.sh)" >> "$GITHUB_ENV"
+      - uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Fetch the Ghostty Zig packages
+        shell: bash
+        working-directory: cmux
+        run: bash scripts/ci/fetch-ghostty-zig-packages.sh ghostty
+      - name: Rust toolchain
+        shell: bash
+        working-directory: cmux/cmux-tui
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add x86_64-pc-windows-gnu
+          printf '%s\n' 'C:\msys64\mingw64\bin' >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cmux/cmux-tui
+          cache-on-failure: true
+      - name: Build cmux TUI
+        shell: bash
+        run: |
+          unset CMUX_GHOSTTY_SRC
+          export CMUX_TUI_BUILD_COMMIT="$CMUX_COMMIT" CMUX_TUI_GHOSTTY_COMMIT="$(git -C cmux/ghostty rev-parse HEAD)"
+          (cd cmux/ghostty && zig build -Demit-lib-vt=true -Demit-xcframework=false -Doptimize=ReleaseFast -Dtarget=x86_64-windows-gnu --prefix "$RUNNER_TEMP/ghostty-vt-win-gnu")
+          cd cmux/cmux-tui
+          cargo build -p cmux-tui --bin cmux-tui --release --locked --target x86_64-pc-windows-gnu
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: relay-tmux
+      - name: Gateway tests that apply on Windows
+        working-directory: relay-tmux
+        env:
+          CMUX_TUI_BINARY: ${{ github.workspace }}\cmux\cmux-tui\target\x86_64-pc-windows-gnu\release\cmux-tui.exe
+        run: node --test test/cmux-tui.test.mjs test/platform.test.mjs
+      - name: Package
+        run: node distribution/cmux-windows/package.mjs --cmux-tui "cmux/cmux-tui/target/x86_64-pc-windows-gnu/release/cmux-tui.exe" --cmux-source cmux --cmux-commit "${{ env.CMUX_COMMIT }}"
+      - name: Install and check the package
+        shell: pwsh
+        run: ./distribution/cmux-windows/smoke.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cmux-dr2-windows
+          path: |
+            build/cmux-windows/
+          if-no-files-found: warn

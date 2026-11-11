@@ -16,10 +16,10 @@ async function main() {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Panecast 需要 Node.js 22 或更新版本。');
   if (['--version', '-v', 'version'].includes(command)) { console.log(version); return; }
   if (['help', '--help', '-h'].includes(command)) {
-    console.log(`Panecast ${version} · Mac 终端网关
+    console.log(`Panecast ${version} · 电脑终端网关
 
   panecast setup                         首次配置：登录账号，自动分配电脑凭据（保留已有配置）
-  panecast start | stop | restart         管理 macOS 后台服务
+  panecast start | stop | restart         管理后台服务（macOS、Windows，登录后自动运行）
   panecast status                        查看运行状态
   panecast logs                          持续查看错误日志
   panecast pair                          显示手机配对二维码
@@ -50,7 +50,9 @@ cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次
   }
   if (command === 'logs') {
     const log = join(dirname(path), 'hub-log', 'stderr.log');
-    const child = spawn('tail', ['-n', '60', '-f', log], { stdio: 'inherit' });
+    const child = process.platform === 'win32'
+      ? spawn('powershell.exe', ['-NoProfile', '-Command', 'Get-Content -LiteralPath $env:PANECAST_LOG -Tail 60 -Wait -Encoding UTF8'], { stdio: 'inherit', env: { ...process.env, PANECAST_LOG: log } })
+      : spawn('tail', ['-n', '60', '-f', log], { stdio: 'inherit' });
     child.once('error', () => { console.error('无法读取日志。请先运行 panecast start。'); process.exitCode = 1; });
     child.once('exit', (code) => { process.exitCode = code ?? 0; }); return;
   }

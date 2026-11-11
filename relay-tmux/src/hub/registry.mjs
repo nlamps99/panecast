@@ -1,7 +1,15 @@
 import { RpcError, TmuxBackend } from '../tmux.mjs';
+import { CmuxTuiBackend } from '../cmux-tui.mjs';
 import { CodexSource } from './codex.mjs';
 import { localEndpoint } from './rpc.mjs';
 import { targetParams } from './ids.mjs';
+
+/** Terminal sources served in this process: tmux, and cmux TUI (the Windows-capable cmux). */
+export const TERMINAL_TYPES = ['tmux', 'cmux-tui'];
+export function terminalBackend(config) {
+  return config.type === 'cmux-tui' ? new CmuxTuiBackend({ binary: config.binary, session: config.session })
+    : new TmuxBackend({ socketName: config.tmux_socket });
+}
 
 export const usableCmux = (source) => source.type === 'cmux' &&
   [source.url, source.token, source.device_id].every((value) => typeof value === 'string' && value && !value.startsWith('REPLACE_'));
@@ -19,7 +27,8 @@ export class SourceRegistry {
     const next = new Map();
     for (const raw of configs) {
       if (!raw || typeof raw.id !== 'string' || !/^[\w-]{1,64}$/.test(raw.id) || next.has(raw.id)) throw new Error('Source IDs must be unique, using letters, digits, _ or -');
-      if (!['cmux', 'tmux', 'codex'].includes(raw.type)) throw new Error('Unsupported source type');
+      if (!['cmux', 'codex', ...TERMINAL_TYPES].includes(raw.type)) throw new Error('Unsupported source type');
+      if (raw.type === 'cmux-tui' && (typeof raw.binary !== 'string' || !raw.binary)) throw new Error('cmux TUI sources need the cmux-tui binary path');
       // Older configs carry a cmux placeholder that discovery fills in later.
       if (raw.type === 'cmux' && !usableCmux(raw)) continue;
       // Every configured source has full access; removing it from the config is how it is turned off.
@@ -64,8 +73,8 @@ export class SourceRegistry {
   async surface(p) {
     const { source: id, params } = targetParams(p);
     const source = this.get(id);
-    if (source.config.type !== 'tmux') throw new RpcError('invalid_source', '本地通知 hook 只用于 tmux 来源');
-    return new TmuxBackend({ socketName: source.config.tmux_socket }).surface(params);
+    if (!TERMINAL_TYPES.includes(source.config.type)) throw new RpcError('invalid_source', '本地通知 hook 只用于终端来源');
+    return terminalBackend(source.config).surface(params);
   }
 
   close() { for (const source of this.sources.values()) source.codex?.close(); this.listeners.clear(); }
