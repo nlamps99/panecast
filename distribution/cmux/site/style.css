@@ -4,3 +4,4 @@
 @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 .download.windows{margin-top:78px}.windows-installer{margin-top:0}.windows-installer pre{white-space:pre-wrap;overflow-wrap:anywhere}.notice code{font-family:var(--mono);font-size:.95em}
 .download.windows[hidden],.links a[hidden]{display:none}
+#windows-size{color:var(--muted);margin-left:16px}
