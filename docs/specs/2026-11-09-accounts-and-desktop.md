@@ -100,3 +100,14 @@ Mac 构建输出 Apple Silicon 的本地签名预览包，尚未经过 Apple 公
 CLI 0.1.4 与安装脚本发布到下载站。公网 `releases.json`、`install.sh`、CLI 包、`SHA256SUMS`
 与首页和构建产物一致，0.1.3 保留可下载，Homebrew tap 指向 `762f1f2`。用公网安装脚本在临时
 目录安装得到 0.1.4，安装内容与仓库一致。已有网关配置不受影响，升级后运行 `panecast restart`。
+
+## 网关来源全部权限上线记录
+
+实现提交 `47fcb5e` 已推送 main，CI 在 macOS 与 Ubuntu（含真实 tmux）全部通过。网关不再区分
+授权与只读：配置中的每个来源都拥有全部权限，旧配置的 `enabled`、`access` 字段被忽略，Codex
+`history` 模式按 `managed` 处理。`serve` 与 `setup` 自动接入 tmux、Codex、已准备的桌面桥接，
+并通过本机局域网 IP 向 cmux relay 自动登记设备。已在本机真实 cmux relay 上验证自动登记与
+loopback 连接读取工作区，测试设备随后撤销。
+
+CLI 0.1.5 已发布：公网 `releases.json`、`install.sh`、CLI 包、`SHA256SUMS` 与首页和构建产物一致，
+0.1.4 保留可下载，Homebrew tap 指向 `6490e72`，公网安装脚本在临时目录装得 0.1.5。broker 未改动。
