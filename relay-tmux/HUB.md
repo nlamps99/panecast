@@ -4,8 +4,8 @@
 来源可以同时存在，手机的「来源」页显示连接状态和实际能力；终端从「工作区」打开，
 Codex 使用独立的会话、消息、命令输出、文件修改和待确认请求界面。
 
-需要 Node.js 22+。tmux 来源需要 tmux 3.2+；cmux 来源需要已运行的 Swift relay；
-Codex 来源需要支持 App Server 的 Codex 安装。本地验证使用 codex-cli 0.166.0。
+需要 Node.js 22+。tmux 来源需要 tmux 3.2+；cmux 来源使用安装包自带的 Swift relay（macOS 13+），
+也可以接入已安装的 relay；Codex 来源需要支持 App Server 的 Codex 安装。本地验证使用 codex-cli 0.166.0。
 
 ## 安装与配对
 
@@ -20,7 +20,7 @@ Codex 来源需要支持 App Server 的 Codex 安装。本地验证使用 codex-
 | tmux | 已安装 tmux |
 | Codex | 用过 Codex（存在 `~/.codex`），以 `managed` 模式运行，可新建和继续会话 |
 | Codex 桌面会话 | 运行过 `panecast desktop prepare` |
-| cmux | 本机 cmux relay 开启了局域网配对（`relay.json` 有 `lan.pairing_code`，监听非回环地址）；网关通过局域网 IP 自动登记设备 |
+| cmux | 安装过或运行过 cmux（官方版、nightly、自建版如 cmux DR2 均可）。网关启动自带的 relay，只监听本机回环地址；已安装并开启局域网配对的 relay 优先使用 |
 
 网关启动时检查一次，之后每分钟再查，之后安装或启动的来源会自动加入，不用重启。已有的
 来源不会被修改。`panecast sources list` 查看已接入的来源。要停用某个来源，把它从
@@ -47,10 +47,30 @@ hub 会拿到自己的新 ID。
 
 ## cmux
 
-cmux 通过现有 Swift relay 接入，保留其终端订阅、历史和项目文件协议。网关会自动用 relay 的
-局域网配对码登记一个名为「Panecast 网关」的设备，把 `url`（`ws://127.0.0.1:<端口>/v1/ws`）、
-`device_id` 和 `token` 写入配置。relay 只接受私有网段地址的局域网配对，所以登记走本机局域网 IP，
-之后的连接走 loopback。
+cmux 通过 Swift relay 接入，保留其终端订阅、历史和项目文件协议。两种方式：
+
+- **网关自带的 relay（默认）**：安装包在 `vendor/darwin/cmux-relay` 附带通用二进制。网关在配置目录下的
+  `cmux-gateway/` 写入只监听 `127.0.0.1` 的 relay 配置（默认端口 4401，被占用时顺延），用
+  `cmux-relay devices add` 给自己发凭据，来源配置带 `"managed": true` 和 `state_dir`。relay 随网关启动、
+  异常退出时退避重启、随网关停止；设备、收件箱记录都在 `cmux-gateway/` 中，与已安装的 relay 互不影响。
+  日志在 `cmux-gateway/relay.log`。
+- **已安装的 relay**：`~/.cmuxremote/relay.json` 开启了局域网配对（有 `lan.pairing_code`，监听非回环地址）
+  时，网关用局域网 IP 登记名为「Panecast 网关」的设备，之后走 loopback 连接。
+
+relay 依次查找 `CMUX_SOCKET_PATH`、官方版的 `last-socket-path` 标记，再按修改时间查找 nightly、RC、
+staging 和带标签开发版的标记（例如 cmux DR2 的 `/tmp/cmux-dev-dr2-selfhost-last-socket-path`），
+所以同时装有官方版时优先连接官方版。
+
+cmux 默认只接受在它自己终端里启动的程序（「仅限 cmux 进程」）。由后台服务启动的 relay 需要以下任一授权：
+
+- 在 cmux 终端里运行一次 `panecast restart`（或 `setup`、`start`、前台 `serve`）。网关保存 cmux 发给该终端的
+  授权到 `cmux-gateway/socket-control-capability`（0600），relay 之后一直使用它。官方版的授权在 cmux 重启后
+  仍然有效；开发版（包括 cmux DR2 r1）每次启动换新，重启 cmux 后需要再运行一次。
+- 在 cmux 设置中把「套接字控制模式」改为「自动化模式」，允许以当前用户身份运行的程序连接。
+- 「密码模式」：relay 读取 cmux 保存的套接字密码文件。
+
+授权缺失时，手机「来源」页的 cmux 显示「cmux 拒绝了网关的连接」及上述做法；cmux 没有运行时显示
+「没有找到正在运行的 cmux」。
 
 手机终端顶部可切换「对话 / 终端」。对话模式把正文显示为气泡，连续工具执行默认
 折叠，点按摘要可以展开；发送消息仍通过当前 surface 的输入通道发送文字和回车。

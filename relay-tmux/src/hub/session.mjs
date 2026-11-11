@@ -8,6 +8,14 @@ const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface
 const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'terminal.scroll', 'notification.create']);
 
 /** A phone keeps one authenticated connection while sources keep independent transports. */
+/** Explains the two cmux failures a user can fix: cmux not running, or cmux refusing the relay. */
+export function cmuxProblem(error) {
+  const message = String(error?.message ?? '');
+  if (/Access denied/i.test(message)) return 'cmux 拒绝了网关的连接。请在 cmux 设置中把「套接字控制模式」改为「自动化模式」，或在 cmux 终端里运行一次 panecast restart';
+  if (/socketMissing|connectFailed/.test(message)) return '没有找到正在运行的 cmux，请先打开 cmux';
+  return null;
+}
+
 export class HubSession extends RelaySession {
   constructor(registry, config, send, close, notify) {
     super(registry, config, send, close, notify);
@@ -78,9 +86,10 @@ export class HubSession extends RelaySession {
         if (source.config.type === 'codex') await (await this.registry.codex(source.config.id).connection()).call('thread/loaded/list');
         else await this.client(source.config.id).call('workspace.list', {});
         source.status = 'online'; delete source.error;
-      } catch {
+      } catch (error) {
         source.status = 'offline'; source.error = source.config.type === 'codex'
-          ? '未连接到 Codex 服务，请检查 Codex 是否已安装或桌面桥接是否启动' : '无法连接，请检查终端是否在运行';
+          ? '未连接到 Codex 服务，请检查 Codex 是否已安装或桌面桥接是否启动'
+          : (source.config.type === 'cmux' && cmuxProblem(error)) || '无法连接，请检查终端是否在运行';
       }
       return this.registry.info(source);
     })) };

@@ -16,6 +16,21 @@ const safeFile = (name) => { if (!/^[\w.-]+$/.test(name)) throw new Error(`Inval
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await copyFile(join(root, 'LICENSE'), join(root, 'relay-tmux/LICENSE'));
+// The gateway starts this relay for cmux when the Mac has no relay of its own.
+// Universal (Apple Silicon + Intel), stripped, ad-hoc signed; 4 jobs keep the Mac responsive.
+const relayDirectory = join(root, 'relay');
+const swift = (...args) => execFileSync('swift', ['build', '-c', 'release', '-j', '4', '--arch', 'arm64', '--arch', 'x86_64', '--product', 'cmux-relay', ...args], { cwd: relayDirectory, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+swift();
+const vendored = join(root, 'relay-tmux/vendor/darwin/cmux-relay');
+await rm(join(root, 'relay-tmux/vendor'), { recursive: true, force: true });
+await mkdir(join(root, 'relay-tmux/vendor/darwin'), { recursive: true });
+await copyFile(join(swift('--show-bin-path').trim(), 'cmux-relay'), vendored);
+execFileSync('strip', ['-x', vendored]);
+execFileSync('codesign', ['--force', '--sign', '-', vendored], { stdio: 'ignore' });
+execFileSync('codesign', ['--verify', '--strict', vendored]);
+const architectures = execFileSync('lipo', ['-archs', vendored], { encoding: 'utf8' }).trim().split(/\s+/).sort().join(' ');
+if (architectures !== 'arm64 x86_64') throw new Error(`cmux-relay must be universal, got: ${architectures}`);
+if (!execFileSync(vendored, ['devices', 'add', '--help'], { encoding: 'utf8' }).includes('--state-dir')) throw new Error('cmux-relay lacks gateway support');
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', output], { cwd: join(root, 'relay-tmux'), encoding: 'utf8' }))[0];
 const cliFile = safeFile(packed.filename), cliSHA = await digest(join(output, cliFile));
 const mac = { version: packageJSON.version, file: cliFile, sha256: cliSHA, date: settings.mac.date, notes: settings.mac.notes };
@@ -106,4 +121,4 @@ for (const filename of [cliFile, androidFile, ...desktopArtifacts.map(({ file })
   checksums.push(`${await digest(join(output, filename))}  ${filename}`);
 }
 await writeFile(join(output, 'SHA256SUMS'), checksums.join('\n') + '\n');
-console.log(JSON.stringify({ output, cli: mac, android: settings.android.file }, null, 2));
+console.log(JSON.stringify({ output, cli: mac, cmuxRelay: { sha256: await digest(vendored), architectures }, android: settings.android.file }, null, 2));

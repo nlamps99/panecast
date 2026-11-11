@@ -89,7 +89,7 @@ test('setup with only an account gets credentials from the broker and pair needs
 
   const path = join(directory, 'hub-relay.json'), passwordFile = join(directory, 'password');
   await writeFile(passwordFile, `${password}\n`, { mode: 0o600 });
-  await quiet(() => setup(['--config', path, '--broker-url', 'https://relay.example.com/', '--username', 'Alice', '--password-file', passwordFile, '--name', 'Studio Mac'], { fetch: viaLocalBroker, discover: { home: directory, lanHost: undefined, tmux: () => true } }));
+  await quiet(() => setup(['--config', path, '--broker-url', 'https://relay.example.com/', '--username', 'Alice', '--password-file', passwordFile, '--name', 'Studio Mac'], { fetch: viaLocalBroker, discover: { home: directory, lanHost: undefined, tmux: () => true, managed: { binary: null } } }));
   const config = JSON.parse(await readFile(path, 'utf8'));
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.equal(config.broker.url, 'https://relay.example.com');

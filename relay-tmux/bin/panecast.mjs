@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname, resolve } from 'node:path';
 import { configPath, setup, lanAddress } from '../src/installation.mjs';
-import { service, clearStaleSocket } from '../src/service.mjs';
+import { service, serviceStatus, clearStaleSocket } from '../src/service.mjs';
+import { captureCmuxCapability, STATE_DIRECTORY_NAME } from '../src/hub/cmux-managed.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'help';
@@ -26,6 +27,9 @@ async function main() {
   panecast sources list                  查看已接入的来源（tmux、cmux、Codex 自动接入，全部权限）
   panecast desktop prepare | check       Codex 桌面桥接
 
+cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；
+也可以在 cmux 设置中把「套接字控制模式」改为「自动化模式」。
+
 所有网关命令支持 --config /absolute/path/hub-relay.json。
 自动配置：setup --broker-url HTTPS_URL --username NAME --password-file PATH
           [--register] [--name 电脑名称] [--lan]
@@ -34,6 +38,12 @@ async function main() {
 安装与更新：https://ningzx.cn/panecast/`); return;
   }
   const path = configPath(args);
+  if (['setup', 'start', 'restart'].includes(command)) {
+    // Inside a cmux terminal, cmux hands out a capability that lets the gateway's relay connect.
+    const saved = await captureCmuxCapability(join(dirname(path), STATE_DIRECTORY_NAME)).catch(() => false);
+    if (saved) console.log('已保存 cmux 的连接授权。');
+    if (saved && command === 'start' && (await serviceStatus(path)).loaded) console.log('后台服务已在运行，运行 panecast restart 让 cmux 授权生效。');
+  }
   if (command === 'setup') { await setup(args.slice(1)); return; }
   if (['start', 'stop', 'restart', 'status'].includes(command)) {
     await service(command, path, process.env.PANECAST_LAUNCHER ?? resolve(process.argv[1])); return;

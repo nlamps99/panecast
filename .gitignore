@@ -35,3 +35,6 @@ desktop/web/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/icons/
+
+# Swift relay binary bundled into the CLI package by distribution/build.mjs.
+relay-tmux/vendor/

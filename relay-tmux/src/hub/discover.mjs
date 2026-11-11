@@ -2,8 +2,9 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { access, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { lanAddress } from '../installation.mjs';
+import { bundledRelay, cmuxPresent, provisionManagedCmux, STATE_DIRECTORY_NAME } from './cmux-managed.mjs';
 import { usableCmux } from './registry.mjs';
 
 const exists = (path) => access(path).then(() => true, () => false);
@@ -29,8 +30,20 @@ async function cmuxSource({ home, lanHost, fetch: request }) {
   } catch { return null; }
 }
 
+/**
+ * Starts the gateway's own loopback relay when cmux is present but no relay
+ * accepts the gateway, which is the case after a plain `panecast` install.
+ */
+async function managedCmuxSource({ home, managed }) {
+  if (!managed?.stateDirectory) return null;
+  const binary = managed.binary === undefined ? await bundledRelay() : managed.binary;
+  if (!binary || !await (managed.present ?? (() => cmuxPresent({ home })))()) return null;
+  try { return await provisionManagedCmux({ stateDirectory: managed.stateDirectory, binary, run: managed.run }); }
+  catch { return null; }
+}
+
 /** Returns the given sources plus every source this computer can provide. Existing entries are kept as they are. */
-export async function discoverSources(sources = [], { home = homedir(), lanHost = lanAddress(), fetch: request = fetch, tmux = tmuxInstalled } = {}) {
+export async function discoverSources(sources = [], { home = homedir(), lanHost = lanAddress(), fetch: request = fetch, tmux = tmuxInstalled, managed } = {}) {
   const next = [...sources], added = [];
   const freeId = (base) => { let id = base; for (let n = 2; next.some((s) => s.id === id); n++) id = `${base}-${n}`; return id; };
   const add = (source) => { const entry = { ...source, id: freeId(source.id) }; next.push(entry); added.push(entry); };
@@ -41,7 +54,7 @@ export async function discoverSources(sources = [], { home = homedir(), lanHost 
     if (desktop.type === 'codex' && typeof desktop.id === 'string' && !next.some((s) => s.id === desktop.id)) add(desktop);
   } catch {}
   if (!next.some(usableCmux)) {
-    const cmux = await cmuxSource({ home, lanHost, fetch: request });
+    const cmux = await cmuxSource({ home, lanHost, fetch: request }) ?? await managedCmuxSource({ home, managed });
     if (cmux) {
       const placeholder = next.findIndex((s) => s.type === 'cmux');
       if (placeholder >= 0) { next[placeholder] = { ...cmux, id: next[placeholder].id }; added.push(next[placeholder]); }
@@ -52,9 +65,10 @@ export async function discoverSources(sources = [], { home = homedir(), lanHost 
 }
 
 /** Adds discovered sources to the config file and returns their IDs. */
-export async function discoverInto(path, options) {
+export async function discoverInto(path, options = {}) {
   const before = JSON.parse(await readFile(path, 'utf8'));
-  const { added } = await discoverSources(before.sources ?? [], options);
+  const managed = { stateDirectory: join(dirname(path), STATE_DIRECTORY_NAME), ...options.managed };
+  const { added } = await discoverSources(before.sources ?? [], { ...options, managed });
   if (!added.length) return [];
   // Discovery may wait on the network, so merge into the latest file instead of the snapshot.
   const config = JSON.parse(await readFile(path, 'utf8'));

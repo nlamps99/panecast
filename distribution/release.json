@@ -3,9 +3,9 @@
   "mac": {
     "date": "2026-11-11",
     "notes": [
-      "去掉来源授权步骤：tmux、cmux、Codex 自动接入，拥有全部权限",
-      "cmux 自动向本机 relay 登记并接入，无需手动调用接口或编辑配置",
-      "Codex 默认可新建和继续会话；桌面桥接准备好后自动加入"
+      "安装包自带 cmux relay：装好 cmux 的电脑无需另装 relay，网关自动在本机启动并接入",
+      "支持 cmux DR2、nightly 等自建或测试版 cmux，自动找到它们的连接",
+      "cmux 拒绝连接或未运行时，手机来源页直接说明原因和解决方法"
     ]
   },
   "android": {
@@ -29,6 +29,18 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.5",
+      "file": "panecast-cli-0.1.5.tgz",
+      "sha256": "c8eee78607f9c202bd81063badacd4160b1113454e6557c023b8564ed72b63a7",
+      "date": "2026-11-11",
+      "notes": [
+        "去掉来源授权步骤：tmux、cmux、Codex 自动接入，拥有全部权限",
+        "cmux 自动向本机 relay 登记并接入，无需手动调用接口或编辑配置",
+        "Codex 默认可新建和继续会话；桌面桥接准备好后自动加入"
+      ]
+    },
     {
       "platform": "macOS CLI",
       "version": "0.1.4",

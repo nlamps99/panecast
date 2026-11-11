@@ -11,8 +11,13 @@ import Crypto
 ///
 /// Subcommands:
 /// - `serve` (default) — boot the HTTP/WS relay against the local cmux UDS.
-/// - `devices list` / `devices revoke <id>` — inspect / mutate
+/// - `devices list` / `devices add` / `devices revoke <id>` — inspect / mutate
 ///   `~/.cmuxremote/devices.json` without going through the running server.
+///
+/// `--state-dir` moves the device store, inbox journal and broker push state
+/// out of `~/.cmuxremote`, so a relay started by the Panecast gateway keeps
+/// its own devices and never rewrites the store of a relay already installed
+/// on the same Mac.
 ///
 /// The AppKit menu-bar subcommand from the plan is intentionally deferred
 /// — it's not on the critical path to "phone talks to relay" and adds
@@ -161,14 +166,17 @@ struct Serve: AsyncParsableCommand {
             help: "Path to relay.json (default: ~/.cmuxremote/relay.json).")
     var config: String = defaultConfigPath()
 
+    @OptionGroup var state: StateDirectoryOption
+
     func run() async throws {
         let logger = Logger(label: "cmux-relay")
+        try state.prepare()
         let store = ConfigStore(url: URL(fileURLWithPath: config))
         try store.reload()
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         let conn = CmuxConnection(group: group)
-        let inbox = InboxJournal(url: URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cmuxremote/inbox-events.json"))
+        let inbox = InboxJournal(url: state.url("inbox-events.json"))
         let facade = HostFacade(backend: CMUXFacadeImpl(connection: conn), inbox: inbox, config: { store.current })
         let historyFacade = CMUXFacadeImpl(connection: conn, lane: .history)
         let history = SurfaceHistoryService(cmux: historyFacade)
@@ -176,12 +184,12 @@ struct Serve: AsyncParsableCommand {
         let manager = SessionManager(reader: reader,
                                      defaultFps: store.current.defaultFps,
                                      idleFps: store.current.idleFps)
-        let deviceStore = try DeviceStore(url: URL(fileURLWithPath: devicesStorePath()))
+        let deviceStore = try DeviceStore(url: state.url("devices.json"))
         let apnsProvider = APNsProviderClient(config: { store.current.apns })
         let brokerPush: BrokerPushService?
         if let broker = store.current.broker, store.current.transport.enablesBroker {
             let identity = SHA256.hash(data: Data("\(broker.url)|\(broker.relayId)".utf8)).map { String(format: "%02x", $0) }.joined()
-            let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cmuxremote/broker-push-\(identity).json")
+            let url = state.url("broker-push-\(identity).json")
             brokerPush = BrokerPushService(url: url, relayId: broker.relayId, sender: apnsProvider, config: { store.current.apns })
         } else { brokerPush = nil }
         let apnsFanout = InboxPushFanout(
@@ -320,8 +328,8 @@ struct Serve: AsyncParsableCommand {
 struct Devices: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "devices",
-        abstract: "Inspect and revoke registered phones.",
-        subcommands: [List.self, Revoke.self]
+        abstract: "Inspect, add and revoke registered devices.",
+        subcommands: [List.self, Add.self, Revoke.self]
     )
 
     struct List: AsyncParsableCommand {
@@ -330,8 +338,10 @@ struct Devices: AsyncParsableCommand {
             abstract: "Print all registered devices."
         )
 
+        @OptionGroup var state: StateDirectoryOption
+
         func run() async throws {
-            let store = try DeviceStore(url: URL(fileURLWithPath: devicesStorePath()))
+            let store = try DeviceStore(url: state.url("devices.json"))
             for d in store.allDevices() {
                 print("\(d.deviceId)  \(d.loginName)  \(d.hostname)  registered=\(d.registeredAt)")
             }
@@ -347,11 +357,71 @@ struct Devices: AsyncParsableCommand {
         @Argument(help: "Device id to revoke.")
         var deviceId: String
 
+        @OptionGroup var state: StateDirectoryOption
+
         func run() async throws {
-            let store = try DeviceStore(url: URL(fileURLWithPath: devicesStorePath()))
+            let store = try DeviceStore(url: state.url("devices.json"))
             try store.revoke(deviceId: deviceId)
             print("revoked \(deviceId)")
         }
+    }
+}
+
+extension Devices {
+    /// Issues a credential for a local client such as the Panecast gateway,
+    /// which reaches the relay over loopback and so can neither pair through
+    /// the tailnet nor through the private-LAN route. Re-adding the same id
+    /// replaces its token. Prints `{"device_id","token"}` as JSON on stdout;
+    /// stop a running relay first, because it only reads the store at startup.
+    struct Add: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "add",
+            abstract: "Register a local client and print its credential as JSON."
+        )
+
+        @Option(name: .customLong("device-id"), help: "Stable id for the client.")
+        var deviceId: String
+
+        @Option(name: .customLong("name"), help: "Name shown in `devices list`.")
+        var name: String = "Panecast gateway"
+
+        @OptionGroup var state: StateDirectoryOption
+
+        func validate() throws {
+            guard !deviceId.isEmpty, deviceId.count <= 128,
+                  deviceId.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "-_.".unicodeScalars.contains($0) })
+            else { throw ValidationError("--device-id may use letters, digits, '-', '_' and '.' (at most 128).") }
+        }
+
+        func run() async throws {
+            try state.prepare()
+            let store = try DeviceStore(url: state.url("devices.json"))
+            let token = try store.register(deviceId: deviceId, loginName: "local",
+                                           hostname: name, apnsToken: nil)
+            let output = try JSONSerialization.data(withJSONObject: ["device_id": deviceId, "token": token],
+                                                    options: [.sortedKeys])
+            print(String(decoding: output, as: UTF8.self))
+        }
+    }
+}
+
+/// `--state-dir`: where devices, the inbox journal and broker push state live.
+struct StateDirectoryOption: ParsableArguments {
+    @Option(name: .customLong("state-dir"),
+            help: "Directory for devices and relay state (default: ~/.cmuxremote).")
+    var stateDir: String?
+
+    var directory: URL {
+        if let stateDir, !stateDir.isEmpty { return URL(fileURLWithPath: stateDir, isDirectory: true) }
+        return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cmuxremote", isDirectory: true)
+    }
+
+    func url(_ name: String) -> URL { directory.appendingPathComponent(name, isDirectory: false) }
+
+    /// Creates the directory owner-only; device token hashes live here.
+    func prepare() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
     }
 }
 
@@ -359,10 +429,6 @@ struct Devices: AsyncParsableCommand {
 
 func defaultConfigPath() -> String {
     "\(NSHomeDirectory())/.cmuxremote/relay.json"
-}
-
-func devicesStorePath() -> String {
-    "\(NSHomeDirectory())/.cmuxremote/devices.json"
 }
 
 /// Split `RelayConfig.listen` ("host:port") into a host + port pair.

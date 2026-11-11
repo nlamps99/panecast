@@ -38,7 +38,7 @@ test('every source this computer provides is added with full access and cmux reg
   await writeFile(join(directory, '.cmuxremote', 'desktop', 'source.json'), JSON.stringify({ id: 'codex-desktop', name: 'Codex 桌面会话', type: 'codex', enabled: false, access: 'read', mode: 'attach', socket: '/tmp/x.sock' }));
   const path = join(directory, 'hub-relay.json');
   await writeFile(path, JSON.stringify({ broker: { relay_id: 'keep' }, sources: [] }), { mode: 0o600 });
-  const options = { home: directory, lanHost: '127.0.0.1', tmux: () => true };
+  const options = { home: directory, lanHost: '127.0.0.1', tmux: () => true, managed: { binary: null } };
 
   assert.deepEqual(await discoverInto(path, options), ['tmux', 'codex', 'codex-desktop', 'cmux']);
   const config = JSON.parse(await readFile(path, 'utf8'));
@@ -65,7 +65,7 @@ test('a cmux placeholder is filled in place and existing sources are left untouc
     { id: 'tmux', name: 'Work tmux', type: 'tmux', tmux_socket: 'work' },
     { id: 'cmux-main', type: 'cmux', url: 'ws://127.0.0.1:4399/v1/ws', device_id: 'REPLACE_WITH_REGISTERED_DEVICE_ID', token: 'REPLACE_WITH_REGISTERED_DEVICE_TOKEN' },
   ];
-  const { sources, added } = await discoverSources(existing, { home: directory, lanHost: '127.0.0.1', tmux: () => true });
+  const { sources, added } = await discoverSources(existing, { home: directory, lanHost: '127.0.0.1', tmux: () => true, managed: { binary: null } });
   assert.deepEqual(added.map((s) => s.id), ['cmux-main']);
   assert.deepEqual(sources[0], existing[0]);
   assert.equal(sources[1].id, 'cmux-main'); assert.equal(sources[1].token, 'hub-token');
@@ -79,12 +79,12 @@ test('cmux is skipped without a reachable LAN pairing route and nothing is writt
     { listen: `127.0.0.1:${relay.port}`, lan: { pairing_code: 'lan-code' } },
   ]) {
     const directory = await home(t, config);
-    assert.deepEqual((await discoverSources([], { home: directory, lanHost: '127.0.0.1', tmux: () => false })).added, []);
+    assert.deepEqual((await discoverSources([], { home: directory, lanHost: '127.0.0.1', tmux: () => false, managed: { binary: null } })).added, []);
   }
   assert.equal(relay.requests.length, 0, 'no request without LAN pairing');
   const directory = await home(t, { listen: `0.0.0.0:${relay.port}`, lan: { pairing_code: 'wrong' } });
   const path = join(directory, 'hub-relay.json'); await writeFile(path, '{"sources":[]}');
-  assert.deepEqual(await discoverInto(path, { home: directory, lanHost: '127.0.0.1', tmux: () => false }), []);
+  assert.deepEqual(await discoverInto(path, { home: directory, lanHost: '127.0.0.1', tmux: () => false, managed: { binary: null } }), []);
   assert.equal(relay.requests.length, 1);
   assert.equal(await readFile(path, 'utf8'), '{"sources":[]}');
 });
@@ -98,6 +98,6 @@ test('discovery merges into edits made while it waited on the relay', async (t) 
   const directory = await home(t, { listen: `0.0.0.0:${relay.port}`, lan: { pairing_code: 'lan-code' } });
   path = join(directory, 'hub-relay.json');
   await writeFile(path, JSON.stringify({ sources: [{ id: 'tmux', type: 'tmux' }] }));
-  await discoverInto(path, { home: directory, lanHost: '127.0.0.1', tmux: () => true });
+  await discoverInto(path, { home: directory, lanHost: '127.0.0.1', tmux: () => true, managed: { binary: null } });
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).sources.map((s) => s.id), ['tmux', 'manual', 'cmux']);
 });

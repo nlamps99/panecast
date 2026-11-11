@@ -41,7 +41,9 @@ python3 distribution/publish.py --desktop-only --host USER@SERVER --directory /a
    （每条包含 `platform`、`version`、`file`、`date`、`notes`）。不要改写同一版本的二进制。
 3. Node 运行时从 nodejs.org 下载到 `build/distribution/cache/`。在发布配置中固定版本和
    从官方 `SHASUMS256.txt` 核对过的哈希；第三方许可证随运行时及包一起分发。
-4. 运行 `node distribution/build.mjs`，产物在 `build/distribution/public/`。
+4. 运行 `node distribution/build.mjs`，产物在 `build/distribution/public/`。构建会先在 `relay/` 编译
+   通用（arm64 + x86_64）release 版 `cmux-relay`，裁剪符号并 ad-hoc 签名后放入 CLI 包的
+   `vendor/darwin/`，网关在没有可用 relay 的电脑上用它接入 cmux。需要 Xcode 命令行工具。
 5. 验证安装器、npm 安装、Homebrew Formula，以及配置/启停/配对。发布命令如下：
 
 ```sh

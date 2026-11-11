@@ -16,7 +16,8 @@ final class CmuxSocketPathTests: XCTestCase {
             ["HOME": "/Users/x"],
             appSupportDirectory: URL(fileURLWithPath: "/Users/x/Library/Application Support"),
             stateDirectory: URL(fileURLWithPath: "/Users/x/.local/state"),
-            tmpMarkerPath: noTmpMarker()
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: noTmpDirectory()
         )
         XCTAssertEqual(p, "/Users/x/.local/state/cmux/cmux.sock")
     }
@@ -37,7 +38,8 @@ final class CmuxSocketPathTests: XCTestCase {
             [:],
             appSupportDirectory: temp.appendingPathComponent("appsupport"),
             stateDirectory: temp.appendingPathComponent("state"),
-            tmpMarkerPath: tmpMarker.path
+            tmpMarkerPath: tmpMarker.path,
+            tmpDirectory: noTmpDirectory()
         )
 
         XCTAssertEqual(p, tmpSocket)
@@ -56,7 +58,8 @@ final class CmuxSocketPathTests: XCTestCase {
             [:],
             appSupportDirectory: temp.appendingPathComponent("appsupport"),
             stateDirectory: temp.appendingPathComponent("state"),
-            tmpMarkerPath: noTmpMarker()
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: noTmpDirectory()
         )
 
         XCTAssertEqual(p, stateSocket)
@@ -72,7 +75,8 @@ final class CmuxSocketPathTests: XCTestCase {
             [:],
             appSupportDirectory: temp.appendingPathComponent("appsupport"),
             stateDirectory: temp.appendingPathComponent("empty-state"),
-            tmpMarkerPath: noTmpMarker()
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: noTmpDirectory()
         )
 
         XCTAssertEqual(p, legacySocket)
@@ -88,7 +92,8 @@ final class CmuxSocketPathTests: XCTestCase {
         let p = cmuxSocketPath(
             ["XDG_STATE_HOME": xdg.path],
             appSupportDirectory: temp.appendingPathComponent("appsupport"),
-            tmpMarkerPath: noTmpMarker()
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: noTmpDirectory()
         )
 
         XCTAssertEqual(p, stateSocket)
@@ -108,7 +113,8 @@ final class CmuxSocketPathTests: XCTestCase {
             [:],
             appSupportDirectory: temp.appendingPathComponent("appsupport"),
             stateDirectory: temp.appendingPathComponent("state"),
-            tmpMarkerPath: tmpMarker.path
+            tmpMarkerPath: tmpMarker.path,
+            tmpDirectory: noTmpDirectory()
         )
 
         XCTAssertEqual(p, stateDir.appendingPathComponent("cmux.sock").path)
@@ -126,10 +132,101 @@ final class CmuxSocketPathTests: XCTestCase {
             ["CMUX_SOCKET_PATH": "/tmp/explicit.sock"],
             appSupportDirectory: temp.appendingPathComponent("appsupport"),
             stateDirectory: temp.appendingPathComponent("state"),
-            tmpMarkerPath: tmpMarker.path
+            tmpMarkerPath: tmpMarker.path,
+            tmpDirectory: noTmpDirectory()
         )
 
         XCTAssertEqual(p, "/tmp/explicit.sock")
+    }
+
+    func testFindsTaggedDevBuildMarkerInTmp() throws {
+        // cmux DR2 (`com.cmuxterm.app.debug.dr2.selfhost`) is a tagged dev build.
+        let temp = freshTemp()
+        let tmp = temp.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let socket = makeSocket(tmp, "cmux-debug-dr2-selfhost.sock")
+        try "\(socket)\n".write(to: tmp.appendingPathComponent("cmux-dev-dr2-selfhost-last-socket-path"),
+                                atomically: true, encoding: .utf8)
+
+        let p = cmuxSocketPath(
+            [:],
+            appSupportDirectory: temp.appendingPathComponent("appsupport"),
+            stateDirectory: temp.appendingPathComponent("state"),
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: tmp.path
+        )
+
+        XCTAssertEqual(p, socket)
+    }
+
+    func testFindsVariantMarkerInStateDirectory() throws {
+        let temp = freshTemp()
+        let stateDir = try makeCmuxDir(temp.appendingPathComponent("state"))
+        let socket = makeSocket(stateDir, "nightly.sock")
+        try "\(socket)\n".write(to: stateDir.appendingPathComponent("nightly-last-socket-path"),
+                                atomically: true, encoding: .utf8)
+
+        let p = cmuxSocketPath(
+            [:],
+            appSupportDirectory: temp.appendingPathComponent("appsupport"),
+            stateDirectory: temp.appendingPathComponent("state"),
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: noTmpDirectory()
+        )
+
+        XCTAssertEqual(p, socket)
+    }
+
+    func testStableMarkerWinsOverVariantMarkers() throws {
+        let temp = freshTemp()
+        let tmp = temp.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let stateDir = try makeCmuxDir(temp.appendingPathComponent("state"))
+        let stable = makeSocket(stateDir, "cmux-501.sock")
+        try writeMarker(stateDir, to: stable)
+        let dev = makeSocket(tmp, "cmux-debug-dr2-selfhost.sock")
+        try "\(dev)\n".write(to: tmp.appendingPathComponent("cmux-dev-dr2-selfhost-last-socket-path"),
+                             atomically: true, encoding: .utf8)
+
+        let p = cmuxSocketPath(
+            [:],
+            appSupportDirectory: temp.appendingPathComponent("appsupport"),
+            stateDirectory: temp.appendingPathComponent("state"),
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: tmp.path
+        )
+
+        XCTAssertEqual(p, stable)
+    }
+
+    func testNewestLiveVariantMarkerWinsAndStaleOnesAreSkipped() throws {
+        let temp = freshTemp()
+        let tmp = temp.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let older = makeSocket(tmp, "cmux-rc.sock")
+        let newer = makeSocket(tmp, "cmux-debug-other.sock")
+        let olderMarker = tmp.appendingPathComponent("cmux-rc-last-socket-path")
+        let newerMarker = tmp.appendingPathComponent("cmux-dev-other-last-socket-path")
+        let staleMarker = tmp.appendingPathComponent("cmux-staging-last-socket-path")
+        let unrelated = tmp.appendingPathComponent("cmux-last-debug-log-path")
+        try "\(older)\n".write(to: olderMarker, atomically: true, encoding: .utf8)
+        try "\(newer)\n".write(to: newerMarker, atomically: true, encoding: .utf8)
+        try "/tmp/no-such-staging.sock\n".write(to: staleMarker, atomically: true, encoding: .utf8)
+        try "\(older)\n".write(to: unrelated, atomically: true, encoding: .utf8)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: olderMarker.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-30)], ofItemAtPath: newerMarker.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: staleMarker.path)
+
+        let p = cmuxSocketPath(
+            [:],
+            appSupportDirectory: temp.appendingPathComponent("appsupport"),
+            stateDirectory: temp.appendingPathComponent("state"),
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: tmp.path
+        )
+
+        XCTAssertEqual(p, newer)
     }
 
     func testSocketPasswordEnvWins() throws {
@@ -247,6 +344,11 @@ final class CmuxSocketPathTests: XCTestCase {
 
     private func freshTemp() -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+    }
+
+    /// A directory guaranteed not to exist, to neutralize variant-marker scanning.
+    private func noTmpDirectory() -> String {
+        "/tmp/cmux-iphone-tests-no-such-dir-\(UUID().uuidString)"
     }
 
     /// A `/tmp` marker path guaranteed not to exist, to neutralize that tier.

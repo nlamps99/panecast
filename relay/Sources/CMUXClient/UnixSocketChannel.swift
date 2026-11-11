@@ -17,7 +17,8 @@ public enum UnixSocketChannelError: Error, Equatable {
 /// 4. the XDG state marker `$XDG_STATE_HOME/cmux/last-socket-path`
 ///    (default `~/.local/state/cmux/last-socket-path`)
 /// 5. the legacy `~/Library/Application Support/cmux/last-socket-path` marker
-/// 6. the `~/.local/state/cmux/cmux.sock` fallback
+/// 6. markers of other cmux app variants (see below), newest first
+/// 7. the `~/.local/state/cmux/cmux.sock` fallback
 ///
 /// Modern cmux rotates its socket (e.g. `cmux-501.sock`) and, as of the 1.0.5
 /// generation, moved its state from `~/Library/Application Support/cmux` to the
@@ -26,11 +27,19 @@ public enum UnixSocketChannelError: Error, Equatable {
 /// Following the markers newest-convention-first keeps long-running relay
 /// installs from being pinned to a stale socket after cmux updates or restarts,
 /// while the legacy marker keeps older cmux builds working.
+///
+/// Nightly, RC, staging and tagged builds publish their own markers instead
+/// (`/tmp/cmux-<variant>[-<tag>]-last-socket-path` and
+/// `<state>/cmux/<variant>[-<tag>]-last-socket-path`). Self-hosted builds such
+/// as cmux DR2 (`com.cmuxterm.app.debug.dr2.selfhost`) are tagged dev builds, so
+/// without this tier the relay could never find their socket. The stable app
+/// still wins when both are running.
 public func cmuxSocketPath(
     _ env: [String: String] = ProcessInfo.processInfo.environment,
     appSupportDirectory: URL? = nil,
     stateDirectory: URL? = nil,
     tmpMarkerPath: String = "/tmp/cmux-last-socket-path",
+    tmpDirectory: String = "/tmp",
     fileManager: FileManager = .default
 ) -> String {
     if let p = env["CMUX_SOCKET_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty { return p }
@@ -55,7 +64,32 @@ public func cmuxSocketPath(
         }
     }
 
+    let variants = variantMarkers(in: tmpDirectory, filePrefix: "cmux-", fileManager: fileManager)
+        + variantMarkers(in: stateCmuxDirectory.path, filePrefix: "", fileManager: fileManager)
+    for marker in variants.sorted(by: { $0.modified > $1.modified }) {
+        if let socket = socketFromMarker(marker.path, fileManager: fileManager) {
+            return socket
+        }
+    }
+
     return stateCmuxDirectory.appendingPathComponent("cmux.sock", isDirectory: false).path
+}
+
+private let cmuxVariantNames = ["dev", "nightly", "rc", "staging"]
+
+/// Lists `<filePrefix><variant>[-<tag>]-last-socket-path` markers in `directory`.
+private func variantMarkers(in directory: String, filePrefix: String,
+                            fileManager: FileManager) -> [(path: String, modified: Date)] {
+    guard let names = try? fileManager.contentsOfDirectory(atPath: directory) else { return [] }
+    let suffix = "-last-socket-path"
+    return names.compactMap { name in
+        guard name.hasPrefix(filePrefix), name.hasSuffix(suffix) else { return nil }
+        let middle = name.dropFirst(filePrefix.count).dropLast(suffix.count)
+        guard cmuxVariantNames.contains(where: { middle == $0 || middle.hasPrefix("\($0)-") }) else { return nil }
+        let path = (directory as NSString).appendingPathComponent(name)
+        let modified = (try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+        return (path, modified)
+    }
 }
 
 /// Reads a cmux `last-socket-path` marker file and returns the socket path it

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import net from 'node:net';
 import qrcode from 'qrcode-terminal';
 import { TmuxBackend } from '../tmux.mjs';
+import { bundledRelay, captureCmuxCapability, ManagedCmuxRelay, STATE_DIRECTORY_NAME } from './cmux-managed.mjs';
 import { discoverInto } from './discover.mjs';
 import { scoped } from './ids.mjs';
 import { createHub } from './server.mjs';
@@ -16,13 +17,17 @@ const path = resolve(flag('--config') ?? join(homedir(), '.cmuxremote', 'hub-rel
 
 async function main() {
   if ((args[0] ?? 'serve') === 'serve') {
+    // Run in the foreground from a cmux terminal, the gateway can save cmux's socket capability.
+    await captureCmuxCapability(join(dirname(path), STATE_DIRECTORY_NAME)).catch(() => {});
     const found = await discoverInto(path).catch(() => []);
     if (found.length) console.log(`Added sources: ${found.join(', ')}`);
   }
   const raw = await readFile(path, 'utf8'), config = JSON.parse(raw);
   if ((args[0] ?? 'serve') === 'serve') {
     const relay = await createHub(config);
+    const cmuxRelay = new ManagedCmuxRelay({ binary: await bundledRelay(), log: (message) => console.error(message) });
     try { await relay.start(); } catch (error) { await relay.close(); throw error; }
+    await cmuxRelay.sync(config.sources ?? []).catch(() => console.error('cmux relay could not start'));
     console.log('Panecast hub started');
     let previous = raw, loading = false;
     const timer = setInterval(async () => {
@@ -30,7 +35,11 @@ async function main() {
       loading = true;
       try {
         const next = await readFile(path, 'utf8');
-        if (next !== previous) { relay.reloadSources(JSON.parse(next).sources ?? []); previous = next; console.log('Sources updated'); }
+        if (next !== previous) {
+          const sources = JSON.parse(next).sources ?? [];
+          relay.reloadSources(sources); previous = next; console.log('Sources updated');
+          void cmuxRelay.sync(sources).catch(() => console.error('cmux relay could not start'));
+        }
       } catch { console.error('Cannot reload sources; check the local config file'); }
       finally { loading = false; }
     }, 1000);
@@ -38,7 +47,7 @@ async function main() {
     const rediscover = setInterval(() => {
       void discoverInto(path).then((found) => { if (found.length) console.log(`Added sources: ${found.join(', ')}`); }).catch(() => {});
     }, 60_000);
-    const stop = async () => { clearInterval(timer); clearInterval(rediscover); await relay.close(); process.exit(0); };
+    const stop = async () => { clearInterval(timer); clearInterval(rediscover); await cmuxRelay.close().catch(() => {}); await relay.close(); process.exit(0); };
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
   } else if (args[0] === 'sources') {
     const action = args[1] ?? 'list';
