@@ -61,7 +61,9 @@ relay 依次查找 `CMUX_SOCKET_PATH`、官方版的 `last-socket-path` 标记�
 staging 和带标签开发版的标记（例如 cmux DR2 的 `/tmp/cmux-dev-dr2-selfhost-last-socket-path`），
 所以同时装有官方版时优先连接官方版。
 
-cmux 默认只接受在它自己终端里启动的程序（「仅限 cmux 进程」）。由后台服务启动的 relay 需要以下任一授权：
+cmux DR2 从 r2 起默认使用「自动化模式」，网关直接可连，无需下面的步骤。
+
+官方 cmux 默认只接受在它自己终端里启动的程序（「仅限 cmux 进程」）。由后台服务启动的 relay 需要以下任一授权：
 
 - 在 cmux 终端里运行一次 `panecast restart`（或 `setup`、`start`、前台 `serve`）。网关保存 cmux 发给该终端的
   授权到 `cmux-gateway/socket-control-capability`（0600），relay 之后一直使用它。官方版的授权在 cmux 重启后
