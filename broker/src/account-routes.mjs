@@ -1,7 +1,7 @@
 /** Uses the same relay identities and proof of access as the existing pairing API. */
 export async function accountRoute(request, response, url, context) {
   if (!url.pathname.startsWith('/v1/account/')) return false;
-  const { accounts, relays, relayConnections, store, readJSON, sendJSON, sendEmpty, bearerToken, secretEquals, limit, sync } = context;
+  const { accounts, relayAccess, relayConnections, store, readJSON, sendJSON, sendEmpty, bearerToken, limit, sync, enrollment, removeRelays } = context;
   const route = url.pathname.slice('/v1/account/'.length);
   const method = request.method;
   const token = bearerToken(request);
@@ -28,15 +28,20 @@ export async function accountRoute(request, response, url, context) {
     await sync();
     sendEmpty(response, 204);
   } else if (route === 'me' && method === 'DELETE') {
-    await accounts.deleteAccount(token, body.password);
+    removeRelays(await accounts.deleteAccount(token, body.password));
     await sync();
     sendEmpty(response, 204);
+  } else if (route === 'relays' && method === 'POST') {
+    if (!enrollment.enabled) return fail(403, 'relay_enrollment_disabled');
+    if (body.name !== undefined && (typeof body.name !== 'string' || body.name.length > 256)) return fail(400, 'invalid_request');
+    const name = (body.name ?? '').trim().slice(0, 60) || '电脑';
+    sendJSON(response, 201, await accounts.enrollRelay(token, name, enrollment));
   } else if (route === 'computers' && method === 'GET') {
-    sendJSON(response, 200, { computers: accounts.computers(token).filter((c) => relays.has(c.relay_id)).map((c) => ({ ...c, online: relayConnections.has(c.relay_id) })) });
+    sendJSON(response, 200, { computers: accounts.computers(token).filter((c) => relayAccess.has(c.relay_id)).map((c) => ({ ...c, online: relayConnections.has(c.relay_id) })) });
   } else if (route === 'computers' && method === 'POST') {
-    const relay = relays.get(body.relay_id);
-    const pairedDevice = relay && typeof body.device_token === 'string' && await store.authenticate(body.device_token, body.relay_id);
-    const validCode = relay && typeof body.pairing_code === 'string' && body.pairing_code.length <= 4096 && secretEquals(body.pairing_code, relay.pairingCode);
+    const known = relayAccess.has(body.relay_id);
+    const pairedDevice = known && typeof body.device_token === 'string' && await store.authenticate(body.device_token, body.relay_id);
+    const validCode = known && relayAccess.pairing(body.relay_id, body.pairing_code);
     if (!pairedDevice && !validCode) return fail(403, 'pairing_rejected');
     const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : '';
     await accounts.bind(token, body.relay_id, name || body.relay_id);
@@ -48,7 +53,7 @@ export async function accountRoute(request, response, url, context) {
       if (typeof body.name !== 'string' || !body.name.trim() || body.name.length > 60) return fail(400, 'invalid_request');
       await accounts.updateComputer(token, relayId, body.name.trim());
     } else {
-      await accounts.unbind(token, relayId);
+      removeRelays(await accounts.unbind(token, relayId));
       await sync();
     }
     sendEmpty(response, 204);

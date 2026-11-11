@@ -13,8 +13,13 @@ panecast pair
 
 Homebrew installs Node.js and tmux. The standalone installer includes its own
 Node.js runtime; npm can install the bundled `.tgz` directly. `panecast setup`
-preserves any existing configuration. Supply the unique broker credentials
-assigned to this computer, then explicitly authorize the sources you need.
+preserves any existing configuration. It signs in to your Panecast account and
+the broker assigns this computer its relay ID, relay token and pairing code, so
+there is nothing to copy by hand. Phones signed in to the same account list the
+computer automatically; `panecast pair` shows a QR code for phones without an
+account. For a broker that disables enrollment, pass the credentials its
+administrator assigned with `--relay-id ID --token-file PATH`. Then explicitly
+authorize the sources you need.
 Use `panecast status`, `panecast logs`, `panecast restart`, and `panecast stop`
 to manage the macOS background service. Stop the service before uninstalling.
 Configuration and paired devices stay under `~/.cmuxremote/` across upgrades.

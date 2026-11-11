@@ -4,6 +4,13 @@
 主动连接服务器，不需要在手机安装 Tailscale，也不需要给 Mac 开放入站端口。
 同一个 broker 和域名可以连接多台 Mac、Linux 电脑，每台电脑分别配对和鉴权。
 
+电脑凭据默认由 broker 自动分配：在电脑上运行 `panecast setup` 并登录账号，broker 会为这台
+电脑生成 relay ID、relay token 和配对码，写入电脑本地配置，并直接绑定到该账号。手机登录同一
+账号即可看到这台电脑，无需管理员手动分配或输入 ID。服务器只保存 token 和配对码的 SHA-256。
+在 App 中移除这台电脑（或删除账号）会立即断开它的隧道和所有手机连接，原凭据随即失效。
+每个账号最多自动分配 20 台电脑。设置 `CMUX_RELAY_ENROLLMENT=0` 可关闭自动分配，只接受
+下文手动配置的电脑。
+
 新版支持账号：客户端注册 / 登录后，可用配对链接或已有设备凭据把电脑绑定到账号。
 同一服务器上的同一账号可在手机和桌面端取回电脑列表；每个登录设备拥有独立会话。
 退出账号或解除绑定会立即关闭对应连接。账号按 broker 隔离，不跨独立服务器合并。
@@ -124,7 +131,9 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-编辑 `.env`：
+编辑 `.env`。只用 `panecast setup` 自动分配时，填域名即可，`CMUX_RELAY_ID`、
+`CMUX_RELAY_TOKEN`、`CMUX_PAIRING_CODE` 可以全部省略；要接入固定的电脑（例如已有的
+cmux-relay）时再填写：
 
 ```dotenv
 CMUX_BROKER_DOMAIN=relay.example.com

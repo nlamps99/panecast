@@ -17,7 +17,8 @@ cp hub.example.json ~/.cmuxremote/hub-relay.json
 chmod 600 ~/.cmuxremote/hub-relay.json
 ```
 
-编辑配置中的 broker 地址、relay ID 和 relay token。每台电脑使用独立的 relay ID，
+推荐直接运行 `panecast setup`：登录账号后 broker 自动分配 relay ID、relay token 和配对码并写入
+配置，无需手动编辑。手动复制示例时，编辑其中的 broker 地址、relay ID 和 relay token。每台电脑使用独立的 relay ID，
 同一电脑的多个来源都放在 hub 后面。**不要让旧 relay 和 hub 同时用同一个 ID 连接
 同一 broker**：cmux relay 继续在电脑上提供本地接口，把它原来的 `broker` 配置移除，
 由 hub 单独连接 broker。另一个选择是先给 hub 使用独立 broker 实例验证。

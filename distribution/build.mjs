@@ -74,9 +74,9 @@ const formula = `class Panecast < Formula
 
   def caveats
     <<~EOS
-      Configure once: panecast setup
+      Configure once (sign in, credentials are assigned automatically): panecast setup
       Start in background: panecast start
-      Pair your phone: panecast pair
+      Phones signed in to the same account see this computer; or pair by QR: panecast pair
       After upgrading: panecast restart
       Before uninstalling: panecast stop
       Configuration and paired devices stay in ~/.cmuxremote.

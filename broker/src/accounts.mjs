@@ -9,6 +9,15 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const publicUser = ({ id, username }) => ({ id, username });
 const deviceId = (session, relayId) => `account-${session.id}-${hash(relayId).slice(0, 16)}`;
+const hashMatches = (value, expected) => typeof value === 'string' && value.length > 0 && value.length <= 4096 &&
+  timingSafeEqual(Buffer.from(hash(value)), Buffer.from(expected));
+// Removing an enrolled relay also removes every binding to it, including other accounts'.
+function dropRelays(data, relayIds) {
+  const removed = new Set(relayIds);
+  data.relays = data.relays.filter((r) => !removed.has(r.relay_id));
+  data.computers = data.computers.filter((c) => !removed.has(c.relay_id));
+  return [...removed];
+}
 
 async function passwordHash(password, salt = randomBytes(16).toString('hex')) {
   const key = await scrypt(password, salt, 64, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
@@ -24,20 +33,21 @@ function validatePassword(password) {
   if (typeof password !== 'string' || password.length < 12 || password.length > 256) fail(400, 'password_length');
 }
 
-/** Account passwords, token hashes and relay grants. Never stores pairing codes or raw tokens. */
+/** Account passwords, token hashes, relay grants and enrolled relays. Never stores pairing codes, relay tokens or raw login tokens. */
 export class AccountStore {
   constructor(path, { now = Date.now, sessionMs = SESSION_MS } = {}) {
     this.path = path;
     this.now = now;
     this.sessionMs = sessionMs;
-    this.data = { version: 1, users: [], sessions: [], computers: [] };
+    this.data = { version: 1, users: [], sessions: [], computers: [], relays: [] };
     this.operation = Promise.resolve();
   }
   async load() {
     await mkdir(dirname(this.path), { recursive: true });
     try {
       const data = JSON.parse(await readFile(this.path, 'utf8'));
-      if (data.version !== 1 || !['users', 'sessions', 'computers'].every((key) => Array.isArray(data[key]))) throw new Error('invalid account database');
+      data.relays ??= [];
+      if (data.version !== 1 || !['users', 'sessions', 'computers', 'relays'].every((key) => Array.isArray(data[key]))) throw new Error('invalid account database');
       this.data = data;
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -119,6 +129,7 @@ export class AccountStore {
       data.users = data.users.filter((u) => u.id !== user.id);
       data.sessions = data.sessions.filter((s) => s.account_id !== user.id);
       data.computers = data.computers.filter((c) => c.account_id !== user.id);
+      return dropRelays(data, data.relays.filter((r) => r.account_id === user.id).map((r) => r.relay_id));
     });
   }
   computers(token) {
@@ -144,8 +155,40 @@ export class AccountStore {
   async unbind(token, relayId) {
     return this.write((data) => {
       const session = this.requireSession(token, data);
+      if (data.relays.some((r) => r.relay_id === relayId && r.account_id === session.account_id)) return dropRelays(data, [relayId]);
       data.computers = data.computers.filter((c) => c.account_id !== session.account_id || c.relay_id !== relayId);
+      return [];
     });
+  }
+  /** Assigns a new relay identity to the signed-in account. The raw secrets are returned once and only their hashes are kept. */
+  async enrollRelay(token, name, { reservedIds = new Set(), maxPerAccount = 20, maxTotal = 1000 } = {}) {
+    return this.write((data) => {
+      const session = this.requireSession(token, data);
+      if (data.relays.length >= maxTotal || data.relays.filter((r) => r.account_id === session.account_id).length >= maxPerAccount) fail(429, 'relay_limit_reached');
+      let relayId;
+      do relayId = `pc-${randomBytes(8).toString('hex')}`;
+      while (reservedIds.has(relayId) || data.relays.some((r) => r.relay_id === relayId));
+      const relayToken = randomBytes(32).toString('base64url');
+      const pairingCode = randomBytes(24).toString('base64url');
+      const createdAt = new Date(this.now()).toISOString();
+      data.relays.push({ relay_id: relayId, account_id: session.account_id, token_hash: hash(relayToken), pairing_code_hash: hash(pairingCode), created_at: createdAt });
+      data.computers.push({ account_id: session.account_id, relay_id: relayId, name, paired_at: createdAt });
+      return { relay_id: relayId, relay_token: relayToken, pairing_code: pairingCode, name };
+    });
+  }
+  hasRelay(relayId) {
+    return this.data.relays.some((r) => r.relay_id === relayId);
+  }
+  relayIds() {
+    return this.data.relays.map((r) => r.relay_id);
+  }
+  relayTokenMatches(relayId, token) {
+    const relay = this.data.relays.find((r) => r.relay_id === relayId);
+    return Boolean(relay) && hashMatches(token, relay.token_hash);
+  }
+  pairingCodeMatches(relayId, code) {
+    const relay = this.data.relays.find((r) => r.relay_id === relayId);
+    return Boolean(relay) && hashMatches(code, relay.pairing_code_hash);
   }
   authenticateDevice(token, relayId) {
     const session = this.session(token);

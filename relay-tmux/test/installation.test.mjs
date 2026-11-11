@@ -1,13 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { writeInitialConfig, brokerURL, lanAddress } from '../src/installation.mjs';
+import { WebSocket } from 'ws';
+import { writeInitialConfig, brokerURL, lanAddress, setup } from '../src/installation.mjs';
 import { renderPlist } from '../src/service.mjs';
 
 const cli = fileURLToPath(new URL('../bin/panecast.mjs', import.meta.url));
+const brokerMissing = !existsSync(fileURLToPath(new URL('../../broker/node_modules/ws/package.json', import.meta.url))) && 'Run npm ci in broker/ to test enrollment against the real broker';
+const quiet = async (operation) => {
+  const log = console.log; console.log = () => {};
+  try { return await operation(); } finally { console.log = log; }
+};
 function run(args, input = '') {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -65,4 +72,56 @@ test('LaunchAgent handles spaces and XML characters without embedding credential
   assert.ok(plist.includes('<string>--config</string>'));
   assert.ok(!plist.includes('relay_token'));
   assert.throws(() => renderPlist({ label: '../bad', launcher: 'relative', config: 'relative' }));
+});
+
+test('setup with only an account gets credentials from the broker and pair needs no code', { skip: brokerMissing }, async (t) => {
+  const { createBrokerServer } = await import('../../broker/src/server.mjs');
+  const directory = await mkdtemp('/tmp/pc-enroll-');
+  const broker = await createBrokerServer({ host: '127.0.0.1', port: 0, dataFile: join(directory, 'broker', 'devices.json'), logger: { error() {} } });
+  const base = `http://127.0.0.1:${(await broker.listen()).port}`;
+  t.after(async () => { await broker.close(); await rm(directory, { recursive: true, force: true }); });
+  const viaLocalBroker = (url, init) => fetch(String(url).replace('https://relay.example.com', base), init);
+  const password = 'a sufficiently long test password';
+  const phone = await (await fetch(`${base}/v1/account/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'alice', password, device_name: 'Phone' }) })).json();
+
+  const path = join(directory, 'hub-relay.json'), passwordFile = join(directory, 'password');
+  await writeFile(passwordFile, `${password}\n`, { mode: 0o600 });
+  await quiet(() => setup(['--config', path, '--broker-url', 'https://relay.example.com/', '--username', 'Alice', '--password-file', passwordFile, '--name', 'Studio Mac', '--source', 'tmux'], { fetch: viaLocalBroker }));
+  const config = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.equal(config.broker.url, 'https://relay.example.com');
+  assert.match(config.broker.relay_id, /^pc-[0-9a-f]{16}$/);
+  assert.ok(config.broker.relay_token && config.broker.pairing_code);
+  assert.equal(config.sources[0].enabled, true);
+
+  const tunnel = new WebSocket(`${base.replace('http', 'ws')}/v1/relay/ws?relay_id=${config.broker.relay_id}`, { headers: { authorization: `Bearer ${config.broker.relay_token}` } });
+  await new Promise((resolve, reject) => { tunnel.once('open', resolve); tunnel.once('error', reject); });
+  t.after(() => tunnel.terminate());
+  const computers = (await (await fetch(`${base}/v1/account/computers`, { headers: { authorization: `Bearer ${phone.token}` } })).json()).computers;
+  assert.deepEqual(computers.map((c) => [c.relay_id, c.name, c.online]), [[config.broker.relay_id, 'Studio Mac', true]]);
+  const accounts = JSON.parse(await readFile(join(directory, 'broker', 'accounts.json'), 'utf8'));
+  assert.equal(accounts.sessions.length, 1, 'the gateway login is ended after enrollment');
+
+  const pair = await run(['pair', '--config', path, '--url-only']);
+  assert.equal(pair.code, 0, pair.stderr);
+  const url = new URL(pair.stdout.trim());
+  assert.equal(url.searchParams.get('relay'), config.broker.relay_id);
+  assert.equal(url.searchParams.get('code'), config.broker.pairing_code);
+  assert.ok(!pair.stdout.includes(config.broker.relay_token));
+});
+
+test('setup reports a broker that does not allow enrollment and writes nothing', async (t) => {
+  const directory = await mkdtemp('/tmp/pc-enroll-off-'); t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'hub-relay.json'), passwordFile = join(directory, 'password');
+  await writeFile(passwordFile, 'a sufficiently long test password', { mode: 0o600 });
+  const routes = [];
+  const stub = async (url, init) => {
+    const route = new URL(url).pathname; routes.push(route);
+    if (route.endsWith('/login')) return Response.json({ token: 'session', user: { id: '1', username: 'alice' } });
+    if (route.endsWith('/relays')) return Response.json({ error: 'relay_enrollment_disabled' }, { status: 403 });
+    return new Response(null, { status: 204 });
+  };
+  await assert.rejects(setup(['--config', path, '--broker-url', 'https://relay.example.com', '--username', 'alice', '--password-file', passwordFile], { fetch: stub }), /--relay-id/);
+  assert.deepEqual(routes, ['/v1/account/login', '/v1/account/relays', '/v1/account/logout']);
+  await assert.rejects(access(path), { code: 'ENOENT' });
 });

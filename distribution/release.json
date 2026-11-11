@@ -1,10 +1,11 @@
 {
   "baseUrl": "https://ningzx.cn/panecast",
   "mac": {
-    "date": "2026-11-09",
+    "date": "2026-11-11",
     "notes": [
-      "修复 Claude 历史压缩摘要被误判为正在处理",
-      "按当前终端来源提供真实的文件上传大小限制"
+      "panecast setup 改为登录账号，服务器自动分配电脑 ID、连接密钥和配对码，无需手动填写",
+      "手机登录同一账号即自动出现这台电脑；panecast pair 扫码时不再需要输入配对码",
+      "关闭自动分配的服务器仍可用 --relay-id 和 --token-file 手动配置"
     ]
   },
   "android": {
@@ -28,6 +29,17 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.3",
+      "file": "panecast-cli-0.1.3.tgz",
+      "sha256": "e442e8ae9c62232147113fc896914d1fe5a1a2dac33f54acf344cde79bbcb8a3",
+      "date": "2026-11-09",
+      "notes": [
+        "修复 Claude 历史压缩摘要被误判为正在处理",
+        "按当前终端来源提供真实的文件上传大小限制"
+      ]
+    },
     {
       "platform": "macOS 桌面",
       "version": "0.2.2",

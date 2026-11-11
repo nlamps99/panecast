@@ -22,9 +22,11 @@ async function main() {
     process.once('SIGTERM', stop); process.once('SIGINT', stop);
   } else if (command === 'pair') {
     if (!config.broker?.url || !config.broker?.relay_id) throw new Error('Configure broker.url and broker.relay_id first');
-    const prompt = createInterface({ input: process.stdin, output: process.stderr });
-    let code;
-    try { code = (await prompt.question('Broker pairing code: ')).trim(); } finally { prompt.close(); }
+    let code = config.broker.pairing_code;
+    if (!code) {
+      const prompt = createInterface({ input: process.stdin, output: process.stderr });
+      try { code = (await prompt.question('Broker pairing code: ')).trim(); } finally { prompt.close(); }
+    }
     if (!code) throw new Error('Pairing code is required');
     const url = new URL('cmux://pair');
     url.searchParams.set('server', config.broker.url); url.searchParams.set('relay', config.broker.relay_id); url.searchParams.set('code', code);

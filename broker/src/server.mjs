@@ -248,6 +248,7 @@ export function configFromEnvironment(environment = process.env) {
     pairingCode: environment.CMUX_PAIRING_CODE ?? "",
     dataFile: resolve(environment.CMUX_BROKER_DATA_DIR ?? "./data", "devices.json"),
     trustProxy: environment.CMUX_TRUST_PROXY === "1",
+    relayEnrollment: environment.CMUX_RELAY_ENROLLMENT !== "0",
   };
   const file = environment.CMUX_RELAYS_FILE;
   const inline = environment.CMUX_RELAYS_JSON;
@@ -256,7 +257,7 @@ export function configFromEnvironment(environment = process.env) {
     config.relaysFile = resolve(file);
   } else if (inline) {
     config.relays = parseRelayConfiguration(inline, "CMUX_RELAYS_JSON");
-  } else {
+  } else if (config.relayId || config.relayToken || config.pairingCode || !config.relayEnrollment) {
     if (!requiredString(config.relayId) || !requiredString(config.relayToken, 4096)) {
       throw new Error("CMUX_RELAY_ID and CMUX_RELAY_TOKEN are required");
     }
@@ -312,6 +313,8 @@ async function configuredRelays(config) {
   }
   if (config.relays !== undefined) return normalizeRelays(config.relays);
   // Existing single-relay deployments keep their exact credential semantics.
+  // A broker without static relays relies entirely on account enrollment.
+  if (!config.relayId && !config.relayToken && !config.pairingCode && config.relayEnrollment !== false) return [];
   if (!requiredString(config.relayId) || !requiredString(config.relayToken, 4096) || !requiredString(config.pairingCode, 4096)) {
     throw new Error("A relay id, relay token and pairing code are required");
   }
@@ -327,6 +330,19 @@ export async function createBrokerServer(options) {
   await store.load();
   const accounts = new AccountStore(config.accountFile ?? resolve(dirname(config.dataFile), 'accounts.json'));
   await accounts.load();
+  const enrollment = {
+    enabled: config.relayEnrollment !== false,
+    reservedIds: new Set(relays.keys()),
+    maxPerAccount: config.maxRelaysPerAccount ?? 20,
+    maxTotal: config.maxEnrolledRelays ?? 1000,
+  };
+  // Statically configured relays take precedence over enrolled relays with the same ID.
+  const relayAccess = {
+    has: (id) => relays.has(id) || accounts.hasRelay(id),
+    token: (id, token) => relays.has(id) ? secretEquals(token, relays.get(id).relayToken) : accounts.relayTokenMatches(id, token),
+    pairing: (id, code) => typeof code === "string" && code.length <= 4096 &&
+      (relays.has(id) ? secretEquals(code, relays.get(id).pairingCode) : accounts.pairingCodeMatches(id, code)),
+  };
   const accountLimiter = new SlidingWindowRateLimiter(config.accountLimit ?? 15, 60_000);
   const accountTotalLimiter = new SlidingWindowRateLimiter(config.accountTotalLimit ?? 120, 60_000);
   const rateLimiter = new SlidingWindowRateLimiter(config.pairingLimit ?? 5, 60_000);
@@ -366,15 +382,15 @@ export async function createBrokerServer(options) {
   }
 
   const authenticatePhone = async (request, relayId) =>
-    relays.has(relayId) ? (await store.authenticate(bearerToken(request), relayId)) ?? accounts.authenticateDevice(bearerToken(request), relayId) : null;
+    relayAccess.has(relayId) ? (await store.authenticate(bearerToken(request), relayId)) ?? accounts.authenticateDevice(bearerToken(request), relayId) : null;
 
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
       if (await accountRoute(request, response, url, {
-        accounts, relays, relayConnections, store, readJSON, sendJSON, sendEmpty, bearerToken, secretEquals,
+        accounts, relayAccess, relayConnections, store, readJSON, sendJSON, sendEmpty, bearerToken, enrollment, removeRelays,
         limit: () => accountTotalLimiter.allow('all') && accountLimiter.allow(remoteIP(request, config.trustProxy)),
-        sync: () => Promise.all([...relays.keys()].map(syncPushDevices)),
+        sync: () => Promise.all([...relayConnections.keys()].map(syncPushDevices)),
       })) return;
       if (request.method === "GET" && url.pathname === "/v1/health") {
         const relayId = url.searchParams.has("relay_id") ? url.searchParams.get("relay_id") : defaultRelayId;
@@ -389,6 +405,7 @@ export async function createBrokerServer(options) {
           push_forwarding: true,
           relay_scoped_health: true,
           accounts: true,
+          relay_enrollment: enrollment.enabled,
         });
         return;
       }
@@ -417,8 +434,7 @@ export async function createBrokerServer(options) {
           sendJSON(response, 429, { error: "too_many_pairing_attempts" });
           return;
         }
-        const relay = relays.get(body.relay_id);
-        if (!relay || !secretEquals(body.pairing_code, relay.pairingCode)) {
+        if (!relayAccess.pairing(body.relay_id, body.pairing_code)) {
           sendJSON(response, 403, { error: "pairing_rejected" });
           return;
         }
@@ -499,6 +515,17 @@ export async function createBrokerServer(options) {
       if (session.relayId !== relayId) continue;
       closePhoneSession(sessionId, false);
       session.socket.close(1013, reason);
+    }
+  }
+
+  function removeRelays(relayIds) {
+    for (const relayId of relayIds) {
+      const socket = relayConnections.get(relayId);
+      if (!socket) continue;
+      relayConnections.delete(relayId);
+      disconnectRelayPhones(relayId, "computer removed");
+      rejectRelayPushes(socket);
+      socket.close(4003, "relay removed");
     }
   }
 
@@ -626,12 +653,7 @@ export async function createBrokerServer(options) {
     const relayId = url.searchParams.get("relay_id") ?? "";
     if (url.pathname === "/v1/relay/ws") {
       const token = bearerToken(request);
-      const relay = relays.get(relayId);
-      if (
-        !relay ||
-        !token ||
-        !secretEquals(token, relay.relayToken)
-      ) {
+      if (!token || !relayAccess.token(relayId, token)) {
         rejectUpgrade(socket, 401, "invalid relay credentials");
         return;
       }

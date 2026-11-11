@@ -91,7 +91,9 @@ if [[ "${PANECAST_NO_PATH_UPDATE:-0}" != 1 ]]; then
   fi
 fi
 printf '\n安装完成。新终端中可以直接使用 panecast。当前终端可运行：\n'
-printf '  %q setup\n  %q start\n  %q pair\n' "$PANECAST_BIN/panecast" "$PANECAST_BIN/panecast" "$PANECAST_BIN/panecast"
+printf '  %q setup    # 登录 Panecast 账号，自动分配这台电脑的连接凭据\n' "$PANECAST_BIN/panecast"
+printf '  %q start    # 启动后台网关\n' "$PANECAST_BIN/panecast"
+printf '\n手机 App 登录同一账号即可看到这台电脑；未登录账号的手机运行 panecast pair 扫码。\n'
 if ! command -v tmux >/dev/null 2>&1; then
   printf '\n如需连接 tmux，先安装它：brew install tmux\n'
 fi

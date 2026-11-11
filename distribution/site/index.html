@@ -94,11 +94,11 @@
     <section id="connect" class="connect-section" aria-labelledby="connect-title">
       <div class="section-heading"><div><p class="eyebrow">02 / GET CONNECTED</p><h2 id="connect-title">装好以后，三步连接。</h2></div></div>
       <div class="steps">
-        <article><span class="step-number">01</span><h3>配置这台电脑</h3><code>panecast setup</code><p>填写管理员分配的中转地址、电脑 ID 和连接密钥，选择允许访问的来源。</p></article>
+        <article><span class="step-number">01</span><h3>配置这台电脑</h3><code>panecast setup</code><p>登录 Panecast 账号，服务器自动为这台电脑分配连接凭据，无需填写 ID 或密钥。再选择允许访问的来源。</p></article>
         <article><span class="step-number">02</span><h3>启动后台网关</h3><code>panecast start</code><p>后台运行，登录后自动启动。tmux 任务在 <code>tmux new -s work</code> 中开始。</p></article>
-        <article><span class="step-number">03</span><h3>手机扫码配对</h3><code>panecast pair</code><p>输入这台电脑的配对码，再用手机 App 扫描终端里显示的二维码。</p></article>
+        <article><span class="step-number">03</span><h3>手机登录同一账号</h3><code>panecast pair</code><p>手机 App 登录同一账号即可看到这台电脑。未登录账号的手机可以运行 <code>panecast pair</code> 直接扫码，无需输入配对码。</p></article>
       </div>
-      <div class="connection-note"><span aria-hidden="true">↳</span><p>目前通过邀请接入中转，每台电脑使用独立凭据。安装器方式在当前终端可使用 <code>~/.local/bin/panecast</code>；新终端中直接运行 <code>panecast</code>。</p></div>
+      <div class="connection-note"><span aria-hidden="true">↳</span><p>每台电脑自动获得独立凭据。自建中转若关闭了自动分配，可用 <code>panecast setup --relay-id ID --token-file PATH</code> 填写管理员分配的凭据。安装器方式在当前终端可使用 <code>~/.local/bin/panecast</code>；新终端中直接运行 <code>panecast</code>。</p></div>
       <div class="connection-note" id="desktop-connect"><span aria-hidden="true">↳</span><p>桌面版打开「账号登录与电脑管理」，注册或登录账号，再粘贴目标电脑的配对链接。之后在另一台设备登录同一账号，即可取回电脑列表。账号属于所填写的服务器；不同服务器分别管理账号。目标电脑需保持网关运行。已发布的 Android build 13 仍使用扫码配对，账号入口将在新手机构建中提供。</p></div>
     </section>
 

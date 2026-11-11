@@ -68,5 +68,7 @@ python3 distribution/publish.py --host USER@SERVER --directory /absolute/webroot
 验证首次安装、升级备份和损坏下载时必须使用隔离目录；脚本不会启动图形界面。
 DMG 可用 `hdiutil attach -readonly -nobrowse -noautoopen` 挂载检查，结束后 detach。
 
-现有公网中转仍需管理员分配每台电脑的独立凭据。安装 CLI 不自动授权来源，setup 只在
-用户选择后授权 tmux 控制或 Codex 只读历史。升级、重装和卸载都保留用户配置与配对。
+`panecast setup` 登录账号后由中转自动为每台电脑分配独立凭据，需要中转升级到支持
+`POST /v1/account/relays` 的版本；旧中转或关闭自动分配的中转仍可用 `--relay-id` 和
+`--token-file` 手动配置。安装 CLI 不自动授权来源，setup 只在用户选择后授权 tmux 控制
+或 Codex 只读历史。升级、重装和卸载都保留用户配置与配对。

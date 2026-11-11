@@ -18,6 +18,7 @@
 | `POST /v1/account/password` | 验证旧密码，修改密码并撤销其他会话 |
 | `DELETE /v1/account/me` | 验证密码后删除账号、会话和绑定关系 |
 | `GET /v1/account/computers` | 返回有权访问的电脑及在线状态 |
+| `POST /v1/account/relays` | 为当前账号分配一台新电脑：返回 `relay_id`、`relay_token`、`pairing_code`（仅此一次），并自动绑定 |
 | `POST /v1/account/computers` | 使用配对码或旧设备令牌证明访问权限，绑定电脑 |
 | `PATCH /v1/account/computers?relay_id=…` | 修改该账号中的电脑名称 |
 | `DELETE /v1/account/computers?relay_id=…` | 解除绑定，关闭该账号到此电脑的所有连接 |
@@ -25,6 +26,12 @@
 注册 / 登录参数为 `username`、`password`、`device_name`；响应为 `user`、`token`、
 `expires_at`。其他接口使用 Bearer 令牌。绑定参数为 `relay_id`、`name`（可选）及
 `pairing_code` 或 `device_token`。账号令牌只对该账号已绑定的 relay 有效。
+
+自动分配的电脑记录在 `accounts.json` 的 `relays` 中，只存 relay token 和配对码的 SHA-256，
+归属创建它的账号。分配者解除绑定或删除账号时，这台电脑连同其他账号对它的绑定一起删除，
+隧道与手机连接立即关闭；其他账号解除绑定只移除自己的绑定。静态配置的 relay ID 优先，
+不会被分配。每个账号最多 20 台，`CMUX_RELAY_ENROLLMENT=0` 关闭分配；此时 broker
+仍需至少一个静态 relay。
 
 服务端在与 `devices.json` 同目录的 `accounts.json` 保存 scrypt 密码摘要、登录令牌的
 SHA-256 和电脑绑定关系。登录会话有效期 30 天，不保存明文密码或配对码。

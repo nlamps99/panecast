@@ -17,7 +17,7 @@ async function main() {
   if (['help', '--help', '-h'].includes(command)) {
     console.log(`Panecast ${version} · Mac 终端网关
 
-  panecast setup                         首次配置（保留已有配置）
+  panecast setup                         首次配置：登录账号，自动分配电脑凭据（保留已有配置）
   panecast start | stop | restart         管理 macOS 后台服务
   panecast status                        查看运行状态
   panecast logs                          持续查看错误日志
@@ -29,8 +29,9 @@ async function main() {
   panecast desktop prepare | check       Codex 桌面桥接
 
 所有网关命令支持 --config /absolute/path/hub-relay.json。
-自动配置：setup --broker-url HTTPS_URL --relay-id ID --token-file PATH
-          [--source tmux|codex|none] [--lan]
+自动配置：setup --broker-url HTTPS_URL --username NAME --password-file PATH
+          [--register] [--name 电脑名称] [--source tmux|codex|none] [--lan]
+手动凭据：setup --broker-url HTTPS_URL --relay-id ID --token-file PATH
 配对：pair [--lan-host PRIVATE_IP] [--url-only]
 安装与更新：https://ningzx.cn/panecast/`); return;
   }
