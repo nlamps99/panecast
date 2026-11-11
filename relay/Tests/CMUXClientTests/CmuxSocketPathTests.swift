@@ -229,6 +229,59 @@ final class CmuxSocketPathTests: XCTestCase {
         XCTAssertEqual(p, newer)
     }
 
+    func testLiveVariantWinsOverLeftoverStableSocket() throws {
+        // The stable app quit uncleanly and left cmux.sock behind; DR2 is running.
+        let temp = freshTemp()
+        let tmp = temp.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let stateDir = try makeCmuxDir(temp.appendingPathComponent("state"))
+        let leftover = makeSocket(stateDir, "cmux.sock")
+        try writeMarker(stateDir, to: leftover)
+        let dr2 = makeSocket(tmp, "cmux-debug-dr2-selfhost.sock")
+        try "\(dr2)\n".write(to: tmp.appendingPathComponent("cmux-dev-dr2-selfhost-last-socket-path"),
+                             atomically: true, encoding: .utf8)
+
+        let p = cmuxSocketPath(
+            [:],
+            appSupportDirectory: temp.appendingPathComponent("appsupport"),
+            stateDirectory: temp.appendingPathComponent("state"),
+            tmpMarkerPath: noTmpMarker(),
+            tmpDirectory: tmp.path,
+            isListening: { $0 == dr2 }
+        )
+
+        XCTAssertEqual(p, dr2)
+    }
+
+    func testListeningProbeDistinguishesLiveSocketsFromLeftoverFiles() throws {
+        let path = "/tmp/cmuxrelay-probe-\(UUID().uuidString.prefix(8)).sock"
+        defer { unlink(path) }
+        XCTAssertFalse(unixSocketAcceptsConnections(path), "missing")
+        XCTAssertTrue(FileManager.default.createFile(atPath: path, contents: Data()))
+        XCTAssertFalse(unixSocketAcceptsConnections(path), "a plain file")
+        unlink(path)
+
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            let bytes = Array(path.utf8)
+            buffer.copyBytes(from: bytes)
+            buffer[bytes.count] = 0
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertEqual(Darwin.listen(listener, 4), 0)
+        XCTAssertTrue(unixSocketAcceptsConnections(path), "listening")
+        close(listener)
+        XCTAssertFalse(unixSocketAcceptsConnections(path), "left behind after the listener closed")
+    }
+
     func testSocketPasswordEnvWins() throws {
         let temp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)

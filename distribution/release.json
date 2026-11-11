@@ -3,9 +3,8 @@
   "mac": {
     "date": "2026-11-11",
     "notes": [
-      "安装包自带 cmux relay：装好 cmux 的电脑无需另装 relay，网关自动在本机启动并接入",
-      "支持 cmux DR2、nightly 等自建或测试版 cmux，自动找到它们的连接",
-      "cmux 拒绝连接或未运行时，手机来源页直接说明原因和解决方法"
+      "官方 cmux 退出后留下的失效连接不再挡住正在运行的 cmux DR2 等版本",
+      "说明 cmux DR2 r2 起无需额外授权即可接入"
     ]
   },
   "android": {
@@ -29,6 +28,18 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.6",
+      "file": "panecast-cli-0.1.6.tgz",
+      "sha256": "a1512ffe2876ebb185d1eee64f5ff1fc3eb9ee6e6ee06cdac0a83ab8f9544e04",
+      "date": "2026-11-11",
+      "notes": [
+        "安装包自带 cmux relay：装好 cmux 的电脑无需另装 relay，网关自动在本机启动并接入",
+        "支持 cmux DR2、nightly 等自建或测试版 cmux，自动找到它们的连接",
+        "cmux 拒绝连接或未运行时，手机来源页直接说明原因和解决方法"
+      ]
+    },
     {
       "platform": "macOS CLI",
       "version": "0.1.5",

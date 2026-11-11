@@ -20,6 +20,9 @@ public enum UnixSocketChannelError: Error, Equatable {
 /// 6. markers of other cmux app variants (see below), newest first
 /// 7. the `~/.local/state/cmux/cmux.sock` fallback
 ///
+/// Among markers 3–6, the first whose socket accepts a connection wins; when
+/// none does, the first whose socket file exists.
+///
 /// Modern cmux rotates its socket (e.g. `cmux-501.sock`) and, as of the 1.0.5
 /// generation, moved its state from `~/Library/Application Support/cmux` to the
 /// XDG state dir `~/.local/state/cmux`, publishing the live path through both a
@@ -40,7 +43,8 @@ public func cmuxSocketPath(
     stateDirectory: URL? = nil,
     tmpMarkerPath: String = "/tmp/cmux-last-socket-path",
     tmpDirectory: String = "/tmp",
-    fileManager: FileManager = .default
+    fileManager: FileManager = .default,
+    isListening: (String) -> Bool = unixSocketAcceptsConnections
 ) -> String {
     if let p = env["CMUX_SOCKET_PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty { return p }
     if let p = env["CMUX_SOCKET"]?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty { return p }
@@ -58,21 +62,37 @@ public func cmuxSocketPath(
         stateCmuxDirectory.appendingPathComponent("last-socket-path", isDirectory: false).path,
         legacyCmuxDirectory.appendingPathComponent("last-socket-path", isDirectory: false).path,
     ]
-    for marker in markers {
-        if let socket = socketFromMarker(marker, fileManager: fileManager) {
-            return socket
-        }
-    }
-
     let variants = variantMarkers(in: tmpDirectory, filePrefix: "cmux-", fileManager: fileManager)
         + variantMarkers(in: stateCmuxDirectory.path, filePrefix: "", fileManager: fileManager)
-    for marker in variants.sorted(by: { $0.modified > $1.modified }) {
-        if let socket = socketFromMarker(marker.path, fileManager: fileManager) {
-            return socket
-        }
-    }
+    let sockets = (markers + variants.sorted(by: { $0.modified > $1.modified }).map(\.path))
+        .compactMap { socketFromMarker($0, fileManager: fileManager) }
+
+    // A cmux that quit uncleanly can leave its socket file behind. Prefer a
+    // socket something listens on, so a dead stable app does not hide a
+    // running variant such as cmux DR2; otherwise keep the first candidate.
+    if let live = sockets.first(where: isListening) { return live }
+    if let first = sockets.first { return first }
 
     return stateCmuxDirectory.appendingPathComponent("cmux.sock", isDirectory: false).path
+}
+
+/// Whether a process accepts connections on the Unix socket at `path`.
+public func unixSocketAcceptsConnections(_ path: String) -> Bool {
+    var address = sockaddr_un()
+    let bytes = Array(path.utf8)
+    guard !bytes.isEmpty, bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+    address.sun_family = sa_family_t(AF_UNIX)
+    withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+        buffer.copyBytes(from: bytes)
+        buffer[bytes.count] = 0
+    }
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return false }
+    defer { _ = Darwin.close(descriptor) }
+    let length = socklen_t(MemoryLayout<sockaddr_un>.size)
+    return withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(descriptor, $0, length) == 0 }
+    }
 }
 
 private let cmuxVariantNames = ["dev", "nightly", "rc", "staging"]
