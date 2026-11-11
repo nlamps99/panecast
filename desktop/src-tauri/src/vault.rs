@@ -15,7 +15,10 @@ use zeroize::Zeroizing;
 const MAGIC: &[u8] = b"PANECAST2";
 const SERVICE: &str = "com.nzx.panecast.desktop";
 const ACCOUNT: &str = "credentials-v2";
+#[cfg(not(windows))]
 const STORAGE_ERROR: &str = "无法读取登录信息，请解锁系统钥匙串后重试。";
+#[cfg(windows)]
+const STORAGE_ERROR: &str = "无法读取登录信息，请确认 Windows 凭据管理器可用后重试。";
 type Secrets = BTreeMap<String, String>;
 
 pub trait KeyStore: Send + Sync {
@@ -37,13 +40,75 @@ impl KeyStore for SystemKeyStore {
             .map_err(|_| STORAGE_ERROR.into())
     }
 }
-#[cfg(not(target_os = "macos"))]
+/// Windows keeps the vault key in the user's Credential Manager as a generic
+/// credential that stays on this computer (it does not roam with the profile).
+#[cfg(windows)]
+impl KeyStore for SystemKeyStore {
+    fn get(&self, service: &str, account: &str) -> Result<Option<Vec<u8>>, String> {
+        use windows_sys::Win32::{
+            Foundation::{GetLastError, ERROR_NOT_FOUND},
+            Security::Credentials::{CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC},
+        };
+        let target = wide(&format!("{service}/{account}"));
+        let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: `target` is NUL-terminated and outlives the call; on success the
+        // API allocates `credential`, which is copied and released below.
+        if unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } == 0 {
+            return match unsafe { GetLastError() } {
+                ERROR_NOT_FOUND => Ok(None),
+                _ => Err(STORAGE_ERROR.into()),
+            };
+        }
+        let value = unsafe {
+            let stored = &*credential;
+            let bytes = if stored.CredentialBlob.is_null() {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts(
+                    stored.CredentialBlob,
+                    stored.CredentialBlobSize as usize,
+                )
+                .to_vec()
+            };
+            CredFree(credential as *const _);
+            bytes
+        };
+        Ok(Some(value))
+    }
+    fn set(&self, service: &str, account: &str, value: &[u8]) -> Result<(), String> {
+        use windows_sys::Win32::Security::Credentials::{
+            CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+        };
+        let mut target = wide(&format!("{service}/{account}"));
+        let mut user = wide(account);
+        let credential = CREDENTIALW {
+            Type: CRED_TYPE_GENERIC,
+            TargetName: target.as_mut_ptr(),
+            UserName: user.as_mut_ptr(),
+            CredentialBlobSize: u32::try_from(value.len()).map_err(|_| STORAGE_ERROR)?,
+            CredentialBlob: value.as_ptr() as *mut u8,
+            Persist: CRED_PERSIST_LOCAL_MACHINE,
+            ..Default::default()
+        };
+        // SAFETY: every pointer refers to a live buffer for the duration of the call;
+        // the API copies the blob and does not write through it.
+        if unsafe { CredWriteW(&credential, 0) } == 0 {
+            return Err(STORAGE_ERROR.into());
+        }
+        Ok(())
+    }
+}
+#[cfg(windows)]
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+#[cfg(not(any(target_os = "macos", windows)))]
 impl KeyStore for SystemKeyStore {
     fn get(&self, _: &str, _: &str) -> Result<Option<Vec<u8>>, String> {
-        Err("此版本仅支持 macOS".into())
+        Err("此版本仅支持 macOS 和 Windows".into())
     }
     fn set(&self, _: &str, _: &str, _: &[u8]) -> Result<(), String> {
-        Err("此版本仅支持 macOS".into())
+        Err("此版本仅支持 macOS 和 Windows".into())
     }
 }
 
@@ -224,6 +289,27 @@ mod tests {
         let result = store.get(&service, "test-only");
         security_framework::passwords::delete_generic_password(&service, "test-only").unwrap();
         assert_eq!(result.unwrap().unwrap(), b"non-secret-test-value");
+        assert!(store.get(&service, "test-only").unwrap().is_none());
+    }
+    #[test]
+    #[ignore = "accesses an isolated Windows Credential Manager entry"]
+    #[cfg(windows)]
+    fn system_credential_roundtrip() {
+        use windows_sys::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
+        let service = format!("com.nzx.panecast.desktop.test.{}", std::process::id());
+        let store = SystemKeyStore;
+        assert!(store.get(&service, "test-only").unwrap().is_none());
+        store
+            .set(&service, "test-only", b"non-secret-test-value")
+            .unwrap();
+        store.set(&service, "test-only", b"replaced-value").unwrap();
+        let result = store.get(&service, "test-only");
+        let target = wide(&format!("{service}/test-only"));
+        assert_ne!(
+            unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) },
+            0
+        );
+        assert_eq!(result.unwrap().unwrap(), b"replaced-value");
         assert!(store.get(&service, "test-only").unwrap().is_none());
     }
     #[derive(Clone, Default)]

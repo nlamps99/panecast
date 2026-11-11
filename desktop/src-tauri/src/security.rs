@@ -65,8 +65,14 @@ pub fn storage_key(key: &str) -> Result<(), String> {
     }
 }
 
+/// The bundled app's own origin: `tauri://localhost` in WKWebView, while
+/// WebView2 serves custom protocols as `http://tauri.localhost`.
 pub fn app_url(url: &Url) -> bool {
-    url.scheme() == "tauri" && url.host_str() == Some("localhost")
+    if cfg!(windows) {
+        url.scheme() == "http" && url.host_str() == Some("tauri.localhost") && url.port().is_none()
+    } else {
+        url.scheme() == "tauri" && url.host_str() == Some("localhost")
+    }
 }
 
 #[cfg(test)]
@@ -89,5 +95,19 @@ mod tests {
         assert!(bearer("Bearer a.b_c~-d"));
         assert!(storage_key("../../config").is_err());
         assert!(!app_url(&Url::parse("https://localhost/").unwrap()));
+        let own = if cfg!(windows) {
+            "http://tauri.localhost/index.html"
+        } else {
+            "tauri://localhost/index.html"
+        };
+        assert!(app_url(&Url::parse(own).unwrap()));
+        for foreign in [
+            "http://tauri.localhost:8080/",
+            "https://tauri.localhost.example.com/",
+            "http://localhost/",
+            "tauri://example.com/",
+        ] {
+            assert!(!app_url(&Url::parse(foreign).unwrap()), "{foreign}");
+        }
     }
 }

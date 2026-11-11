@@ -1,6 +1,6 @@
 [package]
 name = "panecast-desktop"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 rust-version = "1.90"
 
@@ -32,6 +32,9 @@ security-framework = "3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAlert", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSString"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_LibraryLoader", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tempfile = "3"

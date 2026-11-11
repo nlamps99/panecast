@@ -19,6 +19,10 @@ declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {
   return typeof window !== 'undefined' && window.panecastDesktop?.version === 1 ? window.panecastDesktop : null;
 }
+/** The desktop app on Windows (WebView2); the Mac app runs in WKWebView. */
+export function desktopOnWindows(): boolean {
+  return desktopBridge() !== null && typeof navigator !== 'undefined' && /\bWindows\b/.test(navigator.userAgent);
+}
 let nextId = 0;
 const uniqueId = () => `${Date.now()}-${++nextId}`;
 

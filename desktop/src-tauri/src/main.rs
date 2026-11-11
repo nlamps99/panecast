@@ -1,6 +1,11 @@
+// Release builds on Windows are GUI apps without a console window.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod security;
 mod transport;
 mod vault;
+#[cfg(windows)]
+mod windows_dialog;
 
 #[cfg(test)]
 mod asset_tests;
@@ -159,6 +164,21 @@ async fn dialog(
     {
         return Err("无效的对话框".into());
     }
+    let title: String = options.title.chars().take(200).collect();
+    let message: String = options
+        .message
+        .unwrap_or_default()
+        .chars()
+        .take(4000)
+        .collect();
+    let buttons: Vec<String> = options
+        .buttons
+        .iter()
+        .map(|title| title.chars().take(100).collect())
+        .collect();
+    let cancel_id = options.cancel_id;
+    #[cfg(windows)]
+    let parent = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
     let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -167,23 +187,12 @@ async fn dialog(
             use objc2_app_kit::NSAlert;
             use objc2_foundation::NSString;
             let alert = NSAlert::new(MainThreadMarker::new().expect("main thread"));
-            alert.setMessageText(&NSString::from_str(
-                &options.title.chars().take(200).collect::<String>(),
-            ));
-            alert.setInformativeText(&NSString::from_str(
-                &options
-                    .message
-                    .unwrap_or_default()
-                    .chars()
-                    .take(4000)
-                    .collect::<String>(),
-            ));
-            for (index, title) in options.buttons.iter().enumerate() {
-                let button = alert.addButtonWithTitle(&NSString::from_str(
-                    &title.chars().take(100).collect::<String>(),
-                ));
+            alert.setMessageText(&NSString::from_str(&title));
+            alert.setInformativeText(&NSString::from_str(&message));
+            for (index, title) in buttons.iter().enumerate() {
+                let button = alert.addButtonWithTitle(&NSString::from_str(title));
                 // Enter defaults to cancellation, including destructive actions.
-                button.setKeyEquivalent(&NSString::from_str(if index == options.cancel_id {
+                button.setKeyEquivalent(&NSString::from_str(if index == cancel_id {
                     "\r"
                 } else {
                     ""
@@ -192,11 +201,16 @@ async fn dialog(
             let response = alert.runModal();
             usize::try_from(response - 1000)
                 .ok()
-                .filter(|i| *i < options.buttons.len())
-                .unwrap_or(options.cancel_id)
+                .filter(|i| *i < buttons.len())
+                .unwrap_or(cancel_id)
         };
-        #[cfg(not(target_os = "macos"))]
-        let result = options.cancel_id;
+        #[cfg(windows)]
+        let result = windows_dialog::show(parent, &title, &message, &buttons, cancel_id);
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let result = {
+            let _ = (&title, &message, &buttons);
+            cancel_id
+        };
         let _ = send.send(result);
     })
     .map_err(|_| "无法显示对话框")?;
@@ -271,13 +285,21 @@ fn main() {
             dialog
         ])
         .setup(|app| {
-            // Preserve the installed Electron app's credential directory.
+            // macOS preserves the installed Electron app's credential directory.
+            // Windows keeps the key on this computer, so the vault stays local too,
+            // beside the WebView data and apart from the installation directory.
+            #[cfg(windows)]
+            let directory = app.path().app_local_data_dir()?;
+            #[cfg(not(windows))]
             let directory = app.path().data_dir()?.join("Panecast");
             app.manage(VaultState(Arc::new(Mutex::new(Vault::new(
                 directory,
                 Box::new(SystemKeyStore),
             )))));
             app.manage(Transport::new().map_err(std::io::Error::other)?);
+            // WKWebView needs the Edit menu for ⌘C/⌘V. On Windows a menu bar's
+            // accelerators would take Ctrl+C and Ctrl+V from the terminal.
+            #[cfg(target_os = "macos")]
             app.set_menu(tauri::menu::Menu::default(app.handle())?)?;
             open_window(app.handle())?;
             Ok(())
@@ -285,9 +307,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Unable to initialize Panecast")
         .run(|app, event| match event {
+            // A Mac app stays open without windows and reopens from the Dock;
+            // on Windows, closing the window quits.
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 let _ = open_window(app);
             }
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } => api.prevent_exit(),
