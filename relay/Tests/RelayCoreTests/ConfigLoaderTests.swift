@@ -58,6 +58,15 @@ final class ConfigLoaderTests: XCTestCase {
 
     /// Any omitted key falls back to the baseline default, so even an empty
     /// document yields a usable config rather than throwing.
+    func testParsesCmuxVariantAndRejectsUnknownNames() throws {
+        XCTAssertNil(try RelayConfig.decode(jsonString: "{}").cmuxVariant)
+        XCTAssertEqual(try RelayConfig.decode(jsonString: #"{"cmux_variant":"stable"}"#).cmuxVariant, "stable")
+        XCTAssertEqual(try RelayConfig.decode(jsonString: #"{"cmux_variant":"dev-dr2-selfhost"}"#).cmuxVariant, "dev-dr2-selfhost")
+        for bad in ["", "Stable", "dev-", "../x", "cmux-dev", "dev_dr2", "nightly-Tag"] {
+            XCTAssertThrowsError(try RelayConfig.decode(jsonString: #"{"cmux_variant":"\#(bad)"}"#), bad)
+        }
+    }
+
     func testEmptyObjectUsesDefaults() throws {
         let cfg = try RelayConfig.decode(jsonString: "{}")
         XCTAssertEqual(cfg, RelayConfig.defaults)

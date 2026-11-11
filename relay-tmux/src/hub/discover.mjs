@@ -4,7 +4,7 @@ import { access, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { lanAddress } from '../installation.mjs';
-import { bundledRelay, cmuxPresent, provisionManagedCmux, STATE_DIRECTORY_NAME } from './cmux-managed.mjs';
+import { bundledRelay, cmuxInstallations, pinRelayVariant, provisionManagedCmux, sourceIdentity, stateDirectoryFor, STATE_DIRECTORY_NAME } from './cmux-managed.mjs';
 import { usableCmux } from './registry.mjs';
 
 const exists = (path) => access(path).then(() => true, () => false);
@@ -31,15 +31,41 @@ async function cmuxSource({ home, lanHost, fetch: request }) {
 }
 
 /**
- * Starts the gateway's own loopback relay when cmux is present but no relay
- * accepts the gateway, which is the case after a plain `panecast` install.
+ * Gives every cmux app on this computer (official, nightly, self-hosted such
+ * as cmux DR2) its own loopback relay and source, unless a relay already
+ * serves it. A relay registered through LAN pairing serves the official app.
  */
-async function managedCmuxSource({ home, managed }) {
-  if (!managed?.stateDirectory) return null;
+async function manageCmuxApps({ home, managed, next, add, changed }) {
+  if (!managed?.stateDirectory) return;
   const binary = managed.binary === undefined ? await bundledRelay() : managed.binary;
-  if (!binary || !await (managed.present ?? (() => cmuxPresent({ home })))()) return null;
-  try { return await provisionManagedCmux({ stateDirectory: managed.stateDirectory, binary, run: managed.run }); }
-  catch { return null; }
+  if (!binary) return;
+  const installations = await (managed.installations ?? (() => cmuxInstallations({ home })))();
+  if (!installations.length) return;
+  const nameOf = (variant) => installations.find((i) => i.variant === variant)?.name;
+  const usable = next.filter(usableCmux);
+  // Relays created before variants existed follow whichever cmux runs. Pin
+  // them to the official app, or to the only app this computer has.
+  for (const source of usable.filter((s) => s.managed && !s.variant)) {
+    const variant = installations.some((i) => i.variant === 'stable') || installations.length > 1 ? 'stable' : installations[0].variant;
+    try { await pinRelayVariant(source.state_dir, variant); } catch { continue; }
+    Object.assign(source, { variant, ...(variant === 'stable' ? {} : { name: sourceIdentity(variant, nameOf(variant)).name }) });
+    changed(source);
+  }
+  const covered = new Set(usable.map((s) => (s.managed ? s.variant : s.variant ?? 'stable')).filter(Boolean));
+  const ports = new Set(next.filter((s) => s.type === 'cmux').map((s) => Number(/:(\d+)\//.exec(String(s.url))?.[1])).filter(Boolean));
+  for (const { variant, name } of installations) {
+    if (covered.has(variant)) continue;
+    let source;
+    try {
+      source = await provisionManagedCmux({ stateDirectory: stateDirectoryFor(managed.stateDirectory, variant), binary, variant, exclude: ports, run: managed.run });
+    } catch { continue; }
+    ports.add(Number(/:(\d+)\//.exec(source.url)[1]));
+    const identity = sourceIdentity(variant, name);
+    const placeholder = next.findIndex((s) => s.type === 'cmux' && !usableCmux(s));
+    if (variant === 'stable' && placeholder >= 0) { next[placeholder] = { ...source, ...identity, id: next[placeholder].id }; changed(next[placeholder]); }
+    else add({ ...source, ...identity });
+    covered.add(variant);
+  }
 }
 
 /** Returns the given sources plus every source this computer can provide. Existing entries are kept as they are. */
@@ -47,6 +73,7 @@ export async function discoverSources(sources = [], { home = homedir(), lanHost 
   const next = [...sources], added = [];
   const freeId = (base) => { let id = base; for (let n = 2; next.some((s) => s.id === id); n++) id = `${base}-${n}`; return id; };
   const add = (source) => { const entry = { ...source, id: freeId(source.id) }; next.push(entry); added.push(entry); };
+  const changed = (source) => { if (!added.includes(source)) added.push(source); };
   if (!next.some((s) => s.type === 'tmux') && tmux()) add({ id: 'tmux', name: 'tmux', type: 'tmux' });
   if (!next.some((s) => s.type === 'codex' && s.mode !== 'attach') && await exists(join(home, '.codex'))) add({ id: 'codex', name: 'Codex', type: 'codex', mode: 'managed' });
   try {
@@ -54,13 +81,14 @@ export async function discoverSources(sources = [], { home = homedir(), lanHost 
     if (desktop.type === 'codex' && typeof desktop.id === 'string' && !next.some((s) => s.id === desktop.id)) add(desktop);
   } catch {}
   if (!next.some(usableCmux)) {
-    const cmux = await cmuxSource({ home, lanHost, fetch: request }) ?? await managedCmuxSource({ home, managed });
+    const cmux = await cmuxSource({ home, lanHost, fetch: request });
     if (cmux) {
       const placeholder = next.findIndex((s) => s.type === 'cmux');
       if (placeholder >= 0) { next[placeholder] = { ...cmux, id: next[placeholder].id }; added.push(next[placeholder]); }
       else add({ id: 'cmux', ...cmux });
     }
   }
+  await manageCmuxApps({ home, managed, next, add, changed });
   return { sources: next, added };
 }
 

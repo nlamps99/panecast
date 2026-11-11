@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname, resolve } from 'node:path';
 import { configPath, setup, lanAddress } from '../src/installation.mjs';
 import { service, serviceStatus, clearStaleSocket } from '../src/service.mjs';
-import { captureCmuxCapability, STATE_DIRECTORY_NAME } from '../src/hub/cmux-managed.mjs';
+import { captureCmuxCapability } from '../src/hub/cmux-managed.mjs';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'help';
@@ -40,7 +40,7 @@ cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次
   const path = configPath(args);
   if (['setup', 'start', 'restart'].includes(command)) {
     // Inside a cmux terminal, cmux hands out a capability that lets the gateway's relay connect.
-    const saved = await captureCmuxCapability(join(dirname(path), STATE_DIRECTORY_NAME)).catch(() => false);
+    const saved = await captureCmuxCapability(path).catch(() => false);
     if (saved) console.log('已保存 cmux 的连接授权。');
     if (saved && command === 'start' && (await serviceStatus(path)).loaded) console.log('后台服务已在运行，运行 panecast restart 让 cmux 授权生效。');
   }

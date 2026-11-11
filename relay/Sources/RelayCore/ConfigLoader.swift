@@ -1,4 +1,5 @@
 import Foundation
+import CMUXClient
 
 /// `relay.json` schema. Spec section 7.3.
 public struct RelayConfig: Codable, Equatable, Sendable {
@@ -84,10 +85,13 @@ public struct RelayConfig: Codable, Equatable, Sendable {
     public var snippets: [Snippet]
     public var defaultFps: Int
     public var idleFps: Int
+    /// Pins the relay to one cmux app (`stable`, `dev-dr2-selfhost`, …) when
+    /// several are installed; nil follows whichever cmux is running.
+    public var cmuxVariant: String?
 
     enum CodingKeys: String, CodingKey {
         case listen, transport, broker, lan, allowLogin = "allow_login", apns, snippets,
-             defaultFps = "default_fps", idleFps = "idle_fps"
+             defaultFps = "default_fps", idleFps = "idle_fps", cmuxVariant = "cmux_variant"
     }
 
     public init(listen: String, transport: Transport = .direct, broker: Broker? = nil,
@@ -135,6 +139,11 @@ public struct RelayConfig: Codable, Equatable, Sendable {
         self.snippets   = try c.decodeIfPresent([Snippet].self, forKey: .snippets)   ?? d.snippets
         self.defaultFps = try c.decodeIfPresent(Int.self,       forKey: .defaultFps) ?? d.defaultFps
         self.idleFps    = try c.decodeIfPresent(Int.self,       forKey: .idleFps)    ?? d.idleFps
+        self.cmuxVariant = try c.decodeIfPresent(String.self,   forKey: .cmuxVariant)
+        if let variant = cmuxVariant, !isValidCmuxVariant(variant) {
+            throw DecodingError.dataCorruptedError(forKey: .cmuxVariant, in: c,
+                debugDescription: "cmux_variant must be 'stable' or a cmux variant name such as 'dev-dr2-selfhost'")
+        }
     }
 
     public static func decode(jsonString: String) throws -> RelayConfig {

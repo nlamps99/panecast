@@ -282,6 +282,63 @@ final class CmuxSocketPathTests: XCTestCase {
         XCTAssertFalse(unixSocketAcceptsConnections(path), "left behind after the listener closed")
     }
 
+    func testPinnedVariantOnlyFollowsItsOwnMarkers() throws {
+        // Stable and DR2 both run; each pinned relay must reach its own app.
+        let temp = freshTemp()
+        let tmp = temp.appendingPathComponent("tmp")
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let stateDir = try makeCmuxDir(temp.appendingPathComponent("state"))
+        let stable = makeSocket(stateDir, "cmux.sock")
+        try writeMarker(stateDir, to: stable)
+        let dr2 = makeSocket(tmp, "cmux-debug-dr2-selfhost.sock")
+        try "\(dr2)\n".write(to: tmp.appendingPathComponent("cmux-dev-dr2-selfhost-last-socket-path"),
+                             atomically: true, encoding: .utf8)
+        let nightly = makeSocket(stateDir, "nightly.sock")
+        try "\(nightly)\n".write(to: stateDir.appendingPathComponent("nightly-last-socket-path"),
+                                 atomically: true, encoding: .utf8)
+        func resolve(_ variant: String?) -> String {
+            cmuxSocketPath([:], variant: variant,
+                           appSupportDirectory: temp.appendingPathComponent("appsupport"),
+                           stateDirectory: temp.appendingPathComponent("state"),
+                           tmpMarkerPath: noTmpMarker(), tmpDirectory: tmp.path,
+                           isListening: { _ in true })
+        }
+
+        XCTAssertEqual(resolve("stable"), stable)
+        XCTAssertEqual(resolve("dev-dr2-selfhost"), dr2)
+        XCTAssertEqual(resolve("nightly"), nightly)
+        XCTAssertEqual(resolve(nil), stable, "unpinned keeps preferring the stable app")
+    }
+
+    func testPinnedVariantFallsBackToItsDefaultSocketAndNeverToAnotherApp() throws {
+        let temp = freshTemp()
+        let stateDir = try makeCmuxDir(temp.appendingPathComponent("state"))
+        let stable = makeSocket(stateDir, "cmux.sock")
+        try writeMarker(stateDir, to: stable)
+        let tmp = temp.appendingPathComponent("tmp").path
+
+        func resolve(_ variant: String) -> String {
+            cmuxSocketPath([:], variant: variant,
+                           appSupportDirectory: temp.appendingPathComponent("appsupport"),
+                           stateDirectory: temp.appendingPathComponent("state"),
+                           tmpMarkerPath: noTmpMarker(), tmpDirectory: tmp,
+                           isListening: { _ in true })
+        }
+        XCTAssertEqual(resolve("dev-dr2-selfhost"), "\(tmp)/cmux-debug-dr2-selfhost.sock")
+        XCTAssertEqual(resolve("dev"), "\(tmp)/cmux-debug.sock")
+        XCTAssertEqual(resolve("rc-beta"), "\(tmp)/cmux-rc-beta.sock")
+        XCTAssertEqual(cmuxSocketPath(["CMUX_SOCKET_PATH": "/tmp/x.sock"], variant: "nightly"), "/tmp/x.sock")
+    }
+
+    func testVariantNames() {
+        for good in ["stable", "dev", "dev-dr2-selfhost", "nightly", "rc-2", "staging-x-y"] {
+            XCTAssertTrue(isValidCmuxVariant(good), good)
+        }
+        for bad in ["", "dev-", "devx", "beta", "dev-DR2", "dev-a/b", "dev-a.b", String(repeating: "a", count: 65)] {
+            XCTAssertFalse(isValidCmuxVariant(bad), bad)
+        }
+    }
+
     func testSocketPasswordEnvWins() throws {
         let temp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)

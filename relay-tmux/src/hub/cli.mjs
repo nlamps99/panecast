@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import net from 'node:net';
 import qrcode from 'qrcode-terminal';
 import { TmuxBackend } from '../tmux.mjs';
-import { bundledRelay, captureCmuxCapability, ManagedCmuxRelay, STATE_DIRECTORY_NAME } from './cmux-managed.mjs';
+import { bundledRelay, captureCmuxCapability, ManagedCmuxRelay } from './cmux-managed.mjs';
 import { discoverInto } from './discover.mjs';
 import { scoped } from './ids.mjs';
 import { createHub } from './server.mjs';
@@ -18,7 +18,7 @@ const path = resolve(flag('--config') ?? join(homedir(), '.cmuxremote', 'hub-rel
 async function main() {
   if ((args[0] ?? 'serve') === 'serve') {
     // Run in the foreground from a cmux terminal, the gateway can save cmux's socket capability.
-    await captureCmuxCapability(join(dirname(path), STATE_DIRECTORY_NAME)).catch(() => {});
+    await captureCmuxCapability(path).catch(() => {});
     const found = await discoverInto(path).catch(() => []);
     if (found.length) console.log(`Added sources: ${found.join(', ')}`);
   }

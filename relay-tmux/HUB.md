@@ -20,7 +20,7 @@ Codex 使用独立的会话、消息、命令输出、文件修改和待确认�
 | tmux | 已安装 tmux |
 | Codex | 用过 Codex（存在 `~/.codex`），以 `managed` 模式运行，可新建和继续会话 |
 | Codex 桌面会话 | 运行过 `panecast desktop prepare` |
-| cmux | 安装过或运行过 cmux（官方版、nightly、自建版如 cmux DR2 均可）。网关启动自带的 relay，只监听本机回环地址；已安装并开启局域网配对的 relay 优先使用 |
+| cmux | 安装过或运行过 cmux（官方版、nightly、自建版如 cmux DR2 均可）。每个 cmux 应用各是一个来源，各用一个只监听本机回环地址的自带 relay；已安装并开启局域网配对的 relay 用于官方版 |
 
 网关启动时检查一次，之后每分钟再查，之后安装或启动的来源会自动加入，不用重启。已有的
 来源不会被修改。`panecast sources list` 查看已接入的来源。要停用某个来源，把它从
@@ -49,24 +49,28 @@ hub 会拿到自己的新 ID。
 
 cmux 通过 Swift relay 接入，保留其终端订阅、历史和项目文件协议。两种方式：
 
-- **网关自带的 relay（默认）**：安装包在 `vendor/darwin/cmux-relay` 附带通用二进制。网关在配置目录下的
-  `cmux-gateway/` 写入只监听 `127.0.0.1` 的 relay 配置（默认端口 4401，被占用时顺延），用
-  `cmux-relay devices add` 给自己发凭据，来源配置带 `"managed": true` 和 `state_dir`。relay 随网关启动、
-  异常退出时退避重启、随网关停止；设备、收件箱记录都在 `cmux-gateway/` 中，与已安装的 relay 互不影响。
-  日志在 `cmux-gateway/relay.log`。
+- **网关自带的 relay（默认）**：安装包在 `vendor/darwin/cmux-relay` 附带通用二进制。网关从 `/Applications`、
+  `~/Applications` 中 cmux 应用的 bundle ID 和各版本的 socket 标记识别本机每个 cmux 应用，给每个应用一个
+  relay 和一个来源：官方版是 `cmux`，状态目录 `cmux-gateway/`；其他版本是 `cmux-<版本>`（例如
+  `cmux-dev-dr2-selfhost`，名称取应用名「cmux DR2」），状态目录 `cmux-gateway-<版本>/`。每个 relay 只监听
+  `127.0.0.1`（从 4401 起找空闲端口），配置里的 `cmux_variant` 把它固定到对应应用，用
+  `cmux-relay devices add` 给网关发凭据；来源配置带 `"managed": true`、`variant` 和 `state_dir`。relay 随网关
+  启动、异常退出时各自退避重启、随网关停止；设备与收件箱记录在各自目录中，日志是目录下的 `relay.log`。
+  0.1.6 创建的单个 `cmux` 来源升级后保留原端口和凭据，固定到官方版；电脑上只有一个其他版本时固定到那个版本。
 - **已安装的 relay**：`~/.cmuxremote/relay.json` 开启了局域网配对（有 `lan.pairing_code`，监听非回环地址）
   时，网关用局域网 IP 登记名为「Panecast 网关」的设备，之后走 loopback 连接。
 
-relay 依次查找 `CMUX_SOCKET_PATH`、官方版的 `last-socket-path` 标记，再按修改时间查找 nightly、RC、
-staging 和带标签开发版的标记（例如 cmux DR2 的 `/tmp/cmux-dev-dr2-selfhost-last-socket-path`），
-所以同时装有官方版时优先连接官方版。
+固定到某个版本的 relay 只读该版本的标记（例如 cmux DR2 的 `/tmp/cmux-dev-dr2-selfhost-last-socket-path`），
+优先选择有进程监听的 socket，不会连到另一个 cmux。未固定的 relay（已安装的旧 relay）依次查找
+`CMUX_SOCKET_PATH`、官方版标记，再按修改时间查找 nightly、RC、staging 和带标签开发版的标记。
 
 cmux DR2 从 r2 起默认使用「自动化模式」，网关直接可连，无需下面的步骤。
 
 官方 cmux 默认只接受在它自己终端里启动的程序（「仅限 cmux 进程」）。由后台服务启动的 relay 需要以下任一授权：
 
-- 在 cmux 终端里运行一次 `panecast restart`（或 `setup`、`start`、前台 `serve`）。网关保存 cmux 发给该终端的
-  授权到 `cmux-gateway/socket-control-capability`（0600），relay 之后一直使用它。官方版的授权在 cmux 重启后
+- 在该 cmux 的终端里运行一次 `panecast restart`（或 `setup`、`start`、前台 `serve`）。网关按终端的
+  `CMUX_BUNDLE_ID` 把 cmux 发给该终端的授权保存到对应应用 relay 目录的 `socket-control-capability`（0600），
+  只给这个应用的 relay 使用。官方版的授权在 cmux 重启后
   仍然有效；开发版（包括 cmux DR2 r1）每次启动换新，重启 cmux 后需要再运行一次。
 - 在 cmux 设置中把「套接字控制模式」改为「自动化模式」，允许以当前用户身份运行的程序连接。
 - 「密码模式」：relay 读取 cmux 保存的套接字密码文件。

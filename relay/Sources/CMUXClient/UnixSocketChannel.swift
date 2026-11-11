@@ -37,8 +37,15 @@ public enum UnixSocketChannelError: Error, Equatable {
 /// as cmux DR2 (`com.cmuxterm.app.debug.dr2.selfhost`) are tagged dev builds, so
 /// without this tier the relay could never find their socket. The stable app
 /// still wins when both are running.
+///
+/// `variant` pins the lookup to one app: `stable`, or a variant name such as
+/// `dev-dr2-selfhost` (see ``isValidCmuxVariant(_:)``). The Panecast gateway
+/// runs one relay per installed cmux app this way, so each app is its own
+/// source. Only that app's markers are followed, and the fallback is its
+/// default socket.
 public func cmuxSocketPath(
     _ env: [String: String] = ProcessInfo.processInfo.environment,
+    variant: String? = nil,
     appSupportDirectory: URL? = nil,
     stateDirectory: URL? = nil,
     tmpMarkerPath: String = "/tmp/cmux-last-socket-path",
@@ -53,27 +60,62 @@ public func cmuxSocketPath(
         .appendingPathComponent("cmux", isDirectory: true)
     let legacyCmuxDirectory = (appSupportDirectory ?? defaultAppSupportDirectory(env))
         .appendingPathComponent("cmux", isDirectory: true)
+    let stableFallback = stateCmuxDirectory.appendingPathComponent("cmux.sock", isDirectory: false).path
 
     // Follow whichever marker points at a socket that exists, newest cmux
     // convention first, so an update that rotates the socket path is picked up
     // automatically without re-pinning CMUX_SOCKET_PATH.
-    let markers = [
+    let stableMarkers = [
         tmpMarkerPath,
         stateCmuxDirectory.appendingPathComponent("last-socket-path", isDirectory: false).path,
         legacyCmuxDirectory.appendingPathComponent("last-socket-path", isDirectory: false).path,
     ]
-    let variants = variantMarkers(in: tmpDirectory, filePrefix: "cmux-", fileManager: fileManager)
-        + variantMarkers(in: stateCmuxDirectory.path, filePrefix: "", fileManager: fileManager)
-    let sockets = (markers + variants.sorted(by: { $0.modified > $1.modified }).map(\.path))
-        .compactMap { socketFromMarker($0, fileManager: fileManager) }
+    let markers: [String]
+    let fallback: String
+    switch variant {
+    case nil:
+        let variants = variantMarkers(in: tmpDirectory, filePrefix: "cmux-", fileManager: fileManager)
+            + variantMarkers(in: stateCmuxDirectory.path, filePrefix: "", fileManager: fileManager)
+        markers = stableMarkers + variants.sorted(by: { $0.modified > $1.modified }).map(\.path)
+        fallback = stableFallback
+    case "stable"?:
+        markers = stableMarkers
+        fallback = stableFallback
+    case let name?:
+        markers = [
+            (tmpDirectory as NSString).appendingPathComponent("cmux-\(name)-last-socket-path"),
+            stateCmuxDirectory.appendingPathComponent("\(name)-last-socket-path", isDirectory: false).path,
+        ]
+        fallback = cmuxVariantDefaultSocketPath(name, tmpDirectory: tmpDirectory)
+    }
+    let sockets = markers.compactMap { socketFromMarker($0, fileManager: fileManager) }
 
     // A cmux that quit uncleanly can leave its socket file behind. Prefer a
     // socket something listens on, so a dead stable app does not hide a
     // running variant such as cmux DR2; otherwise keep the first candidate.
     if let live = sockets.first(where: isListening) { return live }
     if let first = sockets.first { return first }
+    return fallback
+}
 
-    return stateCmuxDirectory.appendingPathComponent("cmux.sock", isDirectory: false).path
+/// Whether `name` names a cmux app: `stable`, or `dev`/`nightly`/`rc`/`staging`
+/// optionally followed by `-<tag>` in lowercase letters, digits and dashes.
+/// These are the names cmux uses in its socket marker files.
+public func isValidCmuxVariant(_ name: String) -> Bool {
+    if name == "stable" { return true }
+    return cmuxVariantNames.contains { base in
+        guard name == base || name.hasPrefix("\(base)-") else { return false }
+        let tag = name.dropFirst(base.count)
+        return name.count <= 64 && !tag.hasSuffix("-")
+            && tag.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-" }
+    }
+}
+
+/// The socket a variant app creates when it publishes no marker, matching
+/// cmux's own defaults (`dev` builds use `debug` in the socket name).
+func cmuxVariantDefaultSocketPath(_ name: String, tmpDirectory: String = "/tmp") -> String {
+    let socketName = name == "dev" ? "debug" : name.hasPrefix("dev-") ? "debug-" + name.dropFirst(4) : name
+    return (tmpDirectory as NSString).appendingPathComponent("cmux-\(socketName).sock")
 }
 
 /// Whether a process accepts connections on the Unix socket at `path`.

@@ -175,7 +175,11 @@ struct Serve: AsyncParsableCommand {
         try store.reload()
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        let conn = CmuxConnection(group: group)
+        // A relay started by the Panecast gateway serves exactly one cmux app.
+        let variant = store.current.cmuxVariant
+        let resolver: (@Sendable () -> String)? = variant.map { name in { cmuxSocketPath(variant: name) } }
+        let conn = CmuxConnection(socketPathResolver: resolver, group: group)
+        if let variant { logger.info("serving cmux variant \(variant)") }
         let inbox = InboxJournal(url: state.url("inbox-events.json"))
         let facade = HostFacade(backend: CMUXFacadeImpl(connection: conn), inbox: inbox, config: { store.current })
         let historyFacade = CMUXFacadeImpl(connection: conn, lane: .history)
