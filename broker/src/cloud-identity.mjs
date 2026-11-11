@@ -38,7 +38,8 @@ export class CloudIdentity {
   email(username) { return `${username}@${this.emailDomain}`; }
 
   async call(method, path, { body, server = false, accessToken } = {}) {
-    const headers = { 'content-type': 'application/json', 'x-stack-project-id': this.projectId,
+    // The account service rejects a JSON content type on requests without a body (DELETE).
+    const headers = { ...(body === undefined ? {} : { 'content-type': 'application/json' }), 'x-stack-project-id': this.projectId,
       ...(server
         ? { 'x-stack-access-type': 'server', 'x-stack-secret-server-key': this.serverKey }
         : { 'x-stack-access-type': 'client', 'x-stack-publishable-client-key': this.publishableKey }),

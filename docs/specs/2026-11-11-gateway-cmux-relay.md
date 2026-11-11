@@ -61,3 +61,18 @@ SHA-256 `1ad5ae565927e0ee1981f5a2cf2f080cf3b43473555cc211e696fa4d4037b78b`。Hom
 公开读、`x-cos-meta-sha256` 记录 SHA，拒绝以不同内容覆盖；两个发布脚本在更新元数据前先上传并校验。
 `releases.json` 与 DR2 `release.json` 的 `downloadBase` 指向 COS，页面、安装脚本、Homebrew 配方与 appcast
 使用它；历史版本、页面、校验和与元数据仍在 ningzx.cn。公网安装命令实测 14 秒装好 0.1.7。
+
+## 共享账号上线记录
+
+两个 broker 容器（`/opt/cmux-remote-broker`）启用 `CMUX_ACCOUNT_*`，指向 `https://cmux.drinklake.com`，
+用户名映射 `<username>@users.drinklake.com`。服务器密钥由 drinklake2 经管道写入
+`/opt/cmux-remote-broker/secrets/cmux-account-server-key`（0400，uid 1000），以只读文件挂载，从未输出。
+部署前备份部署目录与两个数据卷：`/opt/cmux-remote-broker-backups/20261111T124004Z/`；线上旧源码与仓库
+`e6d3135` 版本逐字节一致。健康接口新增 `shared_accounts: true`。
+
+首次部署后两台电脑重连返回 401：容器重建后 IP 互换，nginx 仍按启动时解析的旧地址把主入口转到 Air broker。
+`nginx -t` 后平滑 reload 即恢复；重建 broker 后必须立即 reload nginx。另发现账号服务拒绝不带请求体却声明
+JSON 的 DELETE，导致删除账号失败、核对密码后打开的会话未关闭；已修复并让测试替身同样严格。
+
+线上用临时账号验证：Panecast 注册 → 同一用户名和密码登录 cmux cloud → Panecast 改密码后 cmux cloud
+只认新密码 → 删除后两边都无法登录；验证用临时账号均已删除。现有账号 `lesley` 在下次登录时迁移。

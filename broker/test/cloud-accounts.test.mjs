@@ -25,6 +25,8 @@ async function fakeAccountService(t) {
     calls.push({ method: request.method, url: request.url, kind, serverKey: h['x-stack-secret-server-key'], publishable: h['x-stack-publishable-client-key'] });
     const send = (status, data) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(data)); };
     if (down) return send(502, {});
+    // Like Stack Auth: a JSON content type needs a JSON body.
+    if (h['content-type'] && !raw) return send(400, { code: 'BODY_PARSING_ERROR' });
     if (h['x-stack-project-id'] !== PROJECT) return send(400, { code: 'PROJECT_NOT_FOUND' });
     if (kind === 'server' && h['x-stack-secret-server-key'] !== SERVER) return send(401, { code: 'INVALID_SERVER_KEY' });
     if (kind === 'client' && h['x-stack-publishable-client-key'] !== PUBLISHABLE) return send(401, { code: 'INVALID_PUBLISHABLE_KEY' });
