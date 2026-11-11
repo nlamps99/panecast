@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -213,6 +214,25 @@ test('a relay that keeps exiting is retried with growing delays', async (t) => {
   await supervisor.sync([{ type: 'cmux', managed: true, state_dir: stateDirectory, url: 'ws://127.0.0.1:1/v1/ws', token: 'a' }]);
   await until(async () => (await relay.calls()).length >= 3, 'retried');
   assert.equal(supervisor.relays.get(stateDirectory).delay, 160);
+});
+
+test('a relay that exits before the launch finishes is still restarted', async (t) => {
+  const root = await directory(t);
+  const stateDirectory = join(root, 'state');
+  await mkdir(stateDirectory);
+  let launches = 0;
+  // Exits on the next tick, before the supervisor's own awaits complete.
+  const spawn = () => {
+    launches += 1;
+    const child = new EventEmitter();
+    Object.assign(child, { pid: 0, exitCode: null, signalCode: null, kill() {} });
+    process.nextTick(() => { child.exitCode = 3; child.emit('exit', 3, null); });
+    return child;
+  };
+  const supervisor = new ManagedCmuxRelay({ binary: '/bin/false', spawn, minimumDelay: 10, maximumDelay: 20 });
+  t.after(() => supervisor.close());
+  await supervisor.sync([{ type: 'cmux', managed: true, state_dir: stateDirectory, url: 'ws://127.0.0.1:1/v1/ws', token: 'a' }]);
+  await until(async () => launches >= 3, 'restarted after an immediate exit');
 });
 
 test('a socket capability from a cmux terminal is saved, owner-only, for that app only', async (t) => {
