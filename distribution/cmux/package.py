@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package a verified tagged Release build of cmux DR2 on macOS."""
 import argparse
+import base64
 import datetime
 import hashlib
 import json
@@ -11,9 +12,15 @@ import shutil
 import subprocess
 import tempfile
 import time
+from email.utils import format_datetime
 from pathlib import Path
+from xml.sax.saxutils import escape, quoteattr
 
 HERE = Path(__file__).resolve().parent
+FEED_URL = 'https://ningzx.cn/panecast/cmux/appcast.xml'
+# Updates are signed with the dr2 key. The private key never enters the
+# repository, the source archive or the public directory.
+DEFAULT_SPARKLE_KEY = Path.home() / '.cmuxremote/dr2-release/sparkle-ed25519-private.key'
 
 
 def run(*command, **kwargs):
@@ -28,6 +35,47 @@ def sha256(path):
     return digest.hexdigest()
 
 
+VERIFY_SWIFT = """import CryptoKit
+import Foundation
+let arguments = CommandLine.arguments
+guard arguments.count == 4, let raw = Data(base64Encoded: arguments[1]), let signature = Data(base64Encoded: arguments[2]),
+      let key = try? Curve25519.Signing.PublicKey(rawRepresentation: raw),
+      let data = try? Data(contentsOf: URL(fileURLWithPath: arguments[3]), options: .mappedIfSafe) else { exit(2) }
+exit(key.isValidSignature(signature, for: data) ? 0 : 1)
+"""
+
+
+def verify_signature(path, signature, public_key, work):
+    """Checks the EdDSA signature with the key the app trusts, using CryptoKit rather than Sparkle's tools."""
+    script = Path(work) / 'verify-dr2-update.swift'
+    script.write_text(VERIFY_SWIFT)
+    run('/usr/bin/xcrun', 'swift', script, base64.b64encode(public_key).decode(), signature, path)
+
+
+def appcast(*, title, bundle_version, display_version, notes, url, length, signature):
+    """A single-item Sparkle feed for the newest dr2 revision."""
+    description = '<ul>' + ''.join(f'<li>{escape(line)}</li>' for line in notes) + '</ul>'
+    return f'''<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>cmux DR2</title>
+    <link>https://ningzx.cn/panecast/cmux/</link>
+    <language>zh-CN</language>
+    <item>
+      <title>{escape(title)}</title>
+      <pubDate>{format_datetime(datetime.datetime.now(datetime.timezone.utc))}</pubDate>
+      <sparkle:version>{escape(bundle_version)}</sparkle:version>
+      <sparkle:shortVersionString>{escape(display_version)}</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description><![CDATA[{description}]]></description>
+      <enclosure url={quoteattr(url)} length="{length}" type="application/octet-stream" sparkle:edSignature={quoteattr(signature)}/>
+    </item>
+  </channel>
+</rss>
+'''
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
@@ -36,6 +84,10 @@ def main():
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--revision', default='r1')
+    parser.add_argument('--notes', action='append', default=[], help='Release note line shown by the updater (repeatable)')
+    parser.add_argument('--sparkle-key', type=Path, default=DEFAULT_SPARKLE_KEY)
+    parser.add_argument('--sign-update', type=Path, help='Sparkle sign_update (default: from the build directory next to --app)')
+    parser.add_argument('--test-feed-url', help='Local verification only: point the packaged app at another feed. Never publish such output.')
     args = parser.parse_args()
     if not re.fullmatch(r'[0-9a-f]{40}', args.source_commit) or not re.fullmatch(r'r[1-9][0-9]*', args.revision):
         parser.error('Expected a source commit SHA and rN revision')
@@ -52,6 +104,22 @@ def main():
     profile = original['CMUXSelfHostedConfiguration']
     if profile['origin'] != 'https://cmux.drinklake.com':
         parser.error('Unexpected self-hosted service origin')
+    if original.get('SUFeedURL') != FEED_URL:
+        parser.error('The app must update from the dr2 feed')
+    public_key = base64.b64decode(original.get('SUPublicEDKey', ''), validate=True)
+    if len(public_key) != 32:
+        parser.error('The app must embed the dr2 EdDSA public key')
+    if not args.sparkle_key.is_file() or args.sparkle_key.stat().st_mode & 0o077:
+        parser.error('The Sparkle private key must be an owner-only file')
+    sign_update = args.sign_update or next(args.app.resolve().parents[3].glob('SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update'), None)
+    if not sign_update:
+        parser.error('Pass --sign-update; Sparkle tools were not found next to the app build')
+    revision_number = int(args.revision[1:])
+    # Sparkle compares CFBundleVersion. Each dr2 revision of an upstream build
+    # sorts after the previous one and before the next upstream build.
+    bundle_version = f"{original['CFBundleVersion']}.{revision_number}"
+    if not args.notes:
+        parser.error('Pass at least one --notes line for the updater')
     # Verified independently with gh attestation verify against the upstream
     # workflow and exact source digest before packaging this stable release.
     helper_manifest = args.app / 'Contents/Resources/bin/cmux-tui-ssh/manifest.json'
@@ -83,7 +151,9 @@ def main():
    控制 cmux；可在设置中改回「仅限 cmux 进程」，改回后网关无法连接。
 
 升级
-从 {base}/ 下载新版或重新运行安装命令。
+从 r2 起，有新版本时 cmux DR2 左下角会提示，点击即可升级。
+r1 不会收到这个提示，请从 {base}/ 下载新版或重新运行安装命令升级一次，
+不要在 r1 里点「检查更新」。
 独立应用标识：{bundle_id}
 此发行版不会通过官方更新渠道替换自身。升级时请先退出 cmux DR2。
 
@@ -116,8 +186,13 @@ origin 必须是 HTTPS 根地址；后面三项由你自己的服务部署提供
             'CMUX_AUTH_CALLBACK_SCHEME': 'cmux-dev-dr2-selfhost',
         }
         info.pop('CMUXCloudDogfoodEnabled', None)
-        info['SUEnableAutomaticChecks'] = False
-        info['SUAllowsAutomaticUpdates'] = False
+        # Daily checks against the dr2 feed; installing still waits for the user
+        # unless they turn on automatic updates.
+        info['CFBundleVersion'] = bundle_version
+        info['SUEnableAutomaticChecks'] = True
+        info.pop('SUAllowsAutomaticUpdates', None)
+        if args.test_feed_url:
+            info['SUFeedURL'] = args.test_feed_url
         info_path.write_bytes(plistlib.dumps(info))
         run(repo / 'scripts/thin-app-bundle.sh', app, 'arm64')
         run(repo / 'scripts/strip-release-bundle.sh', app)
@@ -132,6 +207,9 @@ origin 必须是 HTTPS 根地址；后面三项由你自己的服务部署提供
         run(app / 'Contents/Resources/bin/cmux', '--version')
         zip_path = output / f'{stem}-macos-arm64.zip'
         run('/usr/bin/ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, zip_path)
+        signature = subprocess.run([str(sign_update), '--ed-key-file', str(args.sparkle_key), '-p', str(zip_path)],
+                                   check=True, capture_output=True, text=True).stdout.strip()
+        verify_signature(zip_path, signature, public_key, stage)
         dmg_root = stage / 'disk'
         dmg_root.mkdir()
         run('/usr/bin/ditto', app, dmg_root / app.name)
@@ -176,6 +254,14 @@ origin 必须是 HTTPS 根地址；后面三项由你自己的服务部署提供
                 'architecture': 'arm64', 'minimumMacOS': '14.0', 'bundleIdentifier': bundle_id,
                 'serverOrigin': profile['origin'], 'signing': 'ad-hoc', 'notarized': False, **artifacts}
     manifest['bundledTerminalHelperCommit'] = '786ab29824b470de376a8030d60f1445dde241cc'
+    manifest['bundleVersion'] = bundle_version
+    manifest['update'] = {'feed': args.test_feed_url or FEED_URL, 'edSignature': signature, 'notes': args.notes}
+    if args.test_feed_url:
+        manifest['testFeedOnly'] = True
+    (output / 'appcast.xml').write_text(appcast(
+        title=f'cmux DR2 {version} {args.revision}', bundle_version=bundle_version,
+        display_version=f'{version} {args.revision}', notes=args.notes,
+        url=f'{base}/{zip_path.name}', length=zip_path.stat().st_size, signature=signature))
     (output / 'release.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     (output / 'SHA256SUMS').write_text(''.join(item['sha256'] + '  ' + item['file'] + '\n' for item in artifacts.values()))
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
