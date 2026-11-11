@@ -27,6 +27,10 @@ const server = createServer((request, response) => {
 });
 await new Promise((done) => server.listen(0, '127.0.0.1', done));
 const port = 9333;
+// The app sets its own WebView2 browser arguments, so open the DevTools port
+// through WebView2's per-app policy as well (CI machine only; removed below).
+const policy = 'HKCU\\Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
+execFileSync('reg', ['add', policy, '/v', program, '/t', 'REG_SZ', '/d', `--remote-debugging-port=${port}`, '/f'], { stdio: 'inherit' });
 const app = spawn(join(installation, program), [], {
   env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
   detached: true, stdio: 'ignore',
@@ -46,13 +50,22 @@ $i.Save('${join(results, name).replace(/'/g, "''")}')`;
 let report;
 try {
   let page;
+  let last = 'no response';
   for (const deadline = Date.now() + 90_000; !page;) {
     if (exited !== null) throw new Error(`The app exited with code ${exited}`);
-    if (Date.now() > deadline) throw new Error('The app page did not appear');
+    if (Date.now() > deadline) {
+      console.log('Last DevTools response:', last);
+      try {
+        execFileSync('powershell', ['-NoProfile', '-Command',
+          "Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | Select-Object -First 3 -ExpandProperty CommandLine"], { stdio: 'inherit' });
+      } catch { /* diagnostics only */ }
+      throw new Error('The app page did not appear');
+    }
     try {
       const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      last = JSON.stringify(targets.map(({ type, url }) => ({ type, url })));
       page = targets.find((target) => target.type === 'page' && target.url.startsWith('http://tauri.localhost/'));
-    } catch { /* WebView2 is still starting */ }
+    } catch (error) { last = String(error.cause ?? error); }
     if (!page) await wait(1000);
   }
   const socket = new WebSocket(page.webSocketDebuggerUrl);
@@ -108,6 +121,7 @@ try {
   throw error;
 } finally {
   server.close();
+  try { execFileSync('reg', ['delete', policy, '/v', program, '/f'], { stdio: 'ignore' }); } catch { /* already removed */ }
   try { execFileSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* already closed */ }
 }
 
