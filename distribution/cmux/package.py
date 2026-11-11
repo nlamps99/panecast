@@ -49,7 +49,7 @@ def main():
     version = original['CFBundleShortVersionString']
     upstream_version = '0.65.2.2'
     profile = original['CMUXSelfHostedConfiguration']
-    if profile['origin'] != 'https://ipcraft.drinklake.com':
+    if profile['origin'] != 'https://cmux.drinklake.com':
         parser.error('Unexpected self-hosted service origin')
     # Verified independently with gh attestation verify against the upstream
     # workflow and exact source digest before packaging this stable release.
@@ -62,7 +62,7 @@ def main():
 
 适用于 macOS 14 或更新版本，Apple Silicon（M 系列芯片）。
 这是基于 cmux v{upstream_version} 源码制作的独立自建版，应用名称为 cmux DR2。
-服务地址已配置为 https://ipcraft.drinklake.com，无需自己改代码。
+服务地址已配置为 https://cmux.drinklake.com，无需自己改代码。
 
 安装
 1. 将 cmux DR2 拖到「应用程序」。
