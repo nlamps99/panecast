@@ -1,10 +1,10 @@
 {
   "upstreamVersion": "0.65.2.2",
   "appVersion": "0.65.2",
-  "revision": "r3",
-  "sourceCommit": "e8f57db41dde8c121e66e612c6924d1ff134929e",
+  "revision": "r4",
+  "sourceCommit": "08d503468259585b2b31729f658cdfcb98673ec3",
   "upstreamCommit": "12023d89feb5425c766ba05e8d8e4cfc176e3991",
-  "publishedAt": "2026-11-11T11:18:02.520114+00:00",
+  "publishedAt": "2026-11-11T12:25:47.512328+00:00",
   "architecture": "arm64",
   "minimumMacOS": "14.0",
   "bundleIdentifier": "com.cmuxterm.app.debug.dr2.selfhost",
@@ -12,36 +12,35 @@
   "signing": "ad-hoc",
   "notarized": false,
   "dmg": {
-    "file": "cmux-dr2-0.65.2.2-r3-macos-arm64.dmg",
-    "size": 110610520,
-    "sha256": "d81016b552cdc2ac6dfd9c0c4f5759a8fa44548a42015eb527a85b61edb6f34e"
+    "file": "cmux-dr2-0.65.2.2-r4-macos-arm64.dmg",
+    "size": 110609577,
+    "sha256": "d1da7a19f47834a87016b8d31bb3d0890c6b7c8f056bc1d3c9caa406a7289f9c"
   },
   "archive": {
-    "file": "cmux-dr2-0.65.2.2-r3-macos-arm64.zip",
-    "size": 106063948,
-    "sha256": "12010fc76374454da66b311c70bf9f937fc02acf2c2b6a901db3f6d1cbe7ee67"
+    "file": "cmux-dr2-0.65.2.2-r4-macos-arm64.zip",
+    "size": 106064123,
+    "sha256": "3d7a4f4c110b0b19e3eb385fd35779f63b9c89bca033b466cdaf57ab9917f72a"
   },
   "source": {
-    "file": "cmux-dr2-0.65.2.2-r3-source.tar.gz",
-    "size": 191337272,
-    "sha256": "5ff036a7b7873d7c0ccad7f6aab984fbedcaf3af11fa39bec401834bbd128a9b"
+    "file": "cmux-dr2-0.65.2.2-r4-source.tar.gz",
+    "size": 191342257,
+    "sha256": "b60f41af6e6973262c047979bae66bd30ccd237e4a51a71ae8d0d09ad2d06793"
   },
   "installer": {
-    "file": "install-cmux-dr2-0.65.2.2-r3-cos-macos-arm64.sh",
+    "file": "install-cmux-dr2-0.65.2.2-r4-macos-arm64.sh",
     "size": 5647,
-    "sha256": "dfb5be61450b0acdf42e96374a911cc832fc34fd806f9a957fb6dfad4379e770"
+    "sha256": "b6c393d3ff5b687ba623bab5c1ea533ffc15b17d576d06b317909cbafefc668a"
   },
   "bundledTerminalHelperCommit": "786ab29824b470de376a8030d60f1445dde241cc",
-  "bundleVersion": "113.3",
+  "bundleVersion": "113.4",
+  "downloadBase": "https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast/cmux",
   "update": {
     "feed": "https://ningzx.cn/panecast/cmux/appcast.xml",
-    "edSignature": "5J1C+lG87zpAgN/R1DTHVbKxhJ5jpDLnv0jewEqDUgk4z5TnmjuytI9Qu9wsGbP64HByElq1VblEDg5F+khsBQ==",
+    "edSignature": "dU6hehKxo2XtrBtSvy/38d6WNY90vaN8amntcGP9dckpMkfciIfAx5Q40RW7NQXBmI6B4Io88NhJY3NICCr1BQ==",
     "notes": [
-      "左下角新增「手机访问」：一键安装、完成设置、升级或启动 Panecast 网关",
-      "服务地址改为 cmux.drinklake.com",
-      "默认允许 Panecast 网关连接，手机可直接查看和操作 cmux DR2",
-      "改用 cmux DR2 自己的更新源，以后可在左下角直接升级"
+      "用用户名登录，与 Panecast 共用同一个账号和密码",
+      "左下角「手机访问」：一键安装、完成设置、升级或启动 Panecast 网关",
+      "服务地址 cmux.drinklake.com，默认允许 Panecast 网关连接"
     ]
-  },
-  "downloadBase": "https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast/cmux"
+  }
 }

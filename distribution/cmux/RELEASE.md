@@ -84,3 +84,15 @@ available in the deployment staging backup for recovery.
 `appcast.xml`、`release.json`、页面与安装脚本在 ningzx.cn。服务器端核对四个产物 SHA 一致。
 首个 r3 安装器 `install-cmux-dr2-0.65.2.2-r3-macos-arm64.sh` 从 ningzx.cn 下载，保留；`install.sh` 改指向
 从 COS 下载的 `install-cmux-dr2-0.65.2.2-r3-cos-macos-arm64.sh`，隔离目录实测 20 秒装好 r3。
+
+## r4（2026-11-11）
+
+源码提交 `08d503468259585b2b31729f658cdfcb98673ec3`，构建号 `113.4`。登录框改为用户名：自建配置的
+`usernameDomain`（`users.drinklake.com`）把 `nzx` 映射为 `nzx@users.drinklake.com`，与 Panecast broker 共用
+同一账号服务；含 `@` 的输入仍按邮箱处理。打包脚本要求该域名一致。配置测试与 9 语言本地化检查通过。
+
+发布：dmg、zip、源码先上传 COS 并核对 SHA，再更新 ningzx.cn 的页面、`install.sh`（从 COS 下载）、
+`release.json` 与 `appcast.xml`；服务器端四个产物 SHA 一致。r3 用户会在左下角收到 r4 更新。
+
+注意：构建目录中的原始 App 的构建号是未打包的 `113`，运行后会被线上 appcast 当作旧版而自动更新覆盖；
+本地验证应使用打包后的 App。
