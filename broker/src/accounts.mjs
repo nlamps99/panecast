@@ -32,13 +32,22 @@ async function passwordMatches(password, stored) {
 function validatePassword(password) {
   if (typeof password !== 'string' || password.length < 12 || password.length > 256) fail(400, 'password_length');
 }
+const normalizeUsername = (username) => (typeof username === 'string' ? username.trim().toLowerCase() : '');
+const validUsername = (username) => /^[a-z0-9][a-z0-9._-]{2,63}$/.test(username);
 
-/** Account passwords, token hashes, relay grants and enrolled relays. Never stores pairing codes, relay tokens or raw login tokens. */
+/**
+ * Accounts, token hashes, relay grants and enrolled relays. Never stores pairing codes, relay tokens or raw login tokens.
+ *
+ * With `cloud` (a CloudIdentity), accounts are shared with cmux cloud: passwords live only in the account
+ * service and each user keeps its `cloud_id`. Accounts created before sharing move there with the same
+ * password on their first sign-in, after which the local password hash is removed.
+ */
 export class AccountStore {
-  constructor(path, { now = Date.now, sessionMs = SESSION_MS } = {}) {
+  constructor(path, { now = Date.now, sessionMs = SESSION_MS, cloud = null } = {}) {
     this.path = path;
     this.now = now;
     this.sessionMs = sessionMs;
+    this.cloud = cloud;
     this.data = { version: 1, users: [], sessions: [], computers: [], relays: [] };
     this.operation = Promise.resolve();
   }
@@ -82,9 +91,19 @@ export class AccountStore {
     return { user: publicUser(user), token, expires_at: new Date(expiresAt).toISOString() };
   }
   async register(username, password, name) {
-    username = typeof username === 'string' ? username.trim().toLowerCase() : '';
-    if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(username)) fail(400, 'invalid_username');
+    username = normalizeUsername(username);
+    if (!validUsername(username)) fail(400, 'invalid_username');
     validatePassword(password);
+    if (this.cloud) {
+      if (this.data.users.some((u) => u.username === username)) fail(409, 'username_taken');
+      const cloudId = await this.cloud.create(username, password);
+      return this.write((data) => {
+        if (data.users.some((u) => u.username === username)) fail(409, 'username_taken');
+        const user = { id: randomUUID(), username, cloud_id: cloudId };
+        data.users.push(user);
+        return this.issue(data, user, name);
+      });
+    }
     return this.write(async (data) => {
       if (data.users.some((u) => u.username === username)) fail(409, 'username_taken');
       const user = { id: randomUUID(), username, password: await passwordHash(password) };
@@ -94,11 +113,41 @@ export class AccountStore {
   }
   async login(username, password, name) {
     if (typeof username !== 'string' || typeof password !== 'string' || password.length > 256) fail(400, 'invalid_login');
+    if (this.cloud) return this.cloudLogin(normalizeUsername(username), password, name);
     return this.write(async (data) => {
       const user = data.users.find((u) => u.username === username.trim().toLowerCase());
       if (!await passwordMatches(password, user?.password) || !user) fail(401, 'invalid_login');
       return this.issue(data, user, name);
     });
+  }
+  async cloudLogin(username, password, name) {
+    if (!validUsername(username)) fail(401, 'invalid_login');
+    let cloudId = await this.cloud.verify(username, password);
+    return this.write(async (data) => {
+      let user = data.users.find((u) => u.username === username);
+      // First sign-in since accounts were shared: move the account there with the same password.
+      if (!cloudId && user?.password && !user.cloud_id && await passwordMatches(password, user.password)) {
+        try { cloudId = await this.cloud.create(username, password); }
+        catch (error) { if (error.statusCode === 409) fail(401, 'invalid_login'); throw error; }
+      }
+      if (!cloudId) fail(401, 'invalid_login');
+      // An account made in cmux cloud signs in to Panecast too.
+      if (!user) { user = { id: randomUUID(), username }; data.users.push(user); }
+      user.cloud_id = cloudId;
+      delete user.password;
+      return this.issue(data, user, name);
+    });
+  }
+  /** The signed-in user, checked against its current password (in the account service once shared). */
+  async confirmPassword(token, password) {
+    const session = this.requireSession(token, this.data);
+    const user = this.data.users.find((u) => u.id === session.account_id);
+    if (typeof password !== 'string' || password.length > 256) fail(403, 'incorrect_password');
+    const matches = this.cloud && user.cloud_id
+      ? await this.cloud.verify(user.username, password) === user.cloud_id
+      : await passwordMatches(password, user.password);
+    if (!matches) fail(403, 'incorrect_password');
+    return { session, user };
   }
   requireSession(token, data) {
     const session = this.session(token, data);
@@ -113,19 +162,27 @@ export class AccountStore {
   }
   async changePassword(token, oldPassword, password) {
     validatePassword(password);
-    return this.write(async (data) => {
-      const session = this.requireSession(token, data);
-      const user = data.users.find((u) => u.id === session.account_id);
-      if (typeof oldPassword !== 'string' || oldPassword.length > 256 || !await passwordMatches(oldPassword, user.password)) fail(403, 'incorrect_password');
-      user.password = await passwordHash(password);
+    const { session, user } = await this.confirmPassword(token, oldPassword);
+    let cloudId = user.cloud_id;
+    if (this.cloud) {
+      if (cloudId) await this.cloud.setPassword(cloudId, password);
+      else cloudId = await this.cloud.create(user.username, password);
+    }
+    const local = this.cloud ? null : await passwordHash(password);
+    return this.write((data) => {
+      const current = data.users.find((u) => u.id === user.id);
+      if (!current) fail(401, 'account_unauthorized');
+      if (cloudId) { current.cloud_id = cloudId; delete current.password; } else current.password = local;
       data.sessions = data.sessions.filter((s) => s.account_id !== user.id || s.id === session.id);
     });
   }
   async deleteAccount(token, password) {
+    const { user: confirmed } = await this.confirmPassword(token, password);
+    // A shared account is one account: deleting it here deletes it in cmux cloud too.
+    if (this.cloud && confirmed.cloud_id) await this.cloud.remove(confirmed.cloud_id);
     return this.write(async (data) => {
-      const session = this.requireSession(token, data);
-      const user = data.users.find((u) => u.id === session.account_id);
-      if (typeof password !== 'string' || password.length > 256 || !await passwordMatches(password, user.password)) fail(403, 'incorrect_password');
+      const user = data.users.find((u) => u.id === confirmed.id);
+      if (!user) fail(401, 'account_unauthorized');
       data.users = data.users.filter((u) => u.id !== user.id);
       data.sessions = data.sessions.filter((s) => s.account_id !== user.id);
       data.computers = data.computers.filter((c) => c.account_id !== user.id);

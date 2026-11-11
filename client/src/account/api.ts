@@ -9,6 +9,7 @@ const errors: Record<string, string> = {
   account_unauthorized: '登录已失效，请重新登录。', incorrect_password: '当前密码不正确。',
   too_many_account_attempts: '操作过于频繁，请一分钟后重试。', pairing_rejected: '配对凭据无效，请在目标电脑上重新生成配对链接。',
   not_found: '服务器尚未支持账号，请升级服务器。', computer_not_found: '这台电脑已解除绑定，请刷新列表。',
+  account_service_unavailable: '账号服务暂时无法连接，请稍后再试。', account_rejected: '账号服务拒绝了这个请求，请检查用户名和密码后重试。',
 };
 export class AccountError extends Error { constructor(readonly status: number, code: string) { super(errors[code] ?? `请求失败（HTTP ${status}）`); } }
 export function accountServer(raw: string): string {

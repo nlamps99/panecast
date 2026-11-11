@@ -15,6 +15,8 @@ const accountErrors = {
   relay_limit_reached: '这个账号的电脑数量已达上限。请先在 App 中移除不用的电脑。',
   relay_enrollment_disabled: '这个中转服务器没有开放自动分配。请向管理员索取电脑 ID 和连接密钥，再运行 panecast setup --relay-id ID --token-file PATH。',
   not_found: '中转服务器版本过旧，不支持自动分配。请升级 broker，或使用 --relay-id 和 --token-file 手动配置。',
+  account_service_unavailable: '账号服务暂时无法连接，请稍后再试。',
+  account_rejected: '账号服务拒绝了这个请求，请检查用户名和密码后重试。',
 };
 
 export function configPath(args = []) {

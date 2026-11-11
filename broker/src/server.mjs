@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { AccountStore } from "./accounts.mjs";
+import { CloudIdentity } from "./cloud-identity.mjs";
 import { accountRoute } from "./account-routes.mjs";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
@@ -249,6 +250,8 @@ export function configFromEnvironment(environment = process.env) {
     dataFile: resolve(environment.CMUX_BROKER_DATA_DIR ?? "./data", "devices.json"),
     trustProxy: environment.CMUX_TRUST_PROXY === "1",
     relayEnrollment: environment.CMUX_RELAY_ENROLLMENT !== "0",
+    // Accounts shared with cmux cloud (CMUX_ACCOUNT_*); unset keeps local passwords.
+    cloudIdentity: CloudIdentity.fromEnvironment(environment),
   };
   const file = environment.CMUX_RELAYS_FILE;
   const inline = environment.CMUX_RELAYS_JSON;
@@ -328,7 +331,7 @@ export async function createBrokerServer(options) {
   const logger = config.logger ?? console;
   const store = new DeviceStore(config.dataFile);
   await store.load();
-  const accounts = new AccountStore(config.accountFile ?? resolve(dirname(config.dataFile), 'accounts.json'));
+  const accounts = new AccountStore(config.accountFile ?? resolve(dirname(config.dataFile), 'accounts.json'), { cloud: config.cloudIdentity ?? null });
   await accounts.load();
   const enrollment = {
     enabled: config.relayEnrollment !== false,
@@ -405,6 +408,7 @@ export async function createBrokerServer(options) {
           push_forwarding: true,
           relay_scoped_health: true,
           accounts: true,
+          shared_accounts: Boolean(accounts.cloud),
           relay_enrollment: enrollment.enabled,
         });
         return;

@@ -107,6 +107,9 @@ def main():
     profile = original['CMUXSelfHostedConfiguration']
     if profile['origin'] != 'https://cmux.drinklake.com':
         parser.error('Unexpected self-hosted service origin')
+    # Usernames map to <username>@users.drinklake.com in both cmux DR2 and the Panecast broker.
+    if profile.get('usernameDomain') != 'users.drinklake.com':
+        parser.error('The app must sign in with usernames shared with Panecast')
     if original.get('SUFeedURL') != FEED_URL:
         parser.error('The app must update from the dr2 feed')
     public_key = base64.b64decode(original.get('SUPublicEDKey', ''), validate=True)
