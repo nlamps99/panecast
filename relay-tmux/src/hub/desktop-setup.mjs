@@ -93,7 +93,7 @@ export async function prepareDesktop({ appPath = '/Applications/ChatGPT.app', di
   const socket = join(directory, 'codex.sock');
   if (Buffer.byteLength(socket) > 100) throw new Error('Choose a shorter bridge directory (Unix socket path limit)');
   const wrapper = join(directory, 'codex-bridge'), manifest = join(directory, 'desktop.json'), launcher = join(directory, 'Launch Panecast Codex.command');
-  const source = { id: 'codex-desktop', name: 'Codex 桌面会话', type: 'codex', enabled: false, access: 'control', mode: 'attach', socket, executable: codex, desktop_app: app };
+  const source = { id: 'codex-desktop', name: 'Codex 桌面会话', type: 'codex', mode: 'attach', socket, executable: codex, desktop_app: app };
   // Exclusive creation: preparing twice never rewrites an installed launch configuration.
   const artifacts = [
     [wrapper, `#!/bin/sh\nexport PANECAST_CODEX_EXECUTABLE=${shellQuote(codex)}\nexport PANECAST_CODEX_SOCKET=${shellQuote(socket)}\nexport PANECAST_DESKTOP_APP_EXECUTABLE=${shellQuote(app)}\nexec ${shellQuote(bridgeNode)} ${shellQuote(join(here, 'desktop-bridge.mjs'))} "$@"\n`, 0o700],

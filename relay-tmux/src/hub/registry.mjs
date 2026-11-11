@@ -3,6 +3,9 @@ import { CodexSource } from './codex.mjs';
 import { localEndpoint } from './rpc.mjs';
 import { targetParams } from './ids.mjs';
 
+export const usableCmux = (source) => source.type === 'cmux' &&
+  [source.url, source.token, source.device_id].every((value) => typeof value === 'string' && value && !value.startsWith('REPLACE_'));
+
 export class SourceRegistry {
   constructor(configs, options = {}) {
     this.sources = new Map(); this.listeners = new Set(); this.options = options;
@@ -17,15 +20,17 @@ export class SourceRegistry {
     for (const raw of configs) {
       if (!raw || typeof raw.id !== 'string' || !/^[\w-]{1,64}$/.test(raw.id) || next.has(raw.id)) throw new Error('Source IDs must be unique, using letters, digits, _ or -');
       if (!['cmux', 'tmux', 'codex'].includes(raw.type)) throw new Error('Unsupported source type');
-      if (!['read', 'control'].includes(raw.access ?? 'read')) throw new Error('Source access must be read or control');
-      const config = { ...raw, enabled: raw.enabled === true, access: raw.access ?? 'read', name: String(raw.name ?? raw.id).slice(0, 100) };
-      if (config.type === 'cmux') {
-        if (config.enabled && (!config.url || !config.token || !config.device_id)) throw new Error('cmux requires an authorized relay url, token, and device_id');
-        if (config.url) localEndpoint(config.url);
+      // Older configs carry a cmux placeholder that discovery fills in later.
+      if (raw.type === 'cmux' && !usableCmux(raw)) continue;
+      // Every configured source has full access; removing it from the config is how it is turned off.
+      const config = { ...raw, enabled: true, access: 'control', name: String(raw.name ?? raw.id).slice(0, 100) };
+      if (config.type === 'cmux') localEndpoint(config.url);
+      if (config.type === 'codex') {
+        if (!['attach', 'managed', 'history'].includes(config.mode ?? 'attach')) throw new Error('Invalid Codex mode');
+        if (config.mode === 'history') config.mode = 'managed';
       }
-      if (config.type === 'codex' && !['attach', 'managed', 'history'].includes(config.mode ?? 'attach')) throw new Error('Invalid Codex mode');
       const old = this.sources.get(config.id);
-      next.set(config.id, old && JSON.stringify(old.config) === JSON.stringify(config) ? old : { config, status: config.enabled ? 'unknown' : 'revoked' });
+      next.set(config.id, old && JSON.stringify(old.config) === JSON.stringify(config) ? old : { config, status: 'unknown' });
     }
     const changed = [];
     for (const [id, source] of this.sources) if (next.get(id) !== source) { source.codex?.close(); changed.push(id); }
@@ -36,7 +41,7 @@ export class SourceRegistry {
 
   get(id) {
     const source = this.sources.get(id);
-    if (!source || !source.config.enabled) throw new RpcError('source_revoked', '来源未授权或授权已撤销，请在电脑端管理连接源');
+    if (!source) throw new RpcError('source_revoked', '来源不存在或已从电脑端配置中移除');
     return source;
   }
 
@@ -49,11 +54,10 @@ export class SourceRegistry {
 
   info(source) {
     const c = source.config;
-    const canControl = c.enabled && c.access === 'control' && (c.type !== 'codex' || c.mode !== 'history');
     return { id: c.id, name: c.name, type: c.type, access: c.access, enabled: c.enabled, status: source.status,
       mode: c.type === 'codex' ? c.mode ?? 'attach' : 'terminal',
-      capabilities: { read: c.enabled, control: canControl, terminal: c.type !== 'codex', agent: c.type === 'codex',
-        realtime: c.enabled && (c.type !== 'codex' || canControl), create: canControl, resume: canControl },
+      capabilities: { read: true, control: true, terminal: c.type !== 'codex', agent: c.type === 'codex',
+        realtime: true, create: true, resume: true },
       ...(source.error ? { error: source.error } : {}) };
   }
 

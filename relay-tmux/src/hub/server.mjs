@@ -10,13 +10,13 @@ export async function createHub(config, options = {}) {
   const registry = new SourceRegistry(config.sources ?? [], options);
   const effective = { ...config, hub_event_monitor: true, port: config.port ?? 4400, state_directory: config.state_directory ?? join(homedir(), '.cmuxremote', 'hub') };
   const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub',
-    allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.get(frame.payload.source_id)?.config.enabled === true,
+    allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.has(frame.payload.source_id),
     createSession: ({ send, close, notify }) => new HubSession(registry, effective, send, close, notify) });
   const monitors = new Map();
   let timer, monitoring = false;
   const unlisten = registry.onEvent((frame) => { void relay.ingestEvent(frame).catch(() => {}); });
   const forward = (id, frame, replay = false) => {
-    if (frame.type !== 'event' || !registry.sources.get(id)?.config.enabled) return Promise.resolve();
+    if (frame.type !== 'event' || !registry.sources.has(id)) return Promise.resolve();
     const value = scopeResult(id, frame);
     value.payload = { ...value.payload, source_id: id };
     if (frame.payload?.id) value.payload.id = scoped(id, frame.payload.id);
@@ -28,11 +28,10 @@ export async function createHub(config, options = {}) {
     try {
       for (const [id, peer] of monitors) {
         const source = registry.sources.get(id);
-        if (!source?.config.enabled || source.config !== peer.sourceConfig || peer.closed) { peer.close(); monitors.delete(id); }
+        if (!source || source.config !== peer.sourceConfig || peer.closed) { peer.close(); monitors.delete(id); }
       }
       for (const { config: c } of registry.sources.values()) {
-        if (!c.enabled) continue;
-        if (c.type === 'codex' && c.mode !== 'history') {
+        if (c.type === 'codex') {
           void registry.codex(c.id).connection().catch(() => {});
         } else if (c.type === 'cmux' && !monitors.has(c.id)) {
           const peer = new RpcPeer({ url: localEndpoint(c.url), token: c.token, protocols: ['cmuxremote.v1'], hello: { protocolVersion: 1, appVersion: 'panecast-hub/0.1', deviceId: c.device_id } });

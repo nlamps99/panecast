@@ -7,9 +7,7 @@
   "host": "127.0.0.1",
   "port": 4400,
   "sources": [
-    { "id": "tmux", "name": "tmux", "type": "tmux", "enabled": false, "access": "read" },
-    { "id": "cmux", "name": "cmux", "type": "cmux", "enabled": false, "access": "read",
-      "url": "ws://127.0.0.1:4399/v1/ws", "device_id": "REPLACE_WITH_REGISTERED_DEVICE_ID", "token": "REPLACE_WITH_REGISTERED_DEVICE_TOKEN" },
-    { "id": "codex", "name": "Codex 历史", "type": "codex", "enabled": false, "access": "read", "mode": "history" }
+    { "id": "tmux", "name": "tmux", "type": "tmux" },
+    { "id": "codex", "name": "Codex", "type": "codex", "mode": "managed" }
   ]
 }

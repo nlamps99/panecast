@@ -18,8 +18,9 @@ the broker assigns this computer its relay ID, relay token and pairing code, so
 there is nothing to copy by hand. Phones signed in to the same account list the
 computer automatically; `panecast pair` shows a QR code for phones without an
 account. For a broker that disables enrollment, pass the credentials its
-administrator assigned with `--relay-id ID --token-file PATH`. Then explicitly
-authorize the sources you need.
+administrator assigned with `--relay-id ID --token-file PATH`. tmux, cmux and
+Codex on this computer are connected automatically with full access; there is
+no separate authorization step.
 Use `panecast status`, `panecast logs`, `panecast restart`, and `panecast stop`
 to manage the macOS background service. Stop the service before uninstalling.
 Configuration and paired devices stay under `~/.cmuxremote/` across upgrades.

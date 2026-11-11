@@ -8,8 +8,7 @@ import { mobileItem, mobileTurn } from './codex-history.mjs';
 import { desktopParent } from './desktop-bridge.mjs';
 
 const APPROVALS = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval']);
-const READS = new Set(['agent.threads', 'agent.read', 'agent.pending', 'agent.projects']);
-const ACTIONS = new Set([...READS, 'agent.subscribe', 'agent.unsubscribe', 'agent.create', 'agent.resume', 'agent.fork', 'agent.rename', 'agent.archive', 'agent.send', 'agent.steer', 'agent.interrupt', 'agent.respond']);
+const ACTIONS = new Set(['agent.threads', 'agent.read', 'agent.pending', 'agent.projects', 'agent.subscribe', 'agent.unsubscribe', 'agent.create', 'agent.resume', 'agent.fork', 'agent.rename', 'agent.archive', 'agent.send', 'agent.steer', 'agent.interrupt', 'agent.respond']);
 const text = (value, max = 100_000) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new RpcError('invalid_params', '内容为空或过长');
   return value;
@@ -19,12 +18,10 @@ export class CodexSource {
   constructor(config, emit, peerFactory = (options) => new RpcPeer(options)) {
     this.config = config; this.emit = emit; this.peerFactory = peerFactory;
     this.pending = new Map(); this.subscribed = new Set(); this.freshThreads = new Map();
-    this.mode = config.mode ?? 'attach';
-    if (!['attach', 'history', 'managed'].includes(this.mode)) throw new Error('Codex mode must be attach, history, or managed');
+    this.mode = config.mode === 'history' ? 'managed' : config.mode ?? 'attach';
+    if (!['attach', 'managed'].includes(this.mode)) throw new Error('Codex mode must be attach or managed');
     if (config.url) localEndpoint(config.url);
   }
-
-  get controllable() { return this.mode !== 'history' && this.config.access === 'control'; }
 
   async connection() {
     if (!this.peer || this.peer.closed) {
@@ -69,14 +66,13 @@ export class CodexSource {
 
   async dispatch(method, p = {}) {
     if (!ACTIONS.has(method)) throw new RpcError('method_not_found', '不支持这个 Codex 操作');
-    if (!READS.has(method) && !this.controllable) throw new RpcError('read_only', this.mode === 'history' ? '这个来源只读取历史；实时操作需要连接原会话的服务' : '这个连接源只允许读取');
     const peer = await this.connection();
     if (method === 'agent.projects') return { projects: await this.projects(peer) };
     if (method === 'agent.threads') {
       const result = await peer.call('thread/list', { limit: 40, sortKey: 'updated_at',
         sourceKinds: ['cli', 'vscode', 'appServer', 'exec', 'unknown'], modelProviders: [], useStateDbOnly: true,
         ...(p.cursor ? { cursor: text(p.cursor, 4096) } : {}), ...(p.archived === true ? { archived: true } : {}) });
-      const loaded = this.mode === 'history' ? new Set() : await this.loaded(peer);
+      const loaded = await this.loaded(peer);
       return { threads: (result.data ?? []).map((thread) => this.thread(thread, loaded.has(thread.id))), next_cursor: result.nextCursor ?? null };
     }
     if (method === 'agent.create') {
@@ -103,7 +99,7 @@ export class CodexSource {
         if (this.freshThreads.has(threadId) && /no rollout found/i.test(error.message)) return { thread: this.thread(this.freshThreads.get(threadId), true), turns: [], next_cursor: null };
         throw error;
       }
-      const live = this.mode !== 'history' && (await this.loaded(peer)).has(threadId);
+      const live = (await this.loaded(peer)).has(threadId);
       try {
         const limit = Number.isInteger(p.limit) ? Math.max(1, Math.min(20, p.limit)) : 5;
         const page = await peer.call('thread/turns/list', { threadId, limit, sortDirection: 'desc', itemsView: 'full', ...(p.cursor ? { cursor: text(p.cursor, 4096) } : {}) });
@@ -192,7 +188,7 @@ export class CodexSource {
 
   thread(thread, live = false) {
     return { id: thread.id, name: thread.name ?? thread.preview?.slice(0, 100) ?? thread.id,
-      cwd: thread.cwd ?? '', updatedAt: thread.updatedAt, status: this.mode === 'history' ? { type: 'history' } : thread.status,
+      cwd: thread.cwd ?? '', updatedAt: thread.updatedAt, status: thread.status,
       live,
       ...(thread.modelProvider ? { modelProvider: thread.modelProvider } : {}) };
   }

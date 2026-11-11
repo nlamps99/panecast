@@ -23,14 +23,12 @@ async function main() {
   panecast logs                          持续查看错误日志
   panecast pair                          显示手机配对二维码
   panecast serve                         在前台运行
-  panecast sources list                  查看已配置来源
-  panecast sources grant tmux --access control
-  panecast sources revoke tmux
+  panecast sources list                  查看已接入的来源（tmux、cmux、Codex 自动接入，全部权限）
   panecast desktop prepare | check       Codex 桌面桥接
 
 所有网关命令支持 --config /absolute/path/hub-relay.json。
 自动配置：setup --broker-url HTTPS_URL --username NAME --password-file PATH
-          [--register] [--name 电脑名称] [--source tmux|codex|none] [--lan]
+          [--register] [--name 电脑名称] [--lan]
 手动凭据：setup --broker-url HTTPS_URL --relay-id ID --token-file PATH
 配对：pair [--lan-host PRIVATE_IP] [--url-only]
 安装与更新：https://ningzx.cn/panecast/`); return;

@@ -75,34 +75,30 @@ export async function enrollComputer({ url, username, password, register = false
   }
 }
 
-export async function writeInitialConfig(path, { url, relayId, token, pairingCode, source = 'none', lan = false }) {
+export async function writeInitialConfig(path, { url, relayId, token, pairingCode, lan = false }) {
   if (!relayId || !/^[\w.-]{1,128}$/.test(relayId)) throw new Error('电脑 ID 只能包含字母、数字、点、横线或下划线。');
   if (!token || /\s/.test(token)) throw new Error('连接密钥不能为空或包含空白。');
   if (pairingCode !== undefined && (!pairingCode || /\s/.test(pairingCode))) throw new Error('配对码不能为空或包含空白。');
-  if (!['tmux', 'codex', 'none'].includes(source)) throw new Error('--source 支持 tmux、codex 或 none。');
   const config = {
     broker: { url: brokerURL(url), relay_id: relayId, relay_token: token, ...(pairingCode ? { pairing_code: pairingCode } : {}) },
     host: '0.0.0.0', port: 4400,
     ...(lan ? { lan: { pairing_code: randomBytes(32).toString('hex') } } : {}),
     state_directory: join(dirname(path), 'hub'),
-    sources: [
-      { id: 'tmux', name: 'tmux', type: 'tmux', enabled: source === 'tmux', access: source === 'tmux' ? 'control' : 'read' },
-      { id: 'codex', name: 'Codex 历史', type: 'codex', mode: 'history', enabled: source === 'codex', access: 'read' },
-    ],
+    sources: [],
   };
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  // Exclusive creation preserves every existing pairing and source permission.
+  // Exclusive creation preserves every existing pairing and source.
   await writeFile(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   await chmod(path, 0o600);
   return config;
 }
 
-export async function setup(args, { fetch: request = fetch } = {}) {
+export async function setup(args, { fetch: request = fetch, discover } = {}) {
   const path = configPath(args);
   try { await access(path); console.log(`已有配置：${path}\n配置已保留。运行 panecast start，然后 panecast pair。`); return; }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const flag = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${name} 缺少值`); return args[i + 1]; };
-  let url = flag('--broker-url'), relayId = flag('--relay-id'), source = flag('--source'), username = flag('--username'), token, password, pairingCode;
+  let url = flag('--broker-url'), relayId = flag('--relay-id'), username = flag('--username'), token, password, pairingCode;
   const tokenFile = flag('--token-file'), passwordFile = flag('--password-file'), name = flag('--name') ?? computerName();
   let register = args.includes('--register'), lan = args.includes('--lan');
   if (tokenFile) token = (await readFile(tokenFile, 'utf8')).trim();
@@ -135,18 +131,16 @@ export async function setup(args, { fetch: request = fetch } = {}) {
           if (register && await secret('再次输入密码：') !== password) throw new Error('两次输入的密码不一致。');
         }
       }
-      if (!source) {
-        const choice = (await prompt.question('授权来源：1 查看和控制 tmux，2 只读 Codex 历史，3 稍后配置 [3]：')).trim();
-        source = choice === '1' ? 'tmux' : choice === '2' ? 'codex' : 'none';
-      }
       if (!lan) lan = /^(y|yes)$/i.test((await prompt.question('启用可信 Wi-Fi 下的 HTTP 直连？[y/N]：')).trim());
     } finally { prompt.close(); }
   }
   if (!manual) ({ url, relayId, token, pairingCode } = await enrollComputer({ url, username, password, register, name, fetch: request }));
-  await writeInitialConfig(path, { url, relayId, token, pairingCode, source: source ?? 'none', lan });
-  console.log(`配置已保存：${path}\n运行 panecast start 启动后台服务。`);
+  await writeInitialConfig(path, { url, relayId, token, pairingCode, lan });
+  const { discoverInto } = await import('./hub/discover.mjs');
+  const found = await discoverInto(path, discover).catch(() => []);
+  console.log(`配置已保存：${path}`);
+  console.log(found.length ? `已接入（全部权限）：${found.join('、')}` : '暂未发现 tmux、cmux 或 Codex；安装或启动后，网关会在一分钟内自动接入。');
+  console.log('运行 panecast start 启动后台服务。');
   if (manual) console.log('然后运行 panecast pair 用手机扫码。');
   else console.log(`手机 App 登录账号 ${username.trim().toLowerCase()} 后会自动出现「${name}」；未登录账号的手机可运行 panecast pair 扫码。`);
-  if (source === 'tmux') console.log('终端任务需要在 tmux 中运行：tmux new -s work');
-  if (!source || source === 'none') console.log('授权终端来源：panecast sources grant tmux --access control');
 }

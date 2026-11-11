@@ -70,5 +70,5 @@ DMG 可用 `hdiutil attach -readonly -nobrowse -noautoopen` 挂载检查，结�
 
 `panecast setup` 登录账号后由中转自动为每台电脑分配独立凭据，需要中转升级到支持
 `POST /v1/account/relays` 的版本；旧中转或关闭自动分配的中转仍可用 `--relay-id` 和
-`--token-file` 手动配置。安装 CLI 不自动授权来源，setup 只在用户选择后授权 tmux 控制
-或 Codex 只读历史。升级、重装和卸载都保留用户配置与配对。
+`--token-file` 手动配置。网关自动接入本机的 tmux、cmux 和 Codex，每个来源都拥有全部权限，
+没有授权步骤。升级、重装和卸载都保留用户配置与配对。

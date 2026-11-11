@@ -12,6 +12,7 @@ import { createHub } from '../src/hub/server.mjs';
 import { scoped } from '../src/hub/ids.mjs';
 import { RpcPeer } from '../src/hub/rpc.mjs';
 import { CodexSource } from '../src/hub/codex.mjs';
+import { SourceRegistry } from '../src/hub/registry.mjs';
 
 async function upstream(t, codex = false) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -50,9 +51,9 @@ async function fixture(t) {
   const surface = (await tmux.surfaces(workspace_id))[0];
   const cmux = await upstream(t), codex = await upstream(t, true);
   const sources = [
-    { id: 'tmux', type: 'tmux', name: 'tmux', enabled: true, access: 'control', tmux_socket: tmux.prefix[1] },
-    { id: 'cmux', type: 'cmux', name: 'cmux', enabled: true, access: 'read', url: cmux.url, token: 'upstream-secret', device_id: 'hub' },
-    { id: 'codex', type: 'codex', name: 'Codex', enabled: true, access: 'control', mode: 'attach', url: codex.url, cwd: directory },
+    { id: 'tmux', type: 'tmux', name: 'tmux', tmux_socket: tmux.prefix[1] },
+    { id: 'cmux', type: 'cmux', name: 'cmux', url: cmux.url, token: 'upstream-secret', device_id: 'hub' },
+    { id: 'codex', type: 'codex', name: 'Codex', mode: 'attach', url: codex.url, cwd: directory },
   ];
   return { directory, tmux, workspace_id, surface, cmux, codex, sources };
 }
@@ -68,14 +69,12 @@ async function connect(t, config) {
   return { hub, peer, pushes, base, credentials };
 }
 
-test('cmux application history forwards replay and scrolling with target and access checks', async (t) => {
+test('cmux application history forwards replay and scrolling with target checks', async (t) => {
   const fx = await fixture(t);
-  const { hub, peer } = await connect(t, { state_directory: join(fx.directory, 'scroll'), lan: { pairing_code: 'pair-secret' }, port: 0, sources: fx.sources });
+  const { peer } = await connect(t, { state_directory: join(fx.directory, 'scroll'), lan: { pairing_code: 'pair-secret' }, port: 0, sources: fx.sources });
   const target = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
   await peer.call('terminal.replay', { ...target, anchor: 'screen', max_scrollback_rows: 0 });
   assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', anchor: 'screen', max_scrollback_rows: 0 });
-  await assert.rejects(peer.call('terminal.scroll', { ...target, delta_lines: 10 }), { code: 'read_only' });
-  hub.reloadSources(fx.sources.map((s) => s.id === 'cmux' ? { ...s, access: 'control' } : s));
   await peer.call('terminal.scroll', { ...target, delta_lines: 10, col: 40, row: 10 });
   assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', delta_lines: 10, col: 40, row: 10 });
   await assert.rejects(peer.call('terminal.scroll', { ...target, surface_id: scoped('tmux', fx.surface.id), delta_lines: 10 }), { code: 'invalid_target' });
@@ -85,7 +84,7 @@ test('cmux application history forwards replay and scrolling with target and acc
 test('attachment limits come from the selected source and respect the hub transport', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'panecast-upload-info-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const cmux = await upstream(t);
-  const source = { id: 'cmux', type: 'cmux', enabled: true, access: 'control', url: cmux.url, token: 'fixture-only', device_id: 'fixture' };
+  const source = { id: 'cmux', type: 'cmux', url: cmux.url, token: 'fixture-only', device_id: 'fixture' };
   const { peer, hub } = await connect(t, { state_directory: directory, port: 0, lan: { pairing_code: 'pair-secret' }, sources: [source] });
   const target = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
   assert.equal((await peer.call('relay.info')).backend, 'hub');
@@ -94,11 +93,11 @@ test('attachment limits come from the selected source and respect the hub transp
   cmux.limits.max_message_bytes = 64 * 1024 * 1024;
   assert.equal((await peer.call('relay.info', target)).max_message_bytes, 32 * 1024 * 1024);
   await assert.rejects(peer.call('relay.info', { ...target, surface_id: scoped('other', '%0') }), { code: 'invalid_target' });
-  hub.reloadSources([{ ...source, enabled: false }]);
+  hub.reloadSources([]);
   await assert.rejects(peer.call('relay.info', target), { code: 'source_revoked' });
 });
 
-test('terminal chat reads only the selected binding and honors source scope, read-only access and revocation', async t => {
+test('terminal chat reads only the selected binding and honors source scope and removal', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'panecast-bound-chat-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const cmux = await upstream(t), id = randomUUID(), other = randomUUID();
   const codexHome = join(directory, 'codex'); await mkdir(join(codexHome, 'sessions'), { recursive: true });
@@ -107,7 +106,7 @@ test('terminal chat reads only the selected binding and honors source scope, rea
   ].map(value => JSON.stringify(value) + '\n').join(''));
   cmux.bindings.set('%0', { kind: 'codex', checkpoint_id: id, execution_location: 'local', cwd: directory });
   cmux.bindings.set('%1', { kind: 'codex', checkpoint_id: other, execution_location: 'local', cwd: directory });
-  const sources = [{ id: 'cmux', type: 'cmux', enabled: true, access: 'read', url: cmux.url, token: 'fixture-only', device_id: 'fixture', codex_home: codexHome }];
+  const sources = [{ id: 'cmux', type: 'cmux', url: cmux.url, token: 'fixture-only', device_id: 'fixture', codex_home: codexHome }];
   const { peer, hub } = await connect(t, { state_directory: join(directory, 'hub'), port: 0, lan: { pairing_code: 'pair-secret' }, sources });
   const target = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
   const page = await peer.call('terminal.conversation', target);
@@ -118,11 +117,11 @@ test('terminal chat reads only the selected binding and honors source scope, rea
   assert.equal((await peer.call('terminal.conversation', { ...target, surface_id: scoped('cmux', '%2') })).available, false);
   await assert.rejects(peer.call('terminal.conversation', { ...target, surface_id: scoped('different', '%0') }), { code: 'invalid_target' });
   assert.equal(cmux.calls.some(call => /send|resume$|turn\/start/.test(call.method)), false);
-  hub.reloadSources([{ ...sources[0], enabled: false }]);
+  hub.reloadSources([]);
   await assert.rejects(peer.call('terminal.conversation', target), { code: 'source_revoked' });
 });
 
-test('one pairing routes cmux, real tmux and Codex without mixing IDs or permissions', async (t) => {
+test('one pairing routes cmux, real tmux and Codex with full control and without mixing IDs', async (t) => {
   const fx = await fixture(t);
   // Use a second listener directory to exercise the complete authenticated phone protocol.
   const { hub, peer, pushes } = await connect(t, { state_directory: join(fx.directory, 'phone'), lan: { pairing_code: 'pair-secret' }, port: 0, sources: fx.sources });
@@ -143,7 +142,8 @@ test('one pairing routes cmux, real tmux and Codex without mixing IDs or permiss
   for (const ws of fx.cmux.server.clients) ws.terminate();
   for (let attempt = 0; attempt < 30 && cmuxScreens() === beforeReconnect; attempt++) await delay(50);
   assert.ok(cmuxScreens() > beforeReconnect, 'an upstream reconnect restores existing terminal subscriptions');
-  await assert.rejects(peer.call('surface.send_text', { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0'), text: 'no' }), { code: 'read_only' });
+  await peer.call('surface.send_text', { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0'), text: 'to cmux' });
+  assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', text: 'to cmux' });
   await assert.rejects(peer.call('surface.send_text', { ...tmuxTarget, surface_id: scoped('cmux', '%0'), text: 'no' }), { code: 'invalid_target' });
   await assert.rejects(peer.call('command/exec', { command: 'bad' }), { code: 'method_not_found' });
   await peer.call('surface.send_text', { ...tmuxTarget, text: 'echo hub中文' });
@@ -155,15 +155,15 @@ test('one pairing routes cmux, real tmux and Codex without mixing IDs or permiss
   const sent = fx.codex.calls.find((c) => c.method === 'turn/start').params;
   assert.deepEqual(sent, { threadId: 'thread-1', input: [{ type: 'text', text: 'hello' }], clientUserMessageId: sent.clientUserMessageId });
   assert.equal(typeof sent.clientUserMessageId, 'string');
-  hub.reloadSources(fx.sources.map((s) => ({ ...s, enabled: s.id !== 'tmux' })));
+  hub.reloadSources(fx.sources.filter((s) => s.id !== 'tmux'));
   await assert.rejects(peer.call('surface.send_key', { ...tmuxTarget, key: 'enter' }), { code: 'source_revoked' });
   assert.equal((await peer.call('agent.threads', { source_id: 'codex' })).threads.length, 1);
 });
 
-test('Codex approvals require explicit valid decisions and source access can be revoked', async (t) => {
+test('Codex approvals require explicit valid decisions and a removed source stops working', async (t) => {
   const upstreamCodex = await upstream(t, true);
   const directory = await mkdtemp(join(tmpdir(), 'panecast-approval-')); t.after(() => rm(directory, { recursive: true, force: true }));
-  const source = { id: 'codex', type: 'codex', enabled: true, access: 'control', mode: 'attach', url: upstreamCodex.url };
+  const source = { id: 'codex', type: 'codex', mode: 'attach', url: upstreamCodex.url };
   const { peer, hub } = await connect(t, { state_directory: directory, lan: { pairing_code: 'pair-secret' }, port: 0, sources: [source] });
   await peer.call('agent.subscribe', { source_id: 'codex', thread_id: 'thread-1' });
   upstreamCodex.emit({ id: 99, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-2', command: 'npm test' } });
@@ -174,8 +174,8 @@ test('Codex approvals require explicit valid decisions and source access can be 
   await peer.call('agent.respond', { source_id: 'codex', thread_id: 'thread-1', request_id: '99', decision: 'decline' });
   await delay(20); assert.deepEqual(upstreamCodex.responses[0], { id: 99, result: { decision: 'decline' } });
   await assert.rejects(peer.call('agent.respond', { source_id: 'codex', thread_id: 'thread-1', request_id: '99', decision: 'accept' }), { code: 'request_resolved' });
-  hub.reloadSources([{ ...source, access: 'read' }]);
-  await assert.rejects(peer.call('agent.send', { source_id: 'codex', thread_id: 'thread-1', text: 'bad' }), { code: 'read_only' });
+  hub.reloadSources([]);
+  await assert.rejects(peer.call('agent.send', { source_id: 'codex', thread_id: 'thread-1', text: 'bad' }), { code: 'source_revoked' });
 });
 
 test('revoking a paired LAN device disconnects its existing socket', async (t) => {
@@ -185,10 +185,21 @@ test('revoking a paired LAN device disconnects its existing socket', async (t) =
   assert.equal(response.status, 200); await delay(20); assert.equal(peer.closed, true);
 });
 
-test('history-only Codex never resumes, starts turns, or grants approvals', async () => {
-  const source = new CodexSource({ id: 'codex', mode: 'history', access: 'control' }, () => {}, () => { throw new Error('must not connect for a write'); });
-  for (const method of ['agent.send', 'agent.subscribe', 'agent.create', 'agent.respond', 'agent.interrupt']) await assert.rejects(source.dispatch(method, { thread_id: 'thread-1' }), { code: 'read_only' });
-  assert.equal(source.thread({ id: '1', status: { type: 'active' } }).status.type, 'history');
+test('every configured source has full control regardless of legacy grant fields', () => {
+  const registry = new SourceRegistry([
+    { id: 'tmux', type: 'tmux', enabled: false, access: 'read' },
+    { id: 'codex', type: 'codex', mode: 'history', enabled: true, access: 'read' },
+    { id: 'cmux', type: 'cmux', enabled: false, url: 'ws://127.0.0.1:4399/v1/ws', device_id: 'REPLACE_WITH_REGISTERED_DEVICE_ID', token: 'REPLACE_WITH_REGISTERED_DEVICE_TOKEN' },
+  ]);
+  assert.deepEqual([...registry.sources.keys()], ['tmux', 'codex'], 'an unfilled cmux placeholder is skipped');
+  for (const source of registry.sources.values()) {
+    const info = registry.info(source);
+    assert.equal(info.access, 'control'); assert.equal(info.enabled, true);
+    assert.deepEqual(info.capabilities, { ...info.capabilities, read: true, control: true, create: true, resume: true, realtime: true });
+  }
+  assert.equal(registry.info(registry.get('codex')).mode, 'managed');
+  assert.equal(new CodexSource({ id: 'codex', mode: 'history' }, () => {}).mode, 'managed');
+  registry.close();
 });
 
 test('opening persisted history never starts another copy of a desktop task', async () => {

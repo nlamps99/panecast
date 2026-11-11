@@ -1,14 +1,13 @@
 #!/usr/bin/env node
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import qrcode from 'qrcode-terminal';
 import { TmuxBackend } from '../tmux.mjs';
+import { discoverInto } from './discover.mjs';
 import { scoped } from './ids.mjs';
-import { SourceRegistry } from './registry.mjs';
 import { createHub } from './server.mjs';
 
 const args = process.argv.slice(2);
@@ -16,6 +15,10 @@ const flag = (name) => { const i = args.indexOf(name); return i < 0 ? undefined 
 const path = resolve(flag('--config') ?? join(homedir(), '.cmuxremote', 'hub-relay.json'));
 
 async function main() {
+  if ((args[0] ?? 'serve') === 'serve') {
+    const found = await discoverInto(path).catch(() => []);
+    if (found.length) console.log(`Added sources: ${found.join(', ')}`);
+  }
   const raw = await readFile(path, 'utf8'), config = JSON.parse(raw);
   if ((args[0] ?? 'serve') === 'serve') {
     const relay = await createHub(config);
@@ -27,27 +30,24 @@ async function main() {
       loading = true;
       try {
         const next = await readFile(path, 'utf8');
-        if (next !== previous) { relay.reloadSources(JSON.parse(next).sources ?? []); previous = next; console.log('Source authorization updated'); }
+        if (next !== previous) { relay.reloadSources(JSON.parse(next).sources ?? []); previous = next; console.log('Sources updated'); }
       } catch { console.error('Cannot reload sources; check the local config file'); }
       finally { loading = false; }
     }, 1000);
-    const stop = async () => { clearInterval(timer); await relay.close(); process.exit(0); };
+    // A cmux relay or Codex installed after startup joins without a restart.
+    const rediscover = setInterval(() => {
+      void discoverInto(path).then((found) => { if (found.length) console.log(`Added sources: ${found.join(', ')}`); }).catch(() => {});
+    }, 60_000);
+    const stop = async () => { clearInterval(timer); clearInterval(rediscover); await relay.close(); process.exit(0); };
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
   } else if (args[0] === 'sources') {
     const action = args[1] ?? 'list';
     if (action === 'list') {
-      for (const s of config.sources ?? []) console.log(`${s.id}\t${s.type}\t${s.enabled === true ? s.access ?? 'read' : 'revoked'}\t${s.name ?? s.id}`);
+      for (const s of config.sources ?? []) console.log(`${s.id}\t${s.type}\t${s.name ?? s.id}`);
       return;
     }
-    const source = config.sources?.find((s) => s.id === args[2]);
-    if (!source || !['grant', 'revoke'].includes(action)) throw new Error('Usage: sources list|grant|revoke SOURCE_ID [--access read|control]');
-    source.enabled = action === 'grant';
-    if (source.enabled) source.access = flag('--access') ?? 'read';
-    const validation = new SourceRegistry(config.sources); validation.close();
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-    await rename(temporary, path);
-    console.log(`${source.id}: ${source.enabled ? source.access : 'revoked'} (applies to a running hub within one second)`);
+    if (!['grant', 'revoke'].includes(action)) throw new Error('Usage: sources list');
+    console.log('所有来源默认拥有全部权限，无需授权。要停用某个来源，从配置文件的 sources 中删除它。');
   } else if (args[0] === 'pair') {
     if (!config.broker?.url || !config.broker?.relay_id) throw new Error('Configure broker.url and broker.relay_id first');
     let code = config.broker.pairing_code;
@@ -64,8 +64,8 @@ async function main() {
     if (args.includes('--url-only')) console.log(url.toString());
     else { qrcode.generate(url.toString(), { small: true }); console.log('Scan with Panecast to connect all authorized sources.'); }
   } else if (args[0] === 'notify') {
-    const source = config.sources?.find((s) => s.id === flag('--source') && s.enabled && s.type === 'tmux');
-    if (!source) throw new Error('Choose an authorized tmux source with --source SOURCE_ID');
+    const source = config.sources?.find((s) => s.id === flag('--source') && s.type === 'tmux');
+    if (!source) throw new Error('Choose a tmux source with --source SOURCE_ID');
     const backend = new TmuxBackend({ socketName: source.tmux_socket });
     const surface = flag('--surface') ?? process.env.TMUX_PANE;
     if (!surface) throw new Error('Run inside tmux or supply --surface');

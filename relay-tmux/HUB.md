@@ -1,6 +1,6 @@
 # 统一网关：cmux、tmux、Codex
 
-一台电脑运行一个 Panecast hub，手机配对一次后可以查看这台电脑授权的所有来源。
+一台电脑运行一个 Panecast hub，手机配对一次后可以查看和操作这台电脑的所有来源。
 来源可以同时存在，手机的「来源」页显示连接状态和实际能力；终端从「工作区」打开，
 Codex 使用独立的会话、消息、命令输出、文件修改和待确认请求界面。
 
@@ -9,61 +9,48 @@ Codex 来源需要支持 App Server 的 Codex 安装。本地验证使用 codex-
 
 ## 安装与配对
 
-```sh
-cd relay-tmux
-npm ci
-mkdir -p ~/.cmuxremote
-cp hub.example.json ~/.cmuxremote/hub-relay.json
-chmod 600 ~/.cmuxremote/hub-relay.json
-```
+运行 `panecast setup` 登录账号即可：broker 自动分配 relay ID、relay token 和配对码，网关自动接入
+这台电脑上能找到的全部来源，每个来源都拥有全部权限（查看、输入、创建和关闭终端、操作 Codex），
+不需要任何授权命令。然后 `panecast start`，手机登录同一账号即可。
 
-推荐直接运行 `panecast setup`：登录账号后 broker 自动分配 relay ID、relay token 和配对码并写入
-配置，无需手动编辑。手动复制示例时，编辑其中的 broker 地址、relay ID 和 relay token。每台电脑使用独立的 relay ID，
-同一电脑的多个来源都放在 hub 后面。**不要让旧 relay 和 hub 同时用同一个 ID 连接
-同一 broker**：cmux relay 继续在电脑上提供本地接口，把它原来的 `broker` 配置移除，
-由 hub 单独连接 broker。另一个选择是先给 hub 使用独立 broker 实例验证。
+自动接入的来源：
 
-例子中的来源默认未授权。配置好后，在电脑端授予需要的权限：
+| 来源 | 条件 |
+|---|---|
+| tmux | 已安装 tmux |
+| Codex | 用过 Codex（存在 `~/.codex`），以 `managed` 模式运行，可新建和继续会话 |
+| Codex 桌面会话 | 运行过 `panecast desktop prepare` |
+| cmux | 本机 cmux relay 开启了局域网配对（`relay.json` 有 `lan.pairing_code`，监听非回环地址）；网关通过局域网 IP 自动登记设备 |
 
-```sh
-npm run hub -- sources grant tmux --access control
-npm run hub -- sources grant codex --access read
-npm run hub -- sources list
-npm run hub -- serve
-```
+网关启动时检查一次，之后每分钟再查，之后安装或启动的来源会自动加入，不用重启。已有的
+来源不会被修改。`panecast sources list` 查看已接入的来源。要停用某个来源，把它从
+`~/.cmuxremote/hub-relay.json` 的 `sources` 中删除，运行中的网关一秒内生效。
 
-另开一个终端运行 `npm run hub -- pair`，输入 broker 配对码，在手机上扫描二维码。
-配对沿用现有协议，已有单一 cmux/tmux relay 和演示模式仍然可用。
+开发时也可以从仓库运行：复制 `hub.example.json` 到 `~/.cmuxremote/hub-relay.json`（权限 0600），
+填写 broker 地址、relay ID 和 relay token，然后 `npm run hub -- serve`。每台电脑使用独立的 relay ID。
+**不要让旧 relay 和 hub 同时用同一个 ID 连接同一 broker**；用 `panecast setup` 自动分配时
+hub 会拿到自己的新 ID。
 
-可选局域网直连：在配置顶层添加 `"host": "0.0.0.0"`、`"port": 4400` 和
-`"lan": { "pairing_code": "独立随机配对密钥" }`，然后运行
-`npm run hub -- pair --lan-host 192.168.1.42`。4400 与旧 cmux relay 的 4399 分开。
-不配置 `lan` 时不会打开手机 TCP 监听端口。
+未登录账号的手机可运行 `panecast pair` 扫码。可选局域网直连：在配置顶层添加
+`"host": "0.0.0.0"`、`"port": 4400` 和 `"lan": { "pairing_code": "独立随机配对密钥" }`，
+然后运行 `panecast pair --lan-host 192.168.1.42`。不配置 `lan` 时不会打开手机 TCP 监听端口。
 
-## 授权与撤销
+## 安全边界
 
-- `enabled: true` 表示电脑所有者授权此来源接入；未启用的来源不会被连接。
-- `access: "read"` 允许查看；`"control"` 才允许发送输入、创建/关闭终端或操作 Codex。
-- 每个已配对设备继承本 hub 授予各来源的权限。目前没有按手机或按单个会话细分的授权。
-- 手机不能提交任意来源地址、可执行程序、密钥或提升权限。来源配置和密钥留在电脑上。
+- 所有已配对的手机和登录同一账号的设备都拥有全部来源的全部权限。
+- 手机不能提交任意来源地址、可执行程序或密钥。来源配置和密钥留在电脑上。
 - Codex 自身的登录、项目权限、沙箱和审批仍然有效。hub 不覆盖这些设置，审批需用户点击回应。
 - broker 延续现有 TLS 中转协议，不是端到端加密。
-
-```sh
-npm run hub -- sources grant tmux --access read
-npm run hub -- sources revoke codex
-```
-
-运行中的 hub 每秒重读来源配置，权限调整会关闭相应来源连接，后续请求按新权限执行。
-已经开始的操作不能回滚。设备级撤销使用更新后的 broker 设备管理；通过管理 CLI
-撤销的在线设备会在下一次同步时断开（默认最多 15 秒）；HTTP 撤销会立即断开。LAN 的
-`DELETE /v1/devices/me` 会同时断开该设备已有连接。更改 broker、监听端口和 APNs
-等非来源配置需要重启 hub。
+- 设备级撤销使用 broker 设备管理；通过管理 CLI 撤销的在线设备会在下一次同步时断开
+  （默认最多 15 秒）；HTTP 撤销会立即断开。LAN 的 `DELETE /v1/devices/me` 会同时断开该设备
+  已有连接。更改 broker、监听端口和 APNs 等非来源配置需要重启 hub。
 
 ## cmux
 
-cmux 通过现有 Swift relay 接入，保留其终端订阅、历史和项目文件协议。
-配置 `url`（通常为 `ws://127.0.0.1:4399/v1/ws`）、`device_id` 和 `token`。
+cmux 通过现有 Swift relay 接入，保留其终端订阅、历史和项目文件协议。网关会自动用 relay 的
+局域网配对码登记一个名为「Panecast 网关」的设备，把 `url`（`ws://127.0.0.1:<端口>/v1/ws`）、
+`device_id` 和 `token` 写入配置。relay 只接受私有网段地址的局域网配对，所以登记走本机局域网 IP，
+之后的连接走 loopback。
 
 手机终端顶部可切换「对话 / 终端」。对话模式把正文显示为气泡，连续工具执行默认
 折叠，点按摘要可以展开；发送消息仍通过当前 surface 的输入通道发送文字和回车。
@@ -74,10 +61,6 @@ cmux 通过现有 Swift relay 接入，保留其终端订阅、历史和项目�
 绑定的普通 shell 和旧 relay 会显示终端输出。自定义记录目录可在来源配置中指定
 `codex_home` 或 `claude_home`，默认使用环境变量和用户主目录。分页 cursor 绑定会话
 和文件身份，读取不会恢复会话、创建任务或发送输入。
-后两个值应来自该 relay 的正常设备登记，不是 broker 的 relay token。
-可通过 relay 的 `POST /v1/devices/me/register`，使用其 LAN 配对码登记一个名为
-Panecast hub 的独立设备；把返回凭据直接存到权限为 0600 的本地配置中。
-然后执行 `npm run hub -- sources grant cmux --access control`。
 
 终端窗口、工作区、surface 和通知 ID 都带来源命名空间，因此不同后端相同 ID
 不会互相覆盖。cmux 和 tmux 的文字输入、按键、终端管理、历史、附件和项目读取
@@ -98,15 +81,17 @@ node /path/to/panecast/relay-tmux/src/hub/cli.mjs notify \
 任务完成用 `--completed`，失败或阻塞用 `--failed`。普通进度不推送；省略这些标记时，
 只识别明确的“任务完成”“等待确认”等通知标题。APNs 配置沿用 [tmux relay 文档](README.md)。
 
-## Codex 的三种接入模式
+## Codex 的两种接入模式
 
 | mode | 数据与能力 | 适用情况 |
 |---|---|---|
-| `history` | 通过独立的本地 App Server 读取已保存会话，禁止 resume、发送、停止、审批 | 当前桌面 App 没有可连接的控制 socket |
-| `attach` | 连接已有 App Server，读取其历史和状态；授权 control 后可续写、追加、停止、回应审批 | 已有服务开放本地 socket 或 WebSocket |
-| `managed` | hub 启动并管理一个独立 App Server，可以新建和继续它管理的会话 | 希望从手机启动 Codex 工作流 |
+| `managed` | hub 启动并管理一个独立 App Server，可以查看历史、新建和继续会话 | 默认；从手机启动 Codex 工作流 |
+| `attach` | 连接已有 App Server，可续写、追加、停止、回应审批 | 桌面 App 桥接或已有服务开放本地 socket / WebSocket |
 
-`history` 和 `managed` 使用 `codex app-server --listen stdio://`；`attach` 默认连接
+旧配置中的 `history` 模式按 `managed` 处理。恢复一个历史会话前会检查它是否仍在另一个进程中运行，
+是则拒绝恢复，可以从这段历史新建对话。
+
+`managed` 使用 `codex app-server --listen stdio://`；`attach` 默认连接
 Codex 数据目录下的 `app-server-control/app-server-control.sock`，可通过 `socket`
 指定控制 socket，也可配置 `url` 与可选 `token`。Unix socket 上使用 WebSocket
 握手与帧；CLI 的 `app-server proxy` 是原始字节通道，不能直接作为 JSONL 使用。
@@ -123,8 +108,6 @@ Codex 数据目录下的 `app-server-control/app-server-control.sock`，可通�
   "id": "codex-live",
   "type": "codex",
   "name": "Codex 实时会话",
-  "enabled": true,
-  "access": "control",
   "mode": "attach",
   "socket": "/absolute/path/to/app-server-control.sock",
   "cwd": "/absolute/path/to/project"
@@ -132,8 +115,8 @@ Codex 数据目录下的 `app-server-control/app-server-control.sock`，可通�
 ```
 
 **桌面 App 仅通过私有 stdio 运行时，hub 不会接管那条管道。** 新建一个 App Server
-或共用历史目录，并不等于取得原桌面进程的实时任务。此时用 `history` 查看历史，
-或将后续任务放到明确配置的共享/独立服务上。界面会持续标注模式。
+或共用历史目录，并不等于取得原桌面进程的实时任务。要在手机上操作桌面任务，
+使用下文的桌面桥接。界面会持续标注模式。
 
 Codex 接口按版本适配：当前支持 `thread/list`、`thread/read`、分页 turns、
 `thread/resume`、`thread/start`、`turn/start`、`turn/steer`、`turn/interrupt`、
@@ -152,8 +135,7 @@ App 自带的签名 Node 运行时，保留内置工具连接需要的进程签�
 进程，避免把独立 CLI 的历史服务误报为桌面实时服务。
 
 ```sh
-cd relay-tmux
-npm run desktop -- prepare
+panecast desktop prepare
 ```
 
 默认检查 `/Applications/ChatGPT.app`，旧版路径可以传 `--app /Applications/Codex.app`。
@@ -162,10 +144,9 @@ npm run desktop -- prepare
 
 1. 等当前任务完成，正常退出桌面 App。已运行任务的内存状态不能中途无损迁移。
 2. 打开生成的 `Launch Panecast Codex.command`。App 已运行时启动器会拒绝继续，不会强制退出。
-3. 运行 `npm run desktop -- check`，确认连接成功并能列出已加载会话。
-4. 把生成的 `source.json` 条目加入 hub 配置的 `sources`，执行
-   `npm run hub -- sources grant codex-desktop --access control`。
-5. 在桌面打开或发起任务；手机「来源 → Codex 桌面会话」会标出「正在运行 · 已连接」。
+3. 运行 `panecast desktop check`，确认连接成功并能列出已加载会话。网关会在一分钟内把
+   `source.json` 自动加入来源，拥有全部权限。
+4. 在桌面打开或发起任务；手机「来源 → Codex 桌面会话」会标出「正在运行 · 已连接」。
    点开后可以追加指令、停止任务、回应本连接收到的审批。
 
 每个会话都会检查是否已加载在所连接的服务里。只有保存记录的会话会标为「已保存的历史」，

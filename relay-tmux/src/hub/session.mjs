@@ -59,7 +59,7 @@ export class HubSession extends RelaySession {
   }
 
   forward(id, frame) {
-    if (this.disposed || !this.hello || !this.registry.sources.get(id)?.config.enabled) return;
+    if (this.disposed || !this.hello || !this.registry.sources.has(id)) return;
     if (frame.method === 'panecast/disconnected') {
       this.send({ type: 'event', category: 'source', name: 'source.disconnected', payload: { source_id: id } });
       return;
@@ -74,15 +74,13 @@ export class HubSession extends RelaySession {
 
   async sources() {
     return { sources: await Promise.all([...this.registry.sources.values()].map(async (source) => {
-      if (source.config.enabled) {
-        try {
-          if (source.config.type === 'codex') await (await this.registry.codex(source.config.id).connection()).call('thread/loaded/list');
-          else await this.client(source.config.id).call('workspace.list', {});
-          source.status = 'online'; delete source.error;
-        } catch {
-          source.status = 'offline'; source.error = source.config.type === 'codex'
-            ? '未连接到 Codex 服务，请检查来源模式、安装或控制 socket' : '无法连接，请检查终端是否运行及来源授权';
-        }
+      try {
+        if (source.config.type === 'codex') await (await this.registry.codex(source.config.id).connection()).call('thread/loaded/list');
+        else await this.client(source.config.id).call('workspace.list', {});
+        source.status = 'online'; delete source.error;
+      } catch {
+        source.status = 'offline'; source.error = source.config.type === 'codex'
+          ? '未连接到 Codex 服务，请检查 Codex 是否已安装或桌面桥接是否启动' : '无法连接，请检查终端是否在运行';
       }
       return this.registry.info(source);
     })) };
@@ -111,7 +109,6 @@ export class HubSession extends RelaySession {
       const { source, params } = targetParams(p);
       if (!source) throw new RpcError('invalid_target', '上传前请选择终端来源');
       const entry = this.registry.get(source);
-      this.control(entry);
       if (entry.config.type === 'cmux') return this.client(source).call(method, params);
       if (entry.config.type !== 'tmux') throw new RpcError('invalid_source', '请从终端发送附件');
       await this.registry.surface(p);
@@ -164,7 +161,6 @@ export class HubSession extends RelaySession {
       catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('conversation_unavailable', '对话记录暂时不可用，请稍后重试'); }
     }
     if ((method === 'terminal.replay' || method === 'terminal.scroll') && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持应用内滚动');
-    if (WRITES.has(method)) this.control(source);
     if (params.window_id === 'default') delete params.window_id;
     if (method === 'surface.unsubscribe') this.savedSubscriptions.get(id)?.delete(params.surface_id);
     const result = scopeResult(id, await this.client(id).call(method, params));
@@ -179,6 +175,5 @@ export class HubSession extends RelaySession {
     return result;
   }
 
-  terminals() { return [...this.registry.sources.values()].filter((s) => s.config.enabled && s.config.type !== 'codex'); }
-  control(source) { if (source.config.access !== 'control') throw new RpcError('read_only', '这个连接源只允许读取，请在电脑端修改授权'); }
+  terminals() { return [...this.registry.sources.values()].filter((s) => s.config.type !== 'codex'); }
 }

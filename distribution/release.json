@@ -3,9 +3,9 @@
   "mac": {
     "date": "2026-11-11",
     "notes": [
-      "panecast setup 改为登录账号，服务器自动分配电脑 ID、连接密钥和配对码，无需手动填写",
-      "手机登录同一账号即自动出现这台电脑；panecast pair 扫码时不再需要输入配对码",
-      "关闭自动分配的服务器仍可用 --relay-id 和 --token-file 手动配置"
+      "去掉来源授权步骤：tmux、cmux、Codex 自动接入，拥有全部权限",
+      "cmux 自动向本机 relay 登记并接入，无需手动调用接口或编辑配置",
+      "Codex 默认可新建和继续会话；桌面桥接准备好后自动加入"
     ]
   },
   "android": {
@@ -29,6 +29,18 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.4",
+      "file": "panecast-cli-0.1.4.tgz",
+      "sha256": "6184c4cc99c881d9d4ccc5d9c2c3b74bc459f602c1756cc0c81f077895cff07a",
+      "date": "2026-11-11",
+      "notes": [
+        "panecast setup 改为登录账号，服务器自动分配电脑 ID、连接密钥和配对码，无需手动填写",
+        "手机登录同一账号即自动出现这台电脑；panecast pair 扫码时不再需要输入配对码",
+        "关闭自动分配的服务器仍可用 --relay-id 和 --token-file 手动配置"
+      ]
+    },
     {
       "platform": "macOS CLI",
       "version": "0.1.3",

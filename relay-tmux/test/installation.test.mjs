@@ -27,11 +27,10 @@ function run(args, input = '') {
 test('first-run config keeps credentials private and refuses to replace existing pairing', async (t) => {
   const directory = await mkdtemp('/tmp/pc-install-'); t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'hub-relay.json');
-  const options = { url: 'https://relay.example.com/panecast/', relayId: 'my-mac', token: 'relay-secret', source: 'tmux', lan: true };
+  const options = { url: 'https://relay.example.com/panecast/', relayId: 'my-mac', token: 'relay-secret', lan: true };
   const config = await writeInitialConfig(path, options);
   assert.equal(config.broker.url, 'https://relay.example.com/panecast');
-  assert.equal(config.sources[0].access, 'control');
-  assert.equal(config.sources[1].enabled, false);
+  assert.deepEqual(config.sources, []);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.notEqual(config.lan.pairing_code, options.token);
   const before = await readFile(path, 'utf8');
@@ -41,14 +40,18 @@ test('first-run config keeps credentials private and refuses to replace existing
   assert.equal(setup.code, 0); assert.ok(!setup.stdout.includes('relay-secret'));
 });
 
-test('installed command delegates source management and generates an app-compatible QR payload', async (t) => {
+test('sources need no grant step and the installed command generates an app-compatible QR payload', async (t) => {
   const directory = await mkdtemp('/tmp/pc-cli-'); t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'hub-relay.json');
   await writeInitialConfig(path, { url: 'https://relay.example.com', relayId: 'test-mac', token: 'relay-secret', lan: true });
+  const config = JSON.parse(await readFile(path, 'utf8'));
+  await writeFile(path, JSON.stringify({ ...config, sources: [{ id: 'tmux', name: 'tmux', type: 'tmux' }] }));
+  const before = await readFile(path, 'utf8');
   let result = await run(['sources', 'grant', 'tmux', '--access', 'control', '--config', path]);
-  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.code, 0, result.stderr); assert.match(result.stdout, /无需授权/);
+  assert.equal(await readFile(path, 'utf8'), before);
   result = await run(['sources', 'list', '--config', path]);
-  assert.match(result.stdout, /tmux\ttmux\tcontrol/);
+  assert.match(result.stdout, /tmux\ttmux\ttmux/);
   result = await run(['pair', '--config', path, '--lan-host', '192.168.20.2', '--url-only'], 'phone-pairing-code\n');
   assert.equal(result.code, 0, result.stderr);
   const url = new URL(result.stdout.trim());
@@ -86,13 +89,13 @@ test('setup with only an account gets credentials from the broker and pair needs
 
   const path = join(directory, 'hub-relay.json'), passwordFile = join(directory, 'password');
   await writeFile(passwordFile, `${password}\n`, { mode: 0o600 });
-  await quiet(() => setup(['--config', path, '--broker-url', 'https://relay.example.com/', '--username', 'Alice', '--password-file', passwordFile, '--name', 'Studio Mac', '--source', 'tmux'], { fetch: viaLocalBroker }));
+  await quiet(() => setup(['--config', path, '--broker-url', 'https://relay.example.com/', '--username', 'Alice', '--password-file', passwordFile, '--name', 'Studio Mac'], { fetch: viaLocalBroker, discover: { home: directory, lanHost: undefined, tmux: () => true } }));
   const config = JSON.parse(await readFile(path, 'utf8'));
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.equal(config.broker.url, 'https://relay.example.com');
   assert.match(config.broker.relay_id, /^pc-[0-9a-f]{16}$/);
   assert.ok(config.broker.relay_token && config.broker.pairing_code);
-  assert.equal(config.sources[0].enabled, true);
+  assert.deepEqual(config.sources, [{ id: 'tmux', name: 'tmux', type: 'tmux' }]);
 
   const tunnel = new WebSocket(`${base.replace('http', 'ws')}/v1/relay/ws?relay_id=${config.broker.relay_id}`, { headers: { authorization: `Bearer ${config.broker.relay_token}` } });
   await new Promise((resolve, reject) => { tunnel.once('open', resolve); tunnel.once('error', reject); });
