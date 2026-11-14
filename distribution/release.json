@@ -221,30 +221,32 @@
     }
   ],
   "desktop": {
-    "version": "0.2.4",
+    "version": "0.2.7",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.4-mac-arm64.dmg",
-    "size": 3595143,
-    "sha256": "0048c41d145e0a98fb4a63d03120c79ef7157ee5f9517b8a3a84b13fb9420d88",
+    "file": "panecast-desktop-0.2.7-mac-arm64.dmg",
+    "size": 3607645,
+    "sha256": "613f70b84aa42070974375a43050edcda97122df7183557d8bd437855af05096",
     "archive": {
-      "file": "panecast-desktop-0.2.4-mac-arm64.zip",
-      "size": 3348243,
-      "sha256": "a47bcada838ab4ece9fb4cd52c57998baf2f4f76f7168395b8496c1942269b41"
+      "file": "panecast-desktop-0.2.7-mac-arm64.zip",
+      "size": 3381529,
+      "sha256": "b50547c2be3d5ae060885e1bb5636c687a5e6c968cb8d61921e3762ed6557505"
     },
     "installer": {
-      "file": "install-desktop-0.2.4-mac-arm64.sh",
+      "file": "install-desktop-0.2.7-mac-arm64.sh",
       "size": 5630,
-      "sha256": "25670001d4e9c57e5fc44e559af09f033eb61e1bff7f270c92c89b8feebc274c"
+      "sha256": "a315fad6d3becd30895ed82b605e50d53a7b70ad5ac3a05a3f8f97231aaac461"
     },
     "minimumMacOS": "13.0",
-    "date": "2026-11-09",
+    "date": "2026-11-14",
     "notarized": false,
+    "sourceCommit": "96baa13795ebb21508a39f0c4264871fce02ed7a",
     "notes": [
-      "修复侧栏窗口按钮被工作区列表挤压、显示不完整的问题",
-      "桌面默认使用实体键盘，直接传递 Tab、方向键、Esc 与 Ctrl 组合键，收起手机按键栏",
-      "支持中文选字、系统复制粘贴和编辑命令；对话中 Shift+Enter 换行，保留文件拖放与图片粘贴"
+      "最近访问与侧栏显示正在处理和已完成状态，运行中的会话自动排到前面",
+      "任务完成后显示应用内提醒，切到其他应用时发送 Mac 系统通知；点击通知可返回对应会话",
+      "修复触控板和鼠标滚轮上滑读取普通终端与程序内历史，新输出不会打断当前阅读位置",
+      "连续短任务分别提醒，断线、历史重放和会话切换不会误报完成"
     ]
   },
   "windows": {
