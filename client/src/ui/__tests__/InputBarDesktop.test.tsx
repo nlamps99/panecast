@@ -91,6 +91,13 @@ it('opens desktop terminals in direct input and sends physical keys without phon
   expect(session.submitLine).not.toHaveBeenCalled();
 });
 
+it('leaves Command-W and Command-Q to the Mac window menu while terminal input is focused', async () => {
+  await act(async () => root.render(<Harness />));
+  expect((await key('w', { metaKey: true })).defaultPrevented).toBe(false);
+  expect((await key('q', { metaKey: true })).defaultPrevented).toBe(false);
+  expect(session.sendKey).not.toHaveBeenCalled();
+});
+
 it('preserves a command draft across direct-input switches and keeps chat editing local', async () => {
   await act(async () => root.render(<Harness />));
   await click('编辑命令'); await text('未发送的命令');

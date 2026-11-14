@@ -17,6 +17,10 @@ import { WindowChips } from '../../ui/WindowChips';
 import { WorkspaceMenu, type WorkspaceMenuStage } from '../../ui/WorkspaceMenu';
 import { activityKey, compareActivity } from '../../session/terminalActivity';
 import { TerminalActivityBadge, useTerminalActivity } from '../../ui/TerminalActivityBadge';
+import { DesktopCloseButton } from '../../ui/DesktopCloseButton';
+import { desktopBridge } from '../../platform/desktop';
+import { confirmClose } from '../../platform/confirm';
+import { requestWorkspaceClose } from '../../session/closeRequests';
 
 /** The workspace whose long-press menu is up. `key` remounts it per opening; `open` false while it fades out. */
 type MenuState = { key: number; workspace: WorkspaceInfo; stage: WorkspaceMenuStage; open: boolean };
@@ -29,6 +33,7 @@ export default function WorkspacesScreen() {
   const computerId = machine.computer?.id ?? 'demo';
   const memory = useSessionMemory(computerId);
   const [recentError, setRecentError] = useState<string | null>(null);
+  const [closeError, setCloseError] = useState<string | null>(null);
   const status = useConnectionStatus(machine.channel);
   const { workspaces, surfaces, windows, selectedWindowId, loaded, error } = useStore(machine.workspaces);
   const actions = workspaceActionsFor(machine);
@@ -135,6 +140,7 @@ export default function WorkspacesScreen() {
       </View>
 
       {error ? <Text style={styles.error}>读取工作区失败：{error}</Text> : null}
+      {closeError ? <ErrorRow text={closeError} onDismiss={() => setCloseError(null)} /> : null}
       {actionError && !errorOnCard ? <ErrorRow text={actionErrorText(actionError)} onDismiss={() => actions.dismissError()} /> : null}
 
       {shown.map((workspace) => (
@@ -151,6 +157,10 @@ export default function WorkspacesScreen() {
           error={actionError && errorOnCard === workspace.id ? actionErrorText(actionError) : null}
           onOpen={(surfaceId) => openSurface(machine, workspace.id, surfaceId)}
           onMenu={(stage) => openMenu(workspace, stage)}
+          onCloseDesktop={() => {
+            setCloseError(null);
+            void requestWorkspaceClose(machine, workspace, confirmClose).catch(error => setCloseError(error instanceof Error ? error.message : '无法关闭工作区'));
+          }}
           onDismissError={() => actions.dismissError()}
         />
       ))}
@@ -165,7 +175,7 @@ export default function WorkspacesScreen() {
       ) : null}
       {!loaded ? <Text style={styles.emptyText}>{status.state === 'open' ? '正在读取工作区…' : '正在连接电脑…'}</Text> : null}
       {loaded && workspaces.length > 0 && shown.length === 0 ? <Text style={styles.emptyText}>没有匹配「{query}」的工作区</Text> : null}
-      {shown.length > 0 ? <Text style={styles.hint}>长按工作区可以重命名或关闭</Text> : null}
+      {shown.length > 0 ? <Text style={styles.hint}>{desktopBridge() ? '点击 × 关闭工作区；长按可重命名' : '长按工作区可以重命名或关闭'}</Text> : null}
 
       {createDialog ? (
         <NameDialog
@@ -226,10 +236,11 @@ type CardProps = {
   error: string | null;
   onOpen: (surfaceId: string) => void;
   onMenu: (stage?: WorkspaceMenuStage) => void;
+  onCloseDesktop: () => void;
   onDismissError: () => void;
 };
 
-function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, onPin, currentSurfaceId, busy, error, onOpen, onMenu, onDismissError }: CardProps) {
+function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, onPin, currentSurfaceId, busy, error, onOpen, onMenu, onCloseDesktop, onDismissError }: CardProps) {
   const primary = surfaces.find((s) => s.id === currentSurfaceId) ?? surfaces.find((s) => s.focused) ?? surfaces[0];
   const isCurrent = currentSurfaceId !== null;
   const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.access === 'read' ? ' · 只读' : ''}${workspace.selected ? ' · 电脑上正在用' : ''}`;
@@ -268,6 +279,7 @@ function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, on
         <Pressable onPress={(event) => { event.stopPropagation(); onPin(); }} hitSlop={6} style={styles.pin} accessibilityRole="button" accessibilityLabel={`${pinned ? '取消置顶' : '置顶'} ${workspace.title}`}>
           <Text style={[styles.pinText, pinned && styles.pinActive]}>{pinned ? '★' : '☆'}</Text>
         </Pressable>
+        {desktopBridge() ? <DesktopCloseButton label={`关闭工作区 ${workspace.title}`} disabled={busy !== null || workspace.access === 'read'} onPress={onCloseDesktop} /> : null}
         {unread > 0 ? (
           <View style={styles.unread}>
             <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>

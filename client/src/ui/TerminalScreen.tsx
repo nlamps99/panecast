@@ -1,7 +1,7 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { Alert } from '../platform/alert';
+import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { confirmClose } from '../platform/confirm';
 import { desktopBridge } from '../platform/desktop';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -9,7 +9,9 @@ import type { TerminalInputHandle } from '../../modules/terminal-input';
 import type { ConnectionStatus } from '../protocol/connection';
 import { HostStatusStore } from '../session/hostStatus';
 import { canCloseSurface, SurfaceActions } from '../session/surfaceActions';
-import { pickDefaultTarget, type SurfaceInfo } from '../session/surfaces';
+import { pickDefaultTarget } from '../session/surfaces';
+import { requestTerminalClose } from '../session/closeRequests';
+import { actionErrorText, workspaceActionsFor } from '../session/workspaceActions';
 import { describeError } from '../session/terminalSession';
 import { TerminalConversationStore } from '../session/terminalConversation';
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
@@ -26,6 +28,7 @@ import { TerminalChatView } from './TerminalChatView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
+import { DesktopCloseButton } from './DesktopCloseButton';
 
 /**
  * The terminal tab. Top to bottom: back to the list, the workspace and its
@@ -66,6 +69,8 @@ function TerminalPane() {
   const isOpen = status.state === 'open';
   const actions = useMemo(() => new SurfaceActions(machine), [machine]);
   const { running, error: actionError } = useStore(actions);
+  const workspaceActions = workspaceActionsFor(machine);
+  const workspaceActionState = useStore(workspaceActions);
   const host = useMemo(() => new HostStatusStore(channel), [channel]);
   const { battery } = useStore(host);
   useEffect(() => () => conversation.dispose(), [conversation]);
@@ -165,29 +170,33 @@ function TerminalPane() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
-                const closable = !readOnly && canCloseSurface(siblings);
+                const closable = !readOnly && (desktop || canCloseSurface(siblings));
+                const busy = running !== null || Boolean(workspaceActionState.pending[target.workspaceId]);
+                const close = () => {
+                  if (!isOpen || !workspace || readOnly || busy) return;
+                  if (!closable) { actions.refuseLastClose(); return; }
+                  void requestTerminalClose(machine, actions, workspace, item, confirmClose).catch(error => setTargetError(describeError(error)));
+                };
                 return (
+                  <View key={item.id} style={[styles.terminalChip, selected && styles.chipSelected, busy && !selected && styles.chipBusy]}>
                   <Pressable
-                    key={item.id}
                     onPress={() => {
                       actions.clearError();
                       session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id });
                     }}
-                    onLongPress={() => {
-                      if (readOnly) return;
-                      if (!closable) actions.refuseLastClose();
-                      else confirmClose(item, () => void actions.close(target.workspaceId, item.id));
-                    }}
-                    disabled={running !== null}
-                    style={[styles.chip, selected && styles.chipSelected, running !== null && !selected && styles.chipBusy]}
+                    onLongPress={close}
+                    disabled={busy}
+                    style={styles.terminalChipLabel}
                     accessibilityRole="tab"
-                    accessibilityState={{ selected, disabled: running !== null }}
+                    accessibilityState={{ selected, disabled: busy }}
                     accessibilityHint={closable ? '长按可以关闭这个终端' : undefined}
                   >
                     <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
                       {item.title}
                     </Text>
                   </Pressable>
+                  {desktop ? <DesktopCloseButton label={`关闭终端 ${item.title}`} disabled={busy || readOnly || !isOpen} onPress={close} /> : null}
+                  </View>
                 );
               })}
               <Pressable
@@ -213,6 +222,7 @@ function TerminalPane() {
                 {actionError}
               </Text>
             ) : null}
+            {workspaceActionState.error?.workspaceId === target.workspaceId ? <Text style={styles.actionError}>{actionErrorText(workspaceActionState.error)}</Text> : null}
           </>
         ) : null}
       </View>
@@ -248,25 +258,6 @@ function TerminalPane() {
       </View>
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
     </KeyboardAvoidingView>
-  );
-}
-
-/** Asks before closing a terminal; it closes in cmux on the Mac, not just on the phone. */
-function confirmClose(surface: SurfaceInfo, onConfirm: () => void): void {
-  const message = `「${surface.title}」会在电脑上的 cmux 里关闭，里面正在运行的程序也会结束。`;
-  if (Platform.OS === 'web') {
-    // react-native-web's Alert.alert does nothing.
-    if (window.confirm(`关闭终端？\n\n${message}`)) onConfirm();
-    return;
-  }
-  Alert.alert(
-    '关闭终端？',
-    message,
-    [
-      { text: '取消', style: 'cancel' },
-      { text: '关闭', style: 'destructive', onPress: onConfirm },
-    ],
-    { cancelable: true },
   );
 }
 
@@ -309,6 +300,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   chips: { gap: 6, paddingHorizontal: 12, paddingTop: 8 },
+  terminalChip: { maxWidth: 230, height: 30, flexDirection: 'row', alignItems: 'center', borderRadius: 8, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.divider },
+  terminalChipLabel: { flexShrink: 1, height: 28, justifyContent: 'center', paddingHorizontal: 12 },
   chip: {
     maxWidth: 200,
     height: 30,
