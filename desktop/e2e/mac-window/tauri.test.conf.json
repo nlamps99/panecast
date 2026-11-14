@@ -1,0 +1,5 @@
+{
+  "productName": "Panecast Window Tests",
+  "identifier": "com.nzx.panecast.window-tests",
+  "build": { "frontendDist": "../e2e/mac-window/web" }
+}

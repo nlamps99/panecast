@@ -264,6 +264,33 @@ fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn mac_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItemKind, PredefinedMenuItem, Submenu};
+    let menu = Menu::default(app)?;
+    // Keep the native close action and its standard Command-W shortcut, while
+    // making the entry discoverable in the same language as the app.
+    let file = Submenu::with_items(
+        app,
+        "文件",
+        true,
+        &[&PredefinedMenuItem::close_window(app, Some("关闭窗口"))?],
+    )?;
+    let mut replaced = false;
+    for (index, item) in menu.items()?.iter().enumerate() {
+        if matches!(item, MenuItemKind::Submenu(submenu) if submenu.text()? == "File") {
+            menu.remove_at(index)?;
+            menu.insert(&file, index)?;
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        menu.append(&file)?;
+    }
+    Ok(menu)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -300,7 +327,7 @@ fn main() {
             // WKWebView needs the Edit menu for ⌘C/⌘V. On Windows a menu bar's
             // accelerators would take Ctrl+C and Ctrl+V from the terminal.
             #[cfg(target_os = "macos")]
-            app.set_menu(tauri::menu::Menu::default(app.handle())?)?;
+            app.set_menu(mac_menu(app.handle())?)?;
             open_window(app.handle())?;
             Ok(())
         })

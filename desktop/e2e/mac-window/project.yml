@@ -1,0 +1,23 @@
+name: PanecastWindowUITests
+options:
+  bundleIdPrefix: com.nzx.panecast.qa
+settings:
+  base:
+    CODE_SIGNING_ALLOWED: YES
+    CODE_SIGN_IDENTITY: '-'
+    CODE_SIGN_STYLE: Manual
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: '5.0'
+targets:
+  PanecastWindowUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: '13.0'
+    sources: [Tests]
+schemes:
+  PanecastWindowUITests:
+    build:
+      targets:
+        PanecastWindowUITests: [test]
+    test:
+      targets: [PanecastWindowUITests]
