@@ -48,7 +48,7 @@ export function parseConversation(records, provider, sessionId, options = {}) {
         if (type === 'usermessage') {
           const text = body(item.content); if (text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record);
         } else if (type === 'agentmessage' && item.phase !== 'analysis') {
-          const text = body(item.content); if (text) put(id, 'agentMessage', { text }, record);
+          const text = body(item.content); if (text) put(id, 'agentMessage', { text, phase: ['final', 'final_answer'].includes(item.phase) ? 'final' : 'commentary' }, record);
           if (item.phase === 'final') active = false;
         } else if (type === 'commandexecution') put(id, 'commandExecution', { command: command(item.command), aggregatedOutput: clipped(item.aggregated_output, 6000), status: item.exit_code ? 'failed' : state(item.status) }, record);
         else if (type === 'filechange') put(id, 'fileChange', { status: state(item.status), changes: Object.entries(item.changes ?? {}).slice(0, 20).map(([path, change]) => ({ path: clipped(path, 500), diff: clipped(change?.unified_diff, 2000) })) }, record);
@@ -56,14 +56,14 @@ export function parseConversation(records, provider, sessionId, options = {}) {
       }
       if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && p.name === 'request_user_input') {
         let input; try { input = JSON.parse(p.arguments ?? p.input); } catch {}
-        const text = question(input); if (text) put(`${p.call_id}:question`, 'agentMessage', { text }, record);
+        const text = question(input); if (text) put(`${p.call_id}:question`, 'agentMessage', { text, needsInput: true }, record);
       }
       if (canonical) continue;
       if (r.type === 'event_msg' && p.type === 'user_message') {
         const text = clipped(p.message); if (text && safeUser(text)) put(`user:${record.offset}`, 'userMessage', { content: [{ type: 'text', text }] }, record);
       } else if (r.type === 'response_item' && p.type === 'message') {
         const text = body(p.content), id = p.id ?? `message:${record.offset}`;
-        if (p.role === 'assistant' && p.channel !== 'analysis' && text) put(id, 'agentMessage', { text }, record);
+        if (p.role === 'assistant' && p.channel !== 'analysis' && text) put(id, 'agentMessage', { text, phase: ['final', 'final_answer'].includes(p.phase ?? p.channel) ? 'final' : 'commentary' }, record);
         else if (p.role === 'user' && !eventUsers && text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record);
       } else if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && p.name !== 'request_user_input') {
         let input; try { input = JSON.parse(p.arguments ?? p.input); } catch { input = {}; }
@@ -96,11 +96,11 @@ export function parseConversation(records, provider, sessionId, options = {}) {
         const b = content[i], id = `${r.uuid}:${i}`;
         if (b.type === 'text' && r.type === 'user' && !r.isMeta) {
           const text = clipped(b.text); if (text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record, i);
-        } else if (b.type === 'text' && r.type === 'assistant' && b.text) put(id, 'agentMessage', { text: clipped(b.text) }, record, i);
+        } else if (b.type === 'text' && r.type === 'assistant' && b.text) put(id, 'agentMessage', { text: clipped(b.text), phase: message.stop_reason === 'end_turn' ? 'final' : 'commentary' }, record, i);
         else if (b.type === 'image' && r.type === 'user') put(id, 'userMessage', { content: [{ type: 'text', text: '[图片]' }] }, record, i);
         else if (b.type === 'tool_use') {
           const text = b.name === 'AskUserQuestion' ? question(b.input) : '';
-          if (text) put(`${b.id}:question`, 'agentMessage', { text }, record, i);
+          if (text) put(`${b.id}:question`, 'agentMessage', { text, needsInput: true }, record, i);
           const type = b.name === 'Bash' ? 'commandExecution' : ['Edit', 'Write', 'MultiEdit'].includes(b.name) ? 'fileChange' : 'toolExecution';
           put(b.id, type, { command: type === 'toolExecution' ? clipped(display(b.input), 2000) : command(b.input?.command), tool: clipped(b.name, 100), text: clipped(display(b.input), 2000), status: 'inProgress',
             ...(type === 'fileChange' ? { changes: [{ path: clipped(b.input?.file_path, 500), diff: clipped([b.input?.old_string, b.input?.new_string ?? b.input?.content].filter(Boolean).join('\n'), 2000) }] } : {}) }, record, i);

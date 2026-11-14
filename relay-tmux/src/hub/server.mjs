@@ -5,6 +5,7 @@ import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scoped, scopeResult } from './ids.mjs';
+import { WeixinRuntime } from '../weixin/runtime.mjs';
 
 export async function createHub(config, options = {}) {
   const registry = new SourceRegistry(config.sources ?? [], options);
@@ -12,6 +13,7 @@ export async function createHub(config, options = {}) {
   const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub',
     allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.has(frame.payload.source_id),
     createSession: ({ send, close, notify }) => new HubSession(registry, effective, send, close, notify) });
+  const weixin = new WeixinRuntime(registry, effective, relay.journal, options.weixin);
   const monitors = new Map();
   let timer, monitoring = false;
   const unlisten = registry.onEvent((frame) => { void relay.ingestEvent(frame).catch(() => {}); });
@@ -53,8 +55,8 @@ export async function createHub(config, options = {}) {
     } finally { monitoring = false; }
   }
   return { ...relay, registry,
-    async start() { const address = await relay.start(); await monitor(); timer = setInterval(() => void monitor(), 5000); timer.unref(); return address; },
-    async close() { clearInterval(timer); unlisten(); for (const peer of monitors.values()) peer.close(); monitors.clear(); registry.close(); await relay.close(); },
+    async start() { const address = await relay.start(); await monitor(); timer = setInterval(() => void monitor(), 5000); timer.unref(); weixin.start(); return address; },
+    async close() { clearInterval(timer); unlisten(); await weixin.close(); for (const peer of monitors.values()) peer.close(); monitors.clear(); registry.close(); await relay.close(); },
     reloadSources(sources) { registry.reload(sources); void monitor(); },
   };
 }

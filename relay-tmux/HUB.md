@@ -4,6 +4,9 @@
 来源可以同时存在，手机的「来源」页显示连接状态和实际能力；终端从「工作区」打开，
 Codex 使用独立的会话、消息、命令输出、文件修改和待确认请求界面。
 
+微信入口可通过 `panecast weixin login --browser` 绑定本人微信，再选择 cmux 终端收发文字。
+扫码、命令、通知规则和恢复方式见 [微信接入](WEIXIN.md)。
+
 需要 Node.js 22+。tmux 来源需要 tmux 3.2+；cmux 来源使用安装包自带的 Swift relay（macOS 13+），
 也可以接入已安装的 relay；Codex 来源需要支持 App Server 的 Codex 安装。本地验证使用 codex-cli 0.166.0。
 

@@ -26,6 +26,8 @@ async function main() {
   panecast serve                         在前台运行
   panecast sources list                  查看已接入的来源（tmux、cmux、Codex 自动接入，全部权限）
   panecast desktop prepare | check       Codex 桌面桥接
+  panecast weixin login --browser        扫码绑定本人微信
+  panecast weixin status | logout        查看微信通道或停用
 
 cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；
 也可以在 cmux 设置中把「套接字控制模式」改为「自动化模式」。
@@ -38,6 +40,7 @@ cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次
 安装与更新：https://ningzx.cn/panecast/`); return;
   }
   const path = configPath(args);
+  if (command === 'weixin') { const { weixinCLI } = await import('../src/weixin/cli.mjs'); await weixinCLI(args.slice(1), path); return; }
   if (['setup', 'start', 'restart'].includes(command)) {
     // Inside a cmux terminal, cmux hands out a capability that lets the gateway's relay connect.
     const saved = await captureCmuxCapability(path).catch(() => false);
