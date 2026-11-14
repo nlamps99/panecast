@@ -47,6 +47,7 @@ export async function loginPage(signal) {
 }
 
 export async function weixinCLI(args, configPath) {
+  if (process.platform === 'win32') throw new Error('微信入口首版运行在 Mac 网关，请在终端所在的 Mac 上绑定。');
   const config = JSON.parse(await readFile(configPath, 'utf8')), directory = weixinDirectory(config);
   const action = args[0] ?? 'status';
   if (action === 'status') {

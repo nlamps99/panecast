@@ -11,6 +11,7 @@ export class WeixinRuntime {
   }
   async status(state, message = '') { this.currentStatus = { state, message }; await savePrivate(join(this.directory, 'status.json'), { state, message, at: Date.now() }); }
   start() {
+    if (process.platform === 'win32') return;
     this.stopped = false;
     this.timer = setInterval(() => void this.reconcile(), 3000); this.timer.unref();
     void this.reconcile();

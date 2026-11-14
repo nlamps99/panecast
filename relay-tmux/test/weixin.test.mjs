@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import { decisionPrompt } from '../src/weixin/terminal.mjs';
 import { scoped } from '../src/hub/ids.mjs';
 
 const account = { version: 1, enabled: true, token: 'fixture-secret', origin: 'https://ilinkai.weixin.qq.com', botId: 'bot', ownerId: 'owner', epoch: 'login-1' };
+const test = (name, fn) => nodeTest(name, { skip: process.platform === 'win32' ? 'Weixin currently runs on the Mac gateway' : false }, fn);
 const target = { sourceId: 'cmux', workspace_id: scoped('cmux', 'workspace'), surface_id: scoped('cmux', 'first'), title: 'Project / Codex', code: 'first', access: 'control' };
 const second = { ...target, surface_id: scoped('cmux', 'second'), code: 'second', title: 'Project / Claude' };
 const message = (id, text, fields = {}) => ({ message_id: id, from_user_id: 'owner', to_user_id: 'bot', message_type: 1, message_state: 2, context_token: 'context-' + id, item_list: [{ type: 1, text_item: { text } }], ...fields });

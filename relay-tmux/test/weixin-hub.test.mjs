@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,7 @@ import { SourceRegistry } from '../src/hub/registry.mjs';
 import { parseConversation } from '../src/hub/terminal-conversation.mjs';
 
 const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+const test = (name, fn) => nodeTest(name, { skip: process.platform === 'win32' ? 'Weixin currently runs on the Mac gateway' : false }, fn);
 const record = (index, turn, item) => ({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { thread_id: ids[index], turn_id: turn, type: 'item_completed', item } });
 const text = (type, id, value, phase) => ({ type, id, phase, content: [{ type: 'text', text: value }] });
 async function waitFor(predicate, timeout = 6000) { const end = Date.now() + timeout; while (Date.now() < end) { if (predicate()) return; await delay(20); } throw new Error('fixture condition timed out'); }
