@@ -221,32 +221,32 @@
     }
   ],
   "desktop": {
-    "version": "0.2.7",
+    "version": "0.2.8",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.7-mac-arm64.dmg",
-    "size": 3607645,
-    "sha256": "613f70b84aa42070974375a43050edcda97122df7183557d8bd437855af05096",
+    "file": "panecast-desktop-0.2.8-mac-arm64.dmg",
+    "size": 3633477,
+    "sha256": "a2ae75208a561be1ce91b056135c9c5722f8dfb9df66018a5f7eba3a2b6ef133",
     "archive": {
-      "file": "panecast-desktop-0.2.7-mac-arm64.zip",
-      "size": 3381529,
-      "sha256": "b50547c2be3d5ae060885e1bb5636c687a5e6c968cb8d61921e3762ed6557505"
+      "file": "panecast-desktop-0.2.8-mac-arm64.zip",
+      "size": 3408102,
+      "sha256": "7b724f6f8ba7e12a641cf87b910188fa981c711ad7b5e87a1215df28453a139c"
     },
     "installer": {
-      "file": "install-desktop-0.2.7-mac-arm64.sh",
+      "file": "install-desktop-0.2.8-mac-arm64.sh",
       "size": 5630,
-      "sha256": "a315fad6d3becd30895ed82b605e50d53a7b70ad5ac3a05a3f8f97231aaac461"
+      "sha256": "022dcb8ce5ecc9ba8cea9caf46441fe6d96ff7066a9a69d30e686553c59bf6a4"
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-14",
     "notarized": false,
-    "sourceCommit": "96baa13795ebb21508a39f0c4264871fce02ed7a",
+    "sourceCommit": "4e3803ec859717d7c679c4adb217307cc21d6da4",
     "notes": [
-      "最近访问与侧栏显示正在处理和已完成状态，运行中的会话自动排到前面",
-      "任务完成后显示应用内提醒，切到其他应用时发送 Mac 系统通知；点击通知可返回对应会话",
-      "修复触控板和鼠标滚轮上滑读取普通终端与程序内历史，新输出不会打断当前阅读位置",
-      "连续短任务分别提醒，断线、历史重放和会话切换不会误报完成"
+      "会话、终端画面和窗口列表支持本地缓存，切换和重新打开先显示已读内容，再更新最新消息",
+      "修复 0.2.7 后台重复读取造成的卡顿，当前会话优先加载，后台检查按固定请求预算分散执行",
+      "移除“正在处理”文字，改为名称左侧的小进度环；其他窗口也会显示运行状态",
+      "缓存按电脑隔离，忘记电脑或退出关联账号时清除；保留完成通知与终端历史滚动"
     ]
   },
   "windows": {
