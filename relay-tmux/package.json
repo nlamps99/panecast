@@ -1,6 +1,6 @@
 {
   "name": "panecast-cli",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Connect your Mac's terminals to Panecast",
   "license": "MIT",
@@ -10,12 +10,14 @@
   "files": [
     "bin/",
     "src/",
+    "supervisor/",
     "vendor/",
     "hub.example.json",
     "relay.example.json",
     "README.md",
     "HUB.md",
     "WEIXIN.md",
+    "SUPERVISOR.md",
     "LICENSE"
   ],
   "bundleDependencies": [
@@ -24,7 +26,7 @@
   ],
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "start": "node src/cli.mjs serve",

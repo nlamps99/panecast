@@ -31,8 +31,10 @@ export function messageChunks(value, size = 2000) {
 }
 
 export class WeixinBridge {
-  constructor({ account, state, api, terminal, journal, signal, logger = () => {}, onHealthy = () => {} }) {
-    Object.assign(this, { account, state, api, terminal, journal, logger, onHealthy });
+  constructor({ account, state, api, terminal, journal, signal, logger = () => {}, onHealthy = () => {}, supervisor }) {
+    Object.assign(this, { account, state, api, terminal, journal, logger, onHealthy, supervisor });
+    this.audience = digest([account.botId, account.ownerId].join(':'));
+    supervisor?.attachAudience(this.audience);
     this.controller = new AbortController(); this.signal = this.controller.signal;
     this.parentSignal = signal; this.abort = () => this.controller.abort();
     if (signal.aborted) this.abort(); else signal.addEventListener('abort', this.abort, { once: true });
@@ -73,7 +75,7 @@ export class WeixinBridge {
       if (!entry) break;
       await this.state.change(s => { s.inbox.find(e => e.id === entry.id).status = 'processing'; });
       let reply;
-      try { reply = entry.invalid ?? await this.command(entry.text); }
+      try { reply = entry.invalid ?? await this.command(entry.text, entry.id); }
       catch (error) { reply = error.uncertain ? '发送结果未确认，已停止自动重试。请用 /read 查看终端后再决定是否重发。' : '操作未完成。请用 /status 检查绑定、来源权限和终端状态后重试。'; }
       await this.enqueue('reply:' + entry.id, typeof reply === 'string' ? reply : reply?.text, typeof reply === 'object' ? reply?.target : null);
       await this.state.change(s => { s.inbox = s.inbox.filter(e => e.id !== entry.id); s.seen.push(entry.id); });
@@ -84,8 +86,26 @@ export class WeixinBridge {
     if (!target) throw new Error('尚未选择终端');
     await this.terminal.validate(target, control); return target;
   }
-  async command(text) {
+  async command(text, messageId) {
     const input = text.trim();
+    const supervised = this.state.value.supervisorMode || (this.supervisor?.configured?.() ?? this.supervisor?.enabled());
+    if (supervised) {
+      if (!this.state.value.supervisorMode) await this.state.change(s => { s.supervisorMode = true; });
+      if (!this.supervisor?.status()?.manager) return '监工后台暂不可用，消息没有转发到其他终端。请检查电脑上的 Panecast 网关。';
+      if (input === '/pause' || input === '暂停监工') { await this.supervisor.pause(); return '监工自动调度已暂停。发送“恢复监工”可继续。'; }
+      if (input === '/resume' || input === '恢复监工') { await this.supervisor.resume(); return '已恢复监工调度，正在连接原监工会话。'; }
+      if (['/help', '/start', '帮助'].includes(input)) return '监工已接入。直接告诉我你想做什么，例如“看看有哪些任务”“继续登录问题”“暂停网站任务”。\n/status 查看监工状态；/read 查看最近结果。';
+      if (input === '/status' || input === '/list') {
+        const status = this.supervisor.status();
+        const states = { running: '执行中', queued: '等待执行', observing: '已登记', needs_input: '等待你的回答', blocked: '需要处理', ready_for_review: '等待验收', done: '已完成', paused: '已暂停', starting: '启动中' };
+        return `监工${status.enabled ? '已启用' : '已暂停'} · ${status.manager?.state === 'working' ? '正在处理' : status.manager?.state === 'ready' ? '等待你的安排' : status.manager?.state === 'needs_setup' ? '等待首次确认' : '正在连接'}\n${status.tasks.length ? status.tasks.map(task => `${task.title}：${states[task.state] ?? task.state}`).join('\n') : '还没有登记任务，直接说出项目和目标即可。'}`;
+      }
+      if (input === '/read') return this.supervisor.outputs(this.audience, 0).at(-1)?.text ?? '暂无监工结果，直接发消息即可交代任务。';
+      if (input.startsWith('/use ') || input === '/unbind') return '现在由监工负责选择执行者。直接告诉我项目和任务即可，不需要选择终端。';
+      if (!this.supervisor.enabled()) return '监工已暂停。发送“恢复监工”后再交代任务。';
+      await this.supervisor.message('weixin:' + this.audience + ':' + messageId, text, this.audience);
+      return null;
+    }
     if (!input || ['/help', '帮助', '/start'].includes(input)) return HELP;
     if (['/list', '终端列表'].includes(input)) {
       const { targets, offline, truncated } = await this.terminal.list();
@@ -141,6 +161,15 @@ export class WeixinBridge {
     return `已发送到 ${target.title}。`;
   }
   async observe() {
+    if (this.state.value.supervisorMode || (this.supervisor?.configured?.() ?? this.supervisor?.enabled())) {
+      if (!this.state.value.supervisorMode) await this.state.change(s => { s.supervisorMode = true; });
+      if (!this.supervisor?.status()?.manager) return;
+      for (const output of this.supervisor.outputs(this.audience, this.state.value.supervisorCursor ?? 0)) {
+        await this.enqueue('supervisor:' + output.id, output.text, output.target ?? null);
+        await this.state.change(s => { s.supervisorCursor = output.sequence; });
+      }
+      return;
+    }
     const target = this.state.value.target;
     if (!target) return;
     let page;

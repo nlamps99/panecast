@@ -36,7 +36,7 @@ export class WeixinRuntime {
       const terminal = this.options.terminalFactory?.() ?? new TerminalGateway(this.registry, this.config);
       this.terminal = terminal;
       const api = this.options.apiFactory?.(account) ?? new WeixinApi({ origin: account.origin, token: account.token });
-      const bridge = new WeixinBridge({ account, state, api, terminal, journal: this.journal, signal: this.controller.signal,
+      const bridge = new WeixinBridge({ account, state, api, terminal, journal: this.journal, signal: this.controller.signal, supervisor: this.options.supervisor,
         logger: message => { void this.status('reconnecting', message).catch(() => {}); },
         onHealthy: () => { if (this.currentStatus?.state !== 'connected') void this.status('connected').catch(() => {}); } });
       await this.status('connecting');

@@ -23,20 +23,26 @@ export class TerminalGateway {
     void this.session.process(JSON.stringify({ protocolVersion: 1, deviceId: 'local-weixin-bridge' }));
   }
   async list() {
+    if (this.closed) throw new Error('终端连接已关闭');
     const targets = []; let offline = 0;
     for (const { config: c } of this.registry.sources.values()) {
+      if (this.closed) break;
       if (!c.enabled || c.type !== 'cmux') continue;
       try {
         const client = this.session.client(c.id);
         const windows = (await client.call('window.list', {})).windows ?? [];
         const seen = new Set();
         for (const window of windows.length ? windows : [{ id: null }]) {
+          if (this.closed) break;
           const { workspaces = [] } = await client.call('workspace.list', window.id ? { window_id: window.id } : {});
           for (const workspace of workspaces) {
+            if (this.closed) break;
             if (seen.has(workspace.id)) continue; seen.add(workspace.id);
             const { surfaces = [] } = await client.call('surface.list', { workspace_id: workspace.id });
             for (const surface of surfaces.filter(s => s.type === 'terminal')) {
-              const target = { sourceId: c.id, workspace_id: scoped(c.id, workspace.id), surface_id: scoped(c.id, surface.id), title: `${c.name} / ${workspace.title ?? '工作区'} / ${surface.title ?? '终端'}`.slice(0, 300), access: c.access };
+              const b = surface.resume_binding;
+              const target = { sourceId: c.id, workspace_id: scoped(c.id, workspace.id), surface_id: scoped(c.id, surface.id), title: `${c.name} / ${workspace.title ?? '工作区'} / ${surface.title ?? '终端'}`.slice(0, 300), access: c.access,
+                ...(b ? { resume: { kind: b.kind, checkpoint_id: b.checkpoint_id, cwd: b.cwd, execution_location: b.execution_location, remote_surface_id: b.remote_surface_id, remote_pty_session_id: b.remote_pty_session_id } } : {}) };
               targets.push({ ...target, code: terminalCode(target) });
               if (targets.length >= 100) return { targets, offline, truncated: true };
             }
@@ -47,11 +53,14 @@ export class TerminalGateway {
     return { targets, offline, truncated: false };
   }
   async validate(target, control = false) {
+    if (this.closed) throw new Error('终端连接已关闭');
     const source = this.registry.get(target.sourceId);
     if (source.config.type !== 'cmux' || unscoped(target.workspace_id).source !== target.sourceId || unscoped(target.surface_id).source !== target.sourceId) throw new Error('终端绑定无效，请重新 /use 选择');
     if (control && source.config.access !== 'control') throw new Error('当前终端只允许读取');
     const result = await this.session.dispatch('surface.list', { workspace_id: target.workspace_id });
-    if (!(result.surfaces ?? []).some(s => s.id === target.surface_id && s.type === 'terminal')) throw new Error('终端已关闭，请用 /list 重新选择');
+    const surface = (result.surfaces ?? []).find(s => s.id === target.surface_id && s.type === 'terminal');
+    if (!surface) throw new Error('终端已关闭，请用 /list 重新选择');
+    return surface;
   }
   async snapshot(target) {
     await this.validate(target);
@@ -87,5 +96,5 @@ export class TerminalGateway {
     await this.session.dispatch('surface.focus', params);
     await this.session.dispatch('surface.send_key', { ...params, key });
   }
-  close() { this.session.dispose(); }
+  close() { this.closed = true; this.session.dispose(); }
 }

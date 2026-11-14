@@ -28,6 +28,8 @@ async function main() {
   panecast desktop prepare | check       Codex 桌面桥接
   panecast weixin login --browser        扫码绑定本人微信
   panecast weixin status | logout        查看微信通道或停用
+  panecast supervisor start              创建 cmux「监工」并接入微信
+  panecast supervisor status | pause | resume
 
 cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；
 也可以在 cmux 设置中把「套接字控制模式」改为「自动化模式」。
@@ -40,6 +42,7 @@ cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次
 安装与更新：https://ningzx.cn/panecast/`); return;
   }
   const path = configPath(args);
+  if (command === 'supervisor') { const { supervisorCLI } = await import('../src/hub/supervisor.mjs'); await supervisorCLI(args.slice(1).filter((arg, index, all) => arg !== '--config' && all[index - 1] !== '--config'), path); return; }
   if (command === 'weixin') { const { weixinCLI } = await import('../src/weixin/cli.mjs'); await weixinCLI(args.slice(1), path); return; }
   if (['setup', 'start', 'restart'].includes(command)) {
     // Inside a cmux terminal, cmux hands out a capability that lets the gateway's relay connect.

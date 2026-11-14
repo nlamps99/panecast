@@ -7,6 +7,9 @@ Codex 使用独立的会话、消息、命令输出、文件修改和待确认�
 微信入口可通过 `panecast weixin login --browser` 绑定本人微信，再选择 cmux 终端收发文字。
 扫码、命令、通知规则和恢复方式见 [微信接入](WEIXIN.md)。
 
+需要由一个负责人跟进多个任务时，运行 `panecast supervisor start` 创建可见的 cmux
+「监工」工作区。微信统一与它对话，任务状态保存到本机，见 [监工](SUPERVISOR.md)。
+
 需要 Node.js 22+。tmux 来源需要 tmux 3.2+；cmux 来源使用安装包自带的 Swift relay（macOS 13+），
 也可以接入已安装的 relay；Codex 来源需要支持 App Server 的 Codex 安装。本地验证使用 codex-cli 0.166.0。
 
