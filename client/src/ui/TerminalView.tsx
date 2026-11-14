@@ -23,6 +23,7 @@ import { DEFAULT_FG, styleForAttr } from '../terminal/palette';
 import { clampFontSize, setPrefs, usePrefs } from '../state/prefs';
 import { colors, fonts, MONO_ADVANCE_EM } from './theme';
 import { TerminalTools } from './TerminalTools';
+import { useTerminalWheel } from '../input/terminalWheel';
 
 const SIDE_PADDING = 8;
 
@@ -255,8 +256,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       if (browse.kind === 'application') return;
       // Replacing/retrying a snapshot can reset the native offset to zero.
       // Only a user drag/momentum is an instruction to leave history mode.
-      // Web scroll wheels do not emit the native drag callbacks.
-      if (shortHistory.current || (Platform.OS !== 'web' && !dragging.current)) return;
+      if (shortHistory.current || !dragging.current) return;
       viewPosition.current = null;
       session.resumeLive();
       return;
@@ -289,6 +289,32 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     if (toolsOpen || current.restoringReading || !current.browse) return;
     void session.loadOlder();
   };
+
+  useTerminalWheel(list, {
+    enabled: active && !toolsOpen && !state.restoringReading,
+    lineHeight, pageHeight: viewportHeight,
+    move: pixels => {
+      const current = session.getState();
+      if (current.applicationScroll && readOnly) return;
+      dragging.current = true;
+      requestedOffset.current = null;
+      if (pixels > 0 && !current.browse) {
+        shortHistory.current = true;
+        if (current.applicationScroll) session.startApplicationHistory();
+        else session.startBrowsing();
+      }
+      // Wheel events also arrive when the screen is too short to scroll.
+      // Explicitly enter history so loading does not depend on a scroll event.
+      if (pixels > 0) ensureHistoryRunway();
+      const range = Math.max(scrollRange.current, lines.length * lineHeight - viewportHeight, 0);
+      const offset = Math.max(0, Math.min(range, lastFromBottom.current + pixels));
+      lastFromBottom.current = offset;
+      if (offset > 2) shortHistory.current = false;
+      list.current?.scrollToOffset({ offset, animated: false });
+      if (pixels < 0 && offset <= 2 && session.getState().browse) jumpToLive();
+    },
+    end: () => { savePosition(); dragging.current = false; },
+  });
 
   const terminalList = (
     <GestureDetector gesture={nativeScroll}>

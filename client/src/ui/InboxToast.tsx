@@ -12,6 +12,7 @@ import { openSurface } from '../state/navigation';
 import { colors } from './theme';
 import { notifications } from '../notifications/instance';
 import { notificationGroup } from '../notifications/preferences';
+import { desktopBridge } from '../platform/desktop';
 
 const SHOW_MS = 4_000;
 
@@ -53,7 +54,7 @@ function MachineToast({ machine }: { machine: Machine }) {
         for (const [group, at] of groups.current) if (now - at > 3600_000) groups.current.delete(group);
         if (seconds && now - (groups.current.get(key) ?? -Infinity) < seconds * 1000) return;
         groups.current.set(key, now);
-        if (!shouldAnnounce(item, pathnameRef.current, machine.session.getState().target)) return;
+        if (desktopBridge() ? pathnameRef.current === '/inbox' : !shouldAnnounce(item, pathnameRef.current, machine.session.getState().target)) return;
         seq.current += 1;
         setShown({ id: item.id, machine, seq: seq.current });
         AccessibilityInfo.announceForAccessibility(`新通知：${item.title}`);

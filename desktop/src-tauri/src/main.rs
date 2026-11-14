@@ -17,8 +17,9 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tauri::{ipc::Channel, Manager, State, WebviewWindow};
+use tauri::{ipc::Channel, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use transport::{RequestOptions, Response, SocketEvent, Transport};
 use vault::{SystemKeyStore, Vault};
@@ -141,6 +142,67 @@ fn clipboard_write(
     require_app(&window)?;
     app.clipboard().write_text(text).map_err(|_| "复制失败")?;
     Ok(true)
+}
+
+#[derive(Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopNotification {
+    title: String,
+    body: String,
+    computer_id: Option<String>,
+    notification_id: Option<String>,
+    workspace_id: Option<String>,
+    surface_id: Option<String>,
+    source_id: Option<String>,
+    thread_id: Option<String>,
+    #[serde(default)]
+    force: bool,
+}
+
+#[tauri::command]
+fn desktop_notify(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    options: DesktopNotification,
+) -> Result<bool, String> {
+    require_app(&window)?;
+    if !options.force
+        && window.is_focused().unwrap_or(false)
+        && window.is_visible().unwrap_or(false)
+    {
+        return Ok(false); // The foreground already has the in-app banner.
+    }
+    if serde_json::to_vec(&options)
+        .map_err(|_| "无效的通知")?
+        .len()
+        > 16_000
+    {
+        return Err("通知内容过长".into());
+    }
+    app.notification()
+        .builder()
+        .title(options.title.chars().take(200).collect::<String>())
+        .body(options.body.chars().take(2000).collect::<String>())
+        .sound("default")
+        .extra("panecast", &options)
+        .show()
+        .map_err(|_| "无法发送系统通知")?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn notification_settings(window: WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_app(&window)?;
+    #[cfg(target_os = "macos")]
+    let url = "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
+    #[cfg(windows)]
+    let url = "ms-settings:notifications";
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return Err("请在系统设置中管理通知".into());
+    #[cfg(any(target_os = "macos", windows))]
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|_| "无法打开通知设置".into())
 }
 
 #[derive(Deserialize)]
@@ -267,6 +329,7 @@ fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
@@ -282,6 +345,8 @@ fn main() {
             socket_send,
             socket_close,
             clipboard_write,
+            desktop_notify,
+            notification_settings,
             dialog
         ])
         .setup(|app| {
@@ -297,6 +362,23 @@ fn main() {
                 Box::new(SystemKeyStore),
             )))));
             app.manage(Transport::new().map_err(std::io::Error::other)?);
+            let notification_app = app.handle().clone();
+            app.notification().on_action(move |action| {
+                if action.action_id() != "tap" {
+                    return;
+                }
+                if let Some(target) = action
+                    .notification()
+                    .and_then(|notification| notification.extra().get("panecast"))
+                {
+                    let app = notification_app.clone();
+                    let target = target.clone();
+                    let _ = notification_app.run_on_main_thread(move || {
+                        let _ = open_window(&app);
+                        let _ = app.emit_to("main", "panecast-notification", target);
+                    });
+                }
+            })?;
             // WKWebView needs the Edit menu for ⌘C/⌘V. On Windows a menu bar's
             // accelerators would take Ctrl+C and Ctrl+V from the terminal.
             #[cfg(target_os = "macos")]

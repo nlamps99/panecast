@@ -1,6 +1,8 @@
 import type { SocketLike } from '../protocol/connection';
 
 type SocketEvent = { id: string; type: 'open' | 'message' | 'error' | 'close'; data?: string; code?: number; reason?: string };
+export type DesktopNotification = { title: string; body: string; computerId?: string; notificationId?: string;
+  workspaceId?: string | null; surfaceId?: string | null; sourceId?: string | null; threadId?: string | null; force?: boolean };
 export type DesktopBridge = {
   version: number;
   getSecret(key: string): Promise<string | null>;
@@ -14,6 +16,9 @@ export type DesktopBridge = {
   onSocket(listener: (event: SocketEvent) => void): () => void;
   dialog(options: { title: string; message?: string; buttons: string[]; cancelId: number }): Promise<number>;
   writeClipboard?(text: string): Promise<boolean>;
+  notify?(options: DesktopNotification): Promise<boolean>;
+  onNotification?(listener: (notification: DesktopNotification) => void): () => void;
+  openNotificationSettings?(): Promise<void>;
 };
 declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {

@@ -61,6 +61,16 @@ test('clipboard writes use native IPC after an asynchronous operation', async ()
   assert.equal(calls[0].args.text, '复制终端内容');
 });
 
+test('completion notifications preserve the target and use the native notification boundary', async () => {
+  const { bridge, calls } = setup(async () => true);
+  const options = { title: '对话已完成', body: '测试通过', computerId: 'computer', workspaceId: 'workspace', surfaceId: 'surface' };
+  assert.equal(await bridge.notify(options), true);
+  assert.equal(calls[0].command, 'desktop_notify');
+  assert.equal(calls[0].args.options, options);
+  await bridge.openNotificationSettings();
+  assert.equal(calls[1].command, 'notification_settings');
+});
+
 test('HTTP cancellation before native registration is delivered once registered', async () => {
   let finish;
   const response = new Promise(resolve => { finish = resolve; });

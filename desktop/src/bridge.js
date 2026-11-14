@@ -58,5 +58,14 @@
     onSocket: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     dialog: options => invoke('dialog', { options }),
     writeClipboard: text => invoke('clipboard_write', { text }),
+    notify: options => invoke('desktop_notify', { options }),
+    openNotificationSettings: () => invoke('notification_settings'),
+    onNotification: listener => {
+      let disposed = false, unsubscribe;
+      void window.__TAURI__.event.listen('panecast-notification', event => {
+        if (!disposed) listener(event.payload);
+      }).then(stop => { if (disposed) stop(); else unsubscribe = stop; }).catch(() => {});
+      return () => { disposed = true; unsubscribe?.(); };
+    },
   });
 })();

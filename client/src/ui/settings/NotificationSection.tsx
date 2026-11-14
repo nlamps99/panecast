@@ -1,5 +1,5 @@
 import { Platform, Pressable, Switch, Text, TextInput, View } from 'react-native';
-import { useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { pushSummary, type PushSummary } from '../../notifications/controller';
 import { notifications } from '../../notifications/instance';
@@ -10,6 +10,8 @@ import { localTimeZone, useNotificationRules } from '../../notifications/prefere
 import { Sheet, useSheet } from '../Sheet';
 import { colors } from '../theme';
 import { ActionRow, Section, settingsStyles as s } from './Section';
+import { desktopBridge } from '../../platform/desktop';
+import { desktopNotifications, testDesktopNotification } from '../../notifications/desktop';
 
 const IOS_FOOTNOTE =
   '后台通知由电脑通过 Apple 推送发送。新版服务器支持直接转发推送登记，无需回到同一 Wi-Fi。电脑需要配置 Apple 推送；可用测试通知验证。';
@@ -22,6 +24,8 @@ export function NotificationSection() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const state = useNotificationState();
+
+  if (desktopBridge()) return <DesktopNotificationSection />;
 
   if (!notifications.supported) {
     return (
@@ -74,6 +78,19 @@ export function NotificationSection() {
       <NotificationRules key={machine.computer?.id ?? 'demo'} />
     </Section>
   );
+}
+
+function DesktopNotificationSection() {
+  const state = useSyncExternalStore(desktopNotifications.subscribe, desktopNotifications.getState, desktopNotifications.getState);
+  const [result, setResult] = useState<string | null>(null);
+  useEffect(() => { void desktopNotifications.load(); }, []);
+  return <Section title="通知" footnote="连接期间，任务完成和待回应事项会显示提醒。切到其他应用时使用系统通知；请在系统通知设置中允许 Panecast。关闭窗口或退出应用后不再接收。">
+    <View style={s.row}><Text style={[s.rowTitle, s.grow]}>系统通知</Text><Switch value={state.enabled} disabled={!state.loaded} onValueChange={value => { void desktopNotifications.enable(value); }} accessibilityLabel="系统通知" /></View>
+    <ActionRow label="去系统通知设置" onPress={() => { void desktopBridge()?.openNotificationSettings?.().catch(() => setResult('无法打开系统通知设置')); }} />
+    <ActionRow label="测试本机提醒" onPress={() => { void testDesktopNotification().then(() => setResult('已发送，请检查系统通知')).catch(error => setResult(error instanceof Error ? error.message : '测试失败')); }} />
+    {result || state.error ? <View style={s.row}><Text style={s.rowDetail}>{state.error ?? result}</Text></View> : null}
+    <NotificationRules />
+  </Section>;
 }
 
 function NotificationRules() {

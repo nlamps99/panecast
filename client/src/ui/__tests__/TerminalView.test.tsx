@@ -13,6 +13,7 @@ const mockScrollTo = jest.fn();
 let mockWrap = true;
 let mockReadOnly = false;
 let mockShowKeys = false;
+let mockOS = 'ios';
 
 jest.mock('react-native', () => {
   // A host adapter keeps the real TerminalView, session and history behavior
@@ -22,13 +23,14 @@ jest.mock('react-native', () => {
   const host = (name: string) => React.forwardRef(function NativeTestHost(props: NativeProps, ref) {
     if (props.testID) mockNative.set(props.testID, props);
     if (typeof props.accessibilityLabel === 'string') mockNative.set(props.accessibilityLabel, props);
-    React.useImperativeHandle(ref, () => ({ scrollToOffset: mockScrollToOffset, scrollTo: mockScrollTo }));
+    const node = React.useRef<HTMLDivElement>(null);
+    React.useImperativeHandle(ref, () => ({ scrollToOffset: mockScrollToOffset, scrollTo: mockScrollTo, getScrollableNode: () => node.current }));
     const children = name === 'FlatList'
       ? [...(props.data ?? []).map((item, index) => React.createElement(React.Fragment, { key: index }, props.renderItem?.({ item, index }))), React.createElement(React.Fragment, { key: 'footer' }, props.ListFooterComponent)]
       : props.children;
-    return React.createElement(name === 'Text' ? 'span' : 'div', { 'data-testid': props.testID, 'data-native': name }, children);
+    return React.createElement(name === 'Text' ? 'span' : 'div', { ref: node, 'data-testid': props.testID, 'data-native': name }, children);
   });
-  return { View: host('View'), Text: host('Text'), Pressable: host('Pressable'), ScrollView: host('ScrollView'), FlatList: host('FlatList'), Platform: { OS: 'ios' },
+  return { View: host('View'), Text: host('Text'), Pressable: host('Pressable'), ScrollView: host('ScrollView'), FlatList: host('FlatList'), Platform: { get OS() { return mockOS; } },
     StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1, absoluteFill: {} } };
 });
 jest.mock('react-native-gesture-handler', () => ({ usePinchGesture: () => ({}), useNativeGesture: () => ({}),
@@ -73,7 +75,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  mockWrap = true; mockReadOnly = false; mockShowKeys = false; mockNative.clear(); mockScrollToOffset.mockClear(); mockScrollTo.mockClear();
+  mockOS = 'ios'; mockWrap = true; mockReadOnly = false; mockShowKeys = false; mockNative.clear(); mockScrollToOffset.mockClear(); mockScrollTo.mockClear();
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   channel = new Channel(); session = new TerminalSession(channel);
 });
@@ -97,6 +99,31 @@ async function mount(rows = Array.from({ length: 120 }, (_, index) => `line ${in
     callback('terminal-viewport', 'onLayout', { nativeEvent: { layout: { width: 390, height: 480 } } });
   });
 }
+
+async function wheel(deltaY: number, options = {}) {
+  const event = new dom.window.WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true, ...options });
+  await act(async () => { container.querySelector('[data-testid="terminal-output-list"]')!.dispatchEvent(event); });
+  return event;
+}
+it('loads short-screen history on a desktop wheel gesture, with natural direction and no drag callback', async () => {
+  mockOS = 'web'; await mount(['short screen']);
+  expect((await wheel(-80)).defaultPrevented).toBe(true);
+  expect(session.getState().browse?.olderRows).toHaveLength(200);
+  await wheel(-80);
+  expect(mockScrollToOffset).toHaveBeenLastCalledWith({ offset: 80, animated: false });
+  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: ['new output'], cols: 80, rowsCount: 1, cursor: { x: 0, y: 0 } }));
+  expect(session.getState().browse?.frozenRows).toEqual(['short screen']);
+  await wheel(1000); expect(session.getState().browse).toBeNull();
+});
+it('normalizes line wheels and leaves horizontal scrolling and pinch zoom to WebKit', async () => {
+  mockOS = 'web'; await mount();
+  await wheel(-3, { deltaMode: 1 });
+  expect(mockScrollToOffset).toHaveBeenLastCalledWith({ offset: 51, animated: false });
+  mockScrollToOffset.mockClear();
+  expect((await wheel(-1, { deltaX: 20 })).defaultPrevented).toBe(false);
+  expect((await wheel(-1, { ctrlKey: true })).defaultPrevented).toBe(false);
+  expect(mockScrollToOffset).not.toHaveBeenCalled();
+});
 
 it('leaves wrapped terminal output in a standalone vertical list, without an outer scroll or press responder', async () => {
   await mount();

@@ -43,3 +43,13 @@ it('rejects malformed persisted state instead of reusing arbitrary data as an an
   const parsed = parseSessionMemory(JSON.stringify({ version: 1, computers: { a: { recent: [{ ...target }], reading: { [surfaceMemoryKey(target)]: { anchor: 'sensitive output', rowFromBottom: 0 } }, lastTarget: { workspaceId: 'w' } } } }));
   expect(parsed.a.lastTarget).toBeNull(); expect(parsed.a.reading).toEqual({});
 });
+it('moves background activity to recent without changing the selected terminal, window or last view', async () => {
+  const { memory, storage } = fixture(); await memory.load();
+  memory.visit('a', { ...target, title: 'reading', workspaceTitle: 'work', windowId: 'one' });
+  memory.rememberWindow('a', 'one'); memory.rememberSource('a', { sourceId: 'codex', threadId: 'thread' });
+  memory.activity('a', { workspaceId: 'background', surfaceId: 'task', title: 'running', workspaceTitle: 'other', windowId: 'two' }, Date.now() + 100);
+  await memory.settle();
+  const restored = new SessionMemory(storage); await restored.load();
+  expect(restored.computer('a')).toMatchObject({ lastTarget: target, windowId: 'one', lastView: 'source' });
+  expect(restored.computer('a').recent[0].surfaceId).toBe('task');
+});

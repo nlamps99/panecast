@@ -7,9 +7,12 @@ import { sessionMemory, useSessionMemory } from '../state/sessionMemory';
 import { ComputerSwitcher } from './ComputerSwitcher';
 import { WindowChips } from './WindowChips';
 import { colors } from './theme';
+import { activityKey, compareActivity, type TerminalActivity } from '../session/terminalActivity';
+import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBadge';
 
 export function WorkspaceSidebar() {
   const machine = useMachine();
+  const activity = useTerminalActivity(machine);
   const { workspaces, surfaces, windows, selectedWindowId, error } = useStore(machine.workspaces);
   const { target } = useStore(machine.session);
   const { pendingByWorkspace } = useStore(machine.inbox);
@@ -17,8 +20,13 @@ export function WorkspaceSidebar() {
   const memory = useSessionMemory(id);
   const [query, setQuery] = useState('');
   const needle = query.trim().toLocaleLowerCase();
+  const workspaceActivity = (id: string): TerminalActivity | undefined => (surfaces[id] ?? [])
+    .map(surface => activity[activityKey({ workspaceId: id, surfaceId: surface.id })]).filter(Boolean).sort(compareActivity)[0];
+  const visited = (id: string) => Math.max(0, ...memory.recent.filter(item => item.workspaceId === id).map(item => item.at));
   const shown = [...workspaces].filter((w) => !needle || w.title.toLocaleLowerCase().includes(needle) || (surfaces[w.id] ?? []).some((s) => s.title.toLocaleLowerCase().includes(needle)))
-    .sort((a, b) => Number(memory.pinned.includes(b.id)) - Number(memory.pinned.includes(a.id)) || a.index - b.index);
+    .sort((a, b) => Number(workspaceActivity(b.id)?.status === 'running') - Number(workspaceActivity(a.id)?.status === 'running')
+      || Number(memory.pinned.includes(b.id)) - Number(memory.pinned.includes(a.id))
+      || compareActivity(workspaceActivity(a.id), workspaceActivity(b.id), machine.activity ? visited(a.id) : 0, machine.activity ? visited(b.id) : 0) || a.index - b.index);
   return <View style={styles.sidebar}>
     <View style={styles.controls}>
     <View style={styles.header}><Text style={styles.title}>工作区</Text><ComputerSwitcher /></View>
@@ -30,7 +38,7 @@ export function WorkspaceSidebar() {
       {shown.map((workspace) => <View key={workspace.id} style={styles.group}>
         <View style={styles.row}><Text numberOfLines={1} style={styles.workspace}>{workspace.title}</Text><Pressable onPress={() => sessionMemory.pin(id, workspace.id)} accessibilityRole="button" accessibilityLabel={`${memory.pinned.includes(workspace.id) ? '取消置顶' : '置顶'}${workspace.title}`} style={styles.pin}><Text style={styles.pinText}>{memory.pinned.includes(workspace.id) ? '★' : '☆'}</Text></Pressable></View>
         {pendingByWorkspace[workspace.id] ? <Text style={styles.attention}>{pendingByWorkspace[workspace.id]} 项待处理</Text> : null}
-        {(surfaces[workspace.id] ?? []).map((surface) => <Pressable key={surface.id} onPress={() => openSurface(machine, workspace.id, surface.id)} style={[styles.surface, target?.surfaceId === surface.id && styles.selected]} accessibilityRole="button" accessibilityState={{ selected: target?.surfaceId === surface.id }}><Text numberOfLines={2} style={styles.surfaceText}>{surface.title}</Text></Pressable>)}
+        {[...(surfaces[workspace.id] ?? [])].sort((a, b) => compareActivity(activity[activityKey({ workspaceId: workspace.id, surfaceId: a.id })], activity[activityKey({ workspaceId: workspace.id, surfaceId: b.id })])).map((surface) => <Pressable key={surface.id} onPress={() => openSurface(machine, workspace.id, surface.id)} style={[styles.surface, target?.surfaceId === surface.id && styles.selected]} accessibilityRole="button" accessibilityState={{ selected: target?.surfaceId === surface.id }}><Text numberOfLines={2} style={styles.surfaceText}>{surface.title}</Text><TerminalActivityBadge activity={activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })]} /></Pressable>)}
       </View>)}
       {!shown.length ? <Text style={styles.hint}>没有匹配的工作区</Text> : null}
     </ScrollView>

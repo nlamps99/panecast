@@ -44,6 +44,13 @@ export class SessionMemory {
     const retained = new Set(recent.map(surfaceMemoryKey));
     this.update(id, { ...previous, ...(refreshTime ? { lastView: 'terminal' as const } : {}), lastTarget: { workspaceId: entry.workspaceId, surfaceId: entry.surfaceId }, recent, reading: Object.fromEntries(Object.entries(previous.reading).filter(([k]) => retained.has(k))) });
   }
+  activity(id: string, entry: Omit<RecentTerminal, 'at'>, at: number): void {
+    const previous = this.computer(id), key = surfaceMemoryKey(entry);
+    // Background work changes recency, never the user's selection or route.
+    const recent = [{ ...entry, at }, ...previous.recent.filter(item => surfaceMemoryKey(item) !== key)].sort((a, b) => b.at - a.at).slice(0, 30);
+    const retained = new Set(recent.map(surfaceMemoryKey));
+    this.update(id, { ...previous, recent, reading: Object.fromEntries(Object.entries(previous.reading).filter(([key]) => retained.has(key))) });
+  }
   rememberWindow(id: string, windowId: string): void {
     const previous = this.computer(id);
     if (previous.windowId !== windowId) this.update(id, { ...previous, windowId });

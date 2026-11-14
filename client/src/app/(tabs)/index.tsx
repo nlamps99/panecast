@@ -15,6 +15,8 @@ import { statusBanner } from '../../ui/status';
 import { colors, fonts } from '../../ui/theme';
 import { WindowChips } from '../../ui/WindowChips';
 import { WorkspaceMenu, type WorkspaceMenuStage } from '../../ui/WorkspaceMenu';
+import { activityKey, compareActivity } from '../../session/terminalActivity';
+import { TerminalActivityBadge, useTerminalActivity } from '../../ui/TerminalActivityBadge';
 
 /** The workspace whose long-press menu is up. `key` remounts it per opening; `open` false while it fades out. */
 type MenuState = { key: number; workspace: WorkspaceInfo; stage: WorkspaceMenuStage; open: boolean };
@@ -23,6 +25,7 @@ type MenuState = { key: number; workspace: WorkspaceInfo; stage: WorkspaceMenuSt
 export default function WorkspacesScreen() {
   const insets = useSafeAreaInsets();
   const machine = useMachine();
+  const activity = useTerminalActivity(machine);
   const computerId = machine.computer?.id ?? 'demo';
   const memory = useSessionMemory(computerId);
   const [recentError, setRecentError] = useState<string | null>(null);
@@ -106,11 +109,11 @@ export default function WorkspacesScreen() {
       {memory.recent.length > 0 ? <View style={styles.recentBlock}>
         <Text style={styles.recentTitle}>最近访问</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentList}>
-          {memory.recent.slice(0, 8).map((entry) => <Pressable key={`${entry.workspaceId}:${entry.surfaceId}`} disabled={status.state !== 'open'} style={styles.recentCard}
+          {[...memory.recent].sort((a, b) => compareActivity(activity[activityKey(a)], activity[activityKey(b)], a.at, b.at)).slice(0, 8).map((entry) => <Pressable key={`${entry.workspaceId}:${entry.surfaceId}`} disabled={status.state !== 'open'} style={styles.recentCard}
             accessibilityRole="button" accessibilityLabel={`继续 ${entry.workspaceTitle} 的 ${entry.title}`} onPress={() => {
               setRecentError(null);
               void openRecentSurface(machine, entry).catch((failure: unknown) => setRecentError(failure instanceof Error ? failure.message : '无法打开这个终端'));
-            }}><Text style={styles.recentName} numberOfLines={1}>{entry.title}</Text><Text style={styles.recentMeta} numberOfLines={1}>{entry.workspaceTitle}</Text></Pressable>)}
+            }}><Text style={styles.recentName} numberOfLines={1}>{entry.title}</Text><Text style={styles.recentMeta} numberOfLines={1}>{entry.workspaceTitle}</Text><TerminalActivityBadge activity={activity[activityKey(entry)]} /></Pressable>)}
         </ScrollView>
         {recentError ? <Text style={styles.error}>{recentError}</Text> : null}
       </View> : null}

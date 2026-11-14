@@ -25,6 +25,8 @@ import { listSurfaces } from '../session/surfaces';
 import { RpcCallError } from '../protocol/connection';
 import { AccountError, accountRequest, accountServer, type AccountComputer, type AccountSession } from '../account/api';
 import { loadAccount, saveAccount, signIn } from '../account/store';
+import { desktopBridge } from '../platform/desktop';
+import { TerminalActivityStore, type ActivityTarget } from '../session/terminalActivity';
 
 export { PairingError } from './connect';
 
@@ -37,6 +39,7 @@ export type Machine = {
   session: TerminalSession;
   workspaces: WorkspaceStore;
   inbox: InboxStore;
+  activity?: TerminalActivityStore;
 };
 
 export type AppStoreState = {
@@ -347,10 +350,29 @@ export class AppStore {
         saveReading: (target, position) => sessionMemory.rememberReading(computer.id, target, position) } : {}),
     });
     if (memory?.lastTarget) session.setTarget(memory.lastTarget);
+    const workspaces = new WorkspaceStore(channel, memory?.windowId ?? null);
+    const inbox = new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {});
+    const activity = computer && desktopBridge() ? new TerminalActivityStore(channel, {
+      targets: () => {
+        const state = workspaces.getState();
+        const targets: ActivityTarget[] = state.workspaces.flatMap(workspace => (state.surfaces[workspace.id] ?? []).map(surface => ({
+          workspaceId: workspace.id, surfaceId: surface.id, title: surface.title, workspaceTitle: workspace.title, windowId: state.selectedWindowId,
+        })));
+        return [...sessionMemory.computer(computer.id).recent, ...targets];
+      },
+      onActivity: (target, at) => sessionMemory.activity(computer.id, target, at),
+      onComplete: (target, id, body) => {
+        // Some hosts already send completion hooks. Keep one alert for the turn.
+        if (inbox.getState().items.some(item => !item.id.startsWith('terminal-complete:') && !item.needsInput && item.workspaceId === target.workspaceId &&
+          (!item.surfaceId || item.surfaceId === target.surfaceId) && Date.now() - item.at < 10_000)) return;
+        inbox.ingest({ type: 'event', category: 'notification', name: 'notification.created', payload: {
+          id, task_id: id, workspace_id: target.workspaceId, surface_id: target.surfaceId, state: 'completed',
+          title: '对话已完成', subtitle: `${target.workspaceTitle} · ${target.title}`, body, ts: Date.now() / 1000,
+        } });
+      },
+    }) : undefined;
     return {
-      session,
-      workspaces: new WorkspaceStore(channel, memory?.windowId ?? null),
-      inbox: new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {}),
+      session, workspaces, inbox, activity,
     };
   }
 
@@ -359,6 +381,7 @@ export class AppStore {
     this.machineObservers = [];
     const previous = this.state.machine;
     if (previous) {
+      previous.activity?.dispose();
       previous.session.setTarget(null);
       previous.session.dispose();
       previous.workspaces.dispose();
@@ -398,6 +421,7 @@ export class AppStore {
       const state = machine.workspaces.getState();
       if (state.loaded && !state.error && state.selectedWindowId) sessionMemory.rememberWindow(computerId, state.selectedWindowId);
       capture();
+      void machine.activity?.refresh();
     }), machine.channel.onStatus((status) => {
       if (status.state !== 'open' || validated) return;
       validated = true;

@@ -21,7 +21,7 @@ jest.mock('../../../modules/terminal-input', () => ({
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   TerminalInputView: require('../../../modules/terminal-input/src/TerminalInputView.web').default,
 }));
-jest.mock('../../platform/desktop', () => ({ desktopBridge: () => mockDesktop ? { version: 1 } : null }));
+jest.mock('../../platform/desktop', () => ({ desktopBridge: () => mockDesktop ? { version: 1 } : null, desktopOnWindows: () => false }));
 jest.mock('../../platform/alert', () => ({ Alert: {} }));
 jest.mock('../../input/attachImage', () => ({}));
 jest.mock('../../state/hooks', () => ({ useMachine: () => ({ channel: mockChannel, computer: { id: `input-test-${mockComputerId}` } }) }));
