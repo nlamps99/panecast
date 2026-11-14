@@ -13,7 +13,7 @@ const allText = page => (page.items ?? []).filter(i => i.type === 'agentMessage'
 export function inboundMessage(raw, account) {
   if (raw?.from_user_id !== account.ownerId || raw.message_type !== 1 || (raw.group_id != null && raw.group_id !== '') || (raw.to_user_id && raw.to_user_id !== account.botId)) return null;
   const id = typeof raw.message_id === 'string' ? raw.message_id : Number.isSafeInteger(raw.message_id) ? String(raw.message_id) : null;
-  if (!id || id.length > 200 || (raw.message_state !== undefined && raw.message_state !== 2)) return null;
+  if (!id || id.length > 200 || (raw.message_state !== undefined && ![0, 2].includes(raw.message_state))) return null;
   const items = Array.isArray(raw.item_list) ? raw.item_list : [];
   const text = items.filter(i => i.type === 1 && typeof i.text_item?.text === 'string').map(i => i.text_item.text).join('\n');
   const invalid = items.some(i => i.type !== 1) ? '目前支持文字消息，请输入文字指令。' : text.length > 8000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text) ? '文字过长或含终端控制字符，请调整后重发。' : null;

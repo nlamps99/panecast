@@ -96,6 +96,7 @@ test('only the QR owner in a private conversation can issue valid completed text
   assert.ok(inboundMessage(message('1', 'x'.repeat(8001)), account).invalid);
   assert.ok(inboundMessage(message('1', 'hello', { item_list: [{ type: 2, image_item: {} }] }), account).invalid);
   assert.equal(inboundMessage(message('1', '中文\n换行'), account).text, '中文\n换行');
+  assert.equal(inboundMessage(message('2', 'new user message', { message_state: 0 }), account).text, 'new user message');
 });
 
 test('selects an exact terminal, sends Chinese text once, and persists deduplication across restart', async t => {
