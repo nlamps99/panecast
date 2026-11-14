@@ -23,6 +23,14 @@ export function backToWorkspaces(): void {
 }
 
 export async function openRecentSurface(machine: Machine, entry: RecentTerminal): Promise<void> {
+  const known = machine.workspaces.getState?.().known?.surfaces[entry.workspaceId];
+  if (known?.some(surface => surface.id === entry.surfaceId) || machine.terminalRepository?.peek(entry)) {
+    // Navigation is local; refresh and validate in the background instead of
+    // making every click wait for surface.list + window.list + workspace.list.
+    if (entry.windowId) void machine.workspaces.selectWindow(entry.windowId);
+    openSurface(machine, entry.workspaceId, entry.surfaceId);
+    return;
+  }
   if (!machine.channel.isOpen) throw new Error('连接恢复后可以打开最近访问的终端');
   const intent = machine.session.reserveSelection();
   const surfaces = await listSurfaces(machine.channel, entry.workspaceId);

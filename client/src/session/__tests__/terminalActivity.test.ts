@@ -32,21 +32,21 @@ afterEach(() => { store.dispose(); jest.useRealTimers(); });
 it('tracks multiple terminals, promotes active conversations and emits each final reply once', async () => {
   channel.responses.set('a', snapshot(false, [final('old')]));
   channel.responses.set('b', snapshot(true, [user('question')]));
-  await store.refresh(); expect(onComplete).not.toHaveBeenCalled();
+  await store.refresh(true); expect(onComplete).not.toHaveBeenCalled();
   const order = [a, b].sort((a, b) => compareActivity(store.getState()[activityKey(a)], store.getState()[activityKey(b)]));
   expect(order[0]).toEqual(b); expect(store.getState()[activityKey(b)].status).toBe('running');
   channel.responses.set('b', snapshot(false, [user('question'), final('answer')]));
-  await store.refresh(); await store.refresh();
+  await store.refresh(true); await store.refresh(true);
   expect(store.getState()[activityKey(b)].status).toBe('completed');
   expect(onComplete).toHaveBeenCalledTimes(1); expect(onComplete).toHaveBeenCalledWith(b, 'terminal-complete:chat:answer', '测试通过');
-  channel.responses.set('b', snapshot(true, [final('answer'), user('next')])); await store.refresh();
+  channel.responses.set('b', snapshot(true, [final('answer'), user('next')])); await store.refresh(true);
   expect(store.getState()[activityKey(b)].status).toBe('running');
 });
 
 it('detects a whole short turn between polls without announcing old history on startup', async () => {
-  channel.responses.set('a', snapshot(false, [final('old')])); await store.refresh();
+  channel.responses.set('a', snapshot(false, [final('old')])); await store.refresh(true);
   expect(onComplete).not.toHaveBeenCalled();
-  channel.responses.set('a', snapshot(false, [user('new'), final('new-final')])); await store.refresh();
+  channel.responses.set('a', snapshot(false, [user('new'), final('new-final')])); await store.refresh(true);
   expect(onComplete).toHaveBeenCalledTimes(1);
 });
 
@@ -58,28 +58,36 @@ it.each([
   snapshot(false, [final('other')], { reset: true }),
   new RpcCallError('source_revoked', 'revoked'),
 ])('never reports a cancellation, inaccessible source or replaced conversation as completed: %s', async response => {
-  channel.responses.set('a', snapshot(true, [user('question')])); await store.refresh();
-  channel.responses.set('a', response); await store.refresh();
+  channel.responses.set('a', snapshot(true, [user('question')])); await store.refresh(true);
+  channel.responses.set('a', response); await store.refresh(true);
   expect(onComplete).not.toHaveBeenCalled(); expect(store.getState()[activityKey(a)].status).not.toBe('running');
 });
 
 it('drops in-flight results after disconnect and treats reconnect as a fresh baseline', async () => {
-  channel.responses.set('a', snapshot(true)); await store.refresh();
+  channel.responses.set('a', snapshot(true)); await store.refresh(true);
   let finish!: (value: unknown) => void;
   channel.rpc.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  const pending = store.refresh();
+  const pending = store.refresh(true);
   channel.status({ state: 'idle' });
   finish(snapshot(false, [final('late')])); await pending;
   expect(store.getState()[activityKey(a)].status).toBe('unknown'); expect(onComplete).not.toHaveBeenCalled();
   channel.responses.set('a', snapshot(false, [final('late')]));
-  channel.status({ state: 'open' } as ConnectionStatus); await store.refresh();
+  channel.status({ state: 'open' } as ConnectionStatus); await store.refresh(true);
   expect(onComplete).not.toHaveBeenCalled();
 });
 
 it('stops polling unsupported gateways and removes terminals no longer observed', async () => {
-  channel.responses.set('a', snapshot(true)); await store.refresh();
-  targets = [b]; await store.refresh(); expect(store.getState()[activityKey(a)]).toBeUndefined();
+  channel.responses.set('a', snapshot(true)); await store.refresh(true);
+  targets = [b]; await store.refresh(true); expect(store.getState()[activityKey(a)]).toBeUndefined();
   targets = [a]; channel.responses.set('a', new RpcCallError('method_not_found', 'old gateway'));
-  await store.refresh(); const count = channel.rpc.mock.calls.length;
-  await jest.advanceTimersByTimeAsync(60_000); await store.refresh(); expect(channel.rpc).toHaveBeenCalledTimes(count);
+  await store.refresh(true); const count = channel.rpc.mock.calls.length;
+  await jest.advanceTimersByTimeAsync(60_000); await store.refresh(true); expect(channel.rpc).toHaveBeenCalledTimes(count);
+});
+
+it('bounds background requests for 24 conversations instead of polling every one each tick', async () => {
+  targets = Array.from({ length: 24 }, (_, index) => ({ ...a, surfaceId: String(index) }));
+  for (const target of targets) channel.responses.set(target.surfaceId, snapshot(false, [final(target.surfaceId)], { conversation_id: target.surfaceId }));
+  await store.refresh(); await jest.advanceTimersByTimeAsync(60_000);
+  expect(channel.rpc.mock.calls.length).toBeLessThanOrEqual(61);
+  expect(Object.keys(store.getState())).toHaveLength(24);
 });

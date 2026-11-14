@@ -59,7 +59,7 @@ function TerminalPane() {
   const { fontSize, inputMode, desktopInputMode, terminalPresentation } = usePrefs();
   const desktop = desktopBridge() !== null;
   const chat = terminalPresentation === 'chat';
-  const conversation = useMemo(() => new TerminalConversationStore(channel, session), [channel, session]);
+  const conversation = useMemo(() => new TerminalConversationStore(channel, session, machine.terminalRepository), [channel, session, machine.terminalRepository]);
   const inputRef = useRef<TerminalInputHandle>(null);
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);

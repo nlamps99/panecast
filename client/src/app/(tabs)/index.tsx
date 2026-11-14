@@ -118,12 +118,12 @@ export default function WorkspacesScreen() {
             accessibilityRole="button" accessibilityLabel={`继续 ${entry.workspaceTitle} 的 ${entry.title}`} onPress={() => {
               setRecentError(null);
               void openRecentSurface(machine, entry).catch((failure: unknown) => setRecentError(failure instanceof Error ? failure.message : '无法打开这个终端'));
-            }}><Text style={styles.recentName} numberOfLines={1}>{entry.title}</Text><Text style={styles.recentMeta} numberOfLines={1}>{entry.workspaceTitle}</Text><TerminalActivityBadge activity={activity[activityKey(entry)]} /></Pressable>)}
+            }}><View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><TerminalActivityBadge activity={activity[activityKey(entry)]} /><Text style={[styles.recentName, { flex: 1 }]} numberOfLines={1}>{entry.title}</Text></View><Text style={styles.recentMeta} numberOfLines={1}>{entry.workspaceTitle}</Text></Pressable>)}
         </ScrollView>
         {recentError ? <Text style={styles.error}>{recentError}</Text> : null}
       </View> : null}
 
-      <WindowChips windows={windows} selectedId={selectedWindowId} onSelect={(id) => void machine.workspaces.selectWindow(id)} />
+      <WindowChips windows={windows} selectedId={selectedWindowId} activity={activity} onSelect={(id) => void machine.workspaces.selectWindow(id)} />
 
       <View style={styles.search}>
         <Icon name="search" size={15} color={colors.muted} />

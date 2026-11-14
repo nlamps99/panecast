@@ -9,6 +9,7 @@ import { useStore } from '../state/hooks';
 import { plainTerminalRows } from '../terminal/textTools';
 import { AgentMessage, AgentToolsSummary } from './AgentConversationItem';
 import { colors, fonts } from './theme';
+import { TerminalActivityBadge } from './TerminalActivityBadge';
 const EMPTY: ReadonlySet<string> = new Set();
 
 export function TerminalChatView({ store, session, connected, onShowTerminal }: {
@@ -23,11 +24,12 @@ export function TerminalChatView({ store, session, connected, onShowTerminal }: 
   const expanded = expansion.identity === identity ? expansion.keys : EMPTY;
   const away = position.identity === identity && position.away;
   const rows = useMemo(() => agentTimeline([{ id: identity, status: 'completed', items: state.items }], expanded).reverse(), [state.items, identity, expanded]);
-  const prompt = state.available ? terminalPrompt(plainTerminalRows(terminal.screen.rows)) : null;
+  const prompt = state.available && !terminal.fromCache ? terminalPrompt(plainTerminalRows(terminal.screen.rows)) : null;
   const lastSubmission = state.submissions.at(-1)?.id;
   useEffect(() => { if (lastSubmission) list.current?.scrollToOffset({ offset: 0, animated: true }); }, [lastSubmission]);
 
   return <View style={styles.container} testID="terminal-chat">
+    {state.fromCache && !connected ? <Text style={styles.meta}>本机缓存</Text> : null}
     {state.error ? <View style={styles.notice}><Text style={styles.error}>{state.error}</Text><Pressable onPress={() => void store.refresh()} accessibilityRole="button"><Text style={styles.link}>重试读取</Text></Pressable></View> : null}
     {prompt ? <View style={styles.prompt} accessibilityLiveRegion="polite">
       <Text style={styles.promptTitle}>终端等待选择</Text><Text selectable numberOfLines={6} style={styles.code}>{prompt}</Text>
@@ -52,10 +54,10 @@ export function TerminalChatView({ store, session, connected, onShowTerminal }: 
         {state.available === false && !state.blocked ? <View style={styles.output}>
           <Text style={styles.meta}>终端输出</Text><Text selectable style={styles.code}>{state.output || '等待终端输出…'}</Text>
         </View> : null}
-        {state.active && connected ? <View style={styles.activity}><ActivityIndicator size="small" color={colors.green} /><Text style={styles.meta}>正在处理…</Text></View> : null}
+        {state.active && connected ? <View style={styles.activity}><TerminalActivityBadge activity={{ status: 'running', at: 0 }} /></View> : null}
       </View>}
       ListFooterComponent={<View style={styles.boundary}>
-        {state.loading || state.loadingOlder ? <ActivityIndicator color={colors.green} /> : null}
+        {(state.loading && !state.items.length) || state.loadingOlder ? <ActivityIndicator color={colors.green} /> : null}
         {state.historyError ? <><Text style={styles.error}>{state.historyError}</Text><Pressable onPress={() => void store.loadOlder()} disabled={!connected || state.loadingOlder} accessibilityRole="button"><Text style={styles.link}>重试读取历史</Text></Pressable></> : null}
         {state.available === false && !state.error ? <Text style={styles.meta}>当前终端没有可读取的对话记录，显示终端画面。</Text> : state.items.length && !state.cursor && !state.loadingOlder ? <Text style={styles.meta}>已到对话开头</Text> : null}
       </View>}

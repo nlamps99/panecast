@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { extname, resolve } from 'node:path';
 
@@ -21,6 +21,12 @@ const server = createServer(async (req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const browser = await webkit.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
+await page.addInitScript(() => {
+  const params = new URLSearchParams(location.search);
+  window.__fixtureInitialTarget = params.get('initial') ?? 'a';
+  window.__fixtureChat = params.get('chat') === '1';
+  window.__fixtureLatency = Number(params.get('latency') ?? 0);
+});
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 try {
@@ -29,9 +35,11 @@ try {
   await page.waitForFunction(() => document.body.innerText.includes('HISTORY_ROW_2399'));
   await page.waitForFunction(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.conversation').length >= 2);
   await page.evaluate(() => window.panecastFixture.run('b'));
-  await page.getByLabel('正在处理', { exact: true }).first().waitFor();
-  const a = page.getByRole('button', { name: /^终端 A/ }).first();
-  const b = page.getByRole('button', { name: /^终端 B/ }).first();
+  const a = page.getByRole('button', { name: '终端 A', exact: true }).first();
+  const b = page.getByRole('button', { name: '终端 B', exact: true }).first();
+  await b.getByTestId('terminal-running-indicator').waitFor();
+  assert.ok(!(await b.innerText()).includes('正在处理'));
+  await page.getByRole('button', { name: /窗口 2，/ }).getByTestId('terminal-running-indicator').waitFor();
   assert.ok((await b.boundingBox()).y < (await a.boundingBox()).y, 'Running terminal moves above the idle terminal');
   assert.match(await page.getByTestId('terminal-output-list').innerText(), /HISTORY_ROW_2399/, 'Background activity preserves the selected terminal');
   await page.screenshot({ path: `${artifact}/running.png` });
@@ -58,12 +66,11 @@ try {
   await page.screenshot({ path: `${artifact}/history.png` });
 
   await page.evaluate(() => window.panecastFixture.complete('b'));
-  await page.getByLabel('已完成', { exact: true }).first().waitFor();
   await page.waitForFunction(() => window.panecastFixture.notifications.some(item => item.surfaceId === 'b'));
   assert.equal(await page.evaluate(() => window.panecastFixture.notifications.length), 1);
   await page.screenshot({ path: `${artifact}/completed.png` });
   await page.evaluate(() => window.panecastFixture.run('b'));
-  await page.getByLabel('正在处理', { exact: true }).first().waitFor();
+  await b.getByTestId('terminal-running-indicator').waitFor();
   await page.evaluate(() => window.panecastFixture.complete('b'));
   await page.waitForFunction(() => window.panecastFixture.notifications.length === 2);
   await page.getByRole('button', { name: '回到最新输出' }).click();
@@ -75,8 +82,36 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="terminal-output-list"]').innerText.includes('APP_HISTORY_0991'));
   assert.ok(await page.evaluate(() => window.panecastFixture.calls.some(call => call.method === 'terminal.scroll' && call.params.delta_lines > 0)));
   await page.screenshot({ path: `${artifact}/application-history.png` });
+
+  await page.getByRole('button', { name: '回到最新输出' }).click();
+  await page.evaluate(() => window.panecastFixture.complete('c'));
+  await page.getByRole('button', { name: /窗口 2，/ }).click();
+  await page.getByRole('button', { name: '终端 C', exact: true }).first().click();
+  await page.getByRole('tab', { name: '对话模式', exact: true }).click();
+  await page.getByTestId('terminal-chat-messages').getByText('会话 c 已完成 0', { exact: true }).waitFor();
+  await page.getByRole('button', { name: /窗口 1，/ }).click();
+  await a.click();
+  await page.getByTestId('terminal-chat-messages').getByText('会话 a 已完成 0', { exact: true }).waitFor();
+  await page.evaluate(() => window.panecastFixture.delay(2000));
+  const start = Date.now();
+  await page.getByRole('button', { name: /窗口 2，/ }).click();
+  await page.getByRole('button', { name: '终端 C', exact: true }).first().click();
+  await page.getByTestId('terminal-chat-messages').getByText('会话 c 已完成 0', { exact: true }).waitFor({ timeout: 500 });
+  const switchMs = Date.now() - start;
+  assert.ok(switchMs < 700, `Cached switch took ${switchMs} ms with a 2000 ms relay delay`);
+  await page.screenshot({ path: `${artifact}/cached-switch.png` });
+  // Let the coalesced IndexedDB writes commit, then start a new JS instance.
+  await page.waitForTimeout(1800);
+  const reloadStart = Date.now();
+  await page.goto(`http://127.0.0.1:${server.address().port}/?initial=c&chat=1&latency=2000`, { waitUntil: 'domcontentloaded' });
+  await page.getByTestId('terminal-chat-messages').getByText('会话 c 已完成 0', { exact: true }).waitFor({ timeout: 1500 });
+  const reloadMs = Date.now() - reloadStart;
+  assert.ok(reloadMs < 2000, `Disk cache did not beat the first network response: ${reloadMs} ms`);
+  assert.equal(await page.evaluate(() => window.panecastFixture.notifications.length), 0, 'Restored history does not generate completion notifications');
+  await page.screenshot({ path: `${artifact}/cache-restored.png` });
+  await writeFile(`${artifact}/cache-performance.json`, JSON.stringify({ relayDelayMs: 2000, cachedWindowAndConversationSwitchMs: switchMs, restoredAfterReloadMs: reloadMs }, null, 2));
   assert.deepEqual(errors, []);
-  console.log('WebKit: running status, sidebar/recent sorting, independent selection, shell/application wheel history, frozen reading and one completion notification passed.');
+  console.log(`WebKit passed: inline rings across windows, notifications, history; cached switch ${switchMs} ms, relaunch ${reloadMs} ms with 2000 ms network delay.`);
 } catch (error) {
   await page.screenshot({ path: `${artifact}/failure.png` });
   console.error('Page errors:', errors);

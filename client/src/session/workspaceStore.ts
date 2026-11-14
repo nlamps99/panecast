@@ -1,4 +1,6 @@
 import type { ConnectionStatus } from '../protocol/connection';
+import { SnapshotCache } from './snapshotCache';
+import { cacheStorage } from './cacheStorage';
 import { describeError, type RpcChannel } from './terminalSession';
 import {
   listSurfaces,
@@ -35,6 +37,23 @@ export type WorkspaceState = {
 /** Workspace and surface changes from cmux; `agent` and `hook` events fire far too often to refetch on. */
 const REFRESH_CATEGORIES = new Set(['workspace', 'surface', 'source']);
 const EVENT_DEBOUNCE_MS = 1_500;
+type WindowSnapshot = { workspaces: readonly WorkspaceInfo[]; surfaces: WorkspaceState['surfaces']; at: number };
+type SavedWorkspaces = { state: WorkspaceState; snapshots: [string, WindowSnapshot][] };
+const caches = new Map<string, SnapshotCache<SavedWorkspaces>>();
+function workspaceCache(computerId: string) {
+  let cache = caches.get(computerId);
+  if (!cache) {
+    cache = new SnapshotCache<SavedWorkspaces>(cacheStorage(`workspaces:${computerId}`), value => {
+      const raw = value as SavedWorkspaces | null;
+      if (!raw?.state || !Array.isArray(raw.state.windows) || !Array.isArray(raw.state.workspaces) || !raw.state.surfaces || !raw.state.known?.workspaces || !raw.state.known?.surfaces || !Array.isArray(raw.snapshots)) return null;
+      if (!raw.state.windows.every(window => typeof window.id === 'string') || !raw.snapshots.every(item => Array.isArray(item) && typeof item[0] === 'string' && Array.isArray(item[1]?.workspaces) && item[1]?.surfaces)) return null;
+      return raw;
+    });
+    caches.set(computerId, cache);
+  }
+  return cache;
+}
+export async function forgetWorkspaceCache(computerId: string) { const cache = workspaceCache(computerId); caches.delete(computerId); await cache.clear(); }
 
 /**
  * Which window to list: the one asked for while it still exists, else cmux's
@@ -72,9 +91,26 @@ export class WorkspaceStore {
   private debounce: ReturnType<typeof setTimeout> | null = null;
   /** Bumped when the listed window changes; a load started before that is dropped. */
   private generation = 0;
+  private snapshots = new Map<string, WindowSnapshot>();
+  private discovering = false;
+  private discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
+  private liveLoaded = false;
+  private cache: SnapshotCache<SavedWorkspaces> | null = null;
 
-  constructor(private readonly channel: RpcChannel, initialWindowId: string | null = null) {
+  constructor(private readonly channel: RpcChannel, initialWindowId: string | null = null,
+    private options: { computerId?: string; background?: RpcChannel['call'] } = {}) {
     this.state = { ...this.state, selectedWindowId: initialWindowId };
+    if (options.computerId) {
+      this.cache = workspaceCache(options.computerId);
+      void this.cache.get('state').then(saved => {
+        if (!saved || this.disposed || this.liveLoaded) return;
+        this.snapshots = new Map(saved.snapshots);
+        const selectedWindowId = initialWindowId ?? saved.state.selectedWindowId;
+        const snapshot = selectedWindowId ? this.snapshots.get(selectedWindowId) : null;
+        this.update({ ...saved.state, ...(snapshot ? { workspaces: snapshot.workspaces, surfaces: snapshot.surfaces } : {}), selectedWindowId, loading: false, loaded: true, error: null });
+      });
+    }
     this.disposers.push(
       channel.onStatus((status: ConnectionStatus) => {
         if (status.state === 'open') void this.refresh();
@@ -96,6 +132,9 @@ export class WorkspaceStore {
   };
 
   dispose(): void {
+    this.disposed = true;
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    void this.cache?.flush();
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
     if (this.debounce) clearTimeout(this.debounce);
@@ -132,7 +171,8 @@ export class WorkspaceStore {
     if (windowId === this.state.selectedWindowId) return Promise.resolve();
     if (!this.state.windows.some((w) => w.id === windowId)) return Promise.resolve();
     this.generation++;
-    this.update({ selectedWindowId: windowId, workspaces: [], surfaces: {}, loaded: false, error: null });
+    const cached = this.snapshots.get(windowId);
+    this.update({ selectedWindowId: windowId, workspaces: cached?.workspaces ?? [], surfaces: cached?.surfaces ?? {}, loaded: Boolean(cached), error: null });
     return this.refresh();
   }
 
@@ -185,10 +225,51 @@ export class WorkspaceStore {
         workspaces: { ...this.state.known.workspaces, ...Object.fromEntries(workspaces.map((w) => [w.id, w])) },
         surfaces: { ...this.state.known.surfaces, ...surfaces },
       };
+      this.liveLoaded = true;
+      if (selectedWindowId) this.snapshots.set(selectedWindowId, { workspaces, surfaces, at: Date.now() });
+      for (const id of this.snapshots.keys()) if (windows.length && !windows.some(window => window.id === id)) this.snapshots.delete(id);
       this.update({ windows, selectedWindowId, workspaces, surfaces, known, loading: false, loaded: true, error: null });
+      this.persist();
+      void this.discoverWindows();
     } catch (error) {
       if (generation !== this.generation) return;
       this.update({ loading: false, loaded: true, error: describeError(error) });
+    }
+  }
+
+  /** Include other cmux windows without selecting them or discarding the visible list. */
+  activityTargets() {
+    const targets = [...this.snapshots].flatMap(([windowId, snapshot]) => snapshot.workspaces.flatMap(workspace =>
+      (snapshot.surfaces[workspace.id] ?? []).map(surface => ({ workspaceId: workspace.id, surfaceId: surface.id, title: surface.title, workspaceTitle: workspace.title, windowId }))));
+    const current = this.state.workspaces.flatMap(workspace => (this.state.surfaces[workspace.id] ?? []).map(surface => ({
+      workspaceId: workspace.id, surfaceId: surface.id, title: surface.title, workspaceTitle: workspace.title, windowId: this.state.selectedWindowId,
+    })));
+    return [...targets, ...current];
+  }
+  private persist() { this.cache?.set('state', { state: this.state, snapshots: [...this.snapshots] }); }
+  private async discoverWindows() {
+    if (!this.options.background || this.discovering || this.disposed || !this.channel.isOpen) return;
+    this.discovering = true;
+    if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
+    const channel: RpcChannel = { ...this.channel, isOpen: this.channel.isOpen, call: this.options.background, onPush: () => () => {}, onStatus: () => () => {} };
+    try {
+      for (const window of this.state.windows) {
+        if (this.disposed || !this.channel.isOpen) break;
+        if (window.id === this.state.selectedWindowId || Date.now() - (this.snapshots.get(window.id)?.at ?? 0) < 30_000) continue;
+        const listing = await listWorkspacesIn(channel, window.id);
+        const surfaces: Record<string, readonly SurfaceInfo[]> = {};
+        for (const workspace of listing.workspaces) surfaces[workspace.id] = await listSurfaces(channel, workspace.id);
+        if (this.disposed || !this.channel.isOpen || !this.state.windows.some(item => item.id === window.id)) break;
+        // A foreground refresh owns its window if the user selected it meanwhile.
+        if (window.id === this.state.selectedWindowId) continue;
+        this.snapshots.set(window.id, { workspaces: listing.workspaces, surfaces, at: Date.now() });
+        this.update({ known: { workspaces: { ...this.state.known.workspaces, ...Object.fromEntries(listing.workspaces.map(item => [item.id, item])) }, surfaces: { ...this.state.known.surfaces, ...surfaces } } });
+        this.persist();
+      }
+    } catch { /* A background window must not replace the current window's error state. */ }
+    finally {
+      this.discovering = false;
+      if (!this.disposed) this.discoveryTimer = setTimeout(() => { void this.discoverWindows(); }, 30_000);
     }
   }
 

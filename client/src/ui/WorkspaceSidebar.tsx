@@ -43,7 +43,7 @@ export function WorkspaceSidebar() {
   return <View style={styles.sidebar}>
     <View style={styles.controls}>
     <View style={styles.header}><Text style={styles.title}>工作区</Text><ComputerSwitcher /></View>
-    <WindowChips windows={windows} selectedId={selectedWindowId} onSelect={(windowId) => void machine.workspaces.selectWindow(windowId)} />
+    <WindowChips windows={windows} selectedId={selectedWindowId} activity={activity} onSelect={(windowId) => void machine.workspaces.selectWindow(windowId)} />
     <TextInput style={styles.search} placeholder="筛选工作区或终端" placeholderTextColor={colors.muted} onChangeText={setQuery} autoCorrect={false} autoCapitalize="none" accessibilityLabel="筛选侧栏工作区" />
     {error ? <Text style={styles.error}>{error}</Text> : null}
     {closeError || terminalActionState.error || workspaceActionState.error ? <Text style={styles.error}>{closeError ?? terminalActionState.error ?? (workspaceActionState.error ? actionErrorText(workspaceActionState.error) : '')}</Text> : null}
@@ -56,7 +56,7 @@ export function WorkspaceSidebar() {
         </View>
         {pendingByWorkspace[workspace.id] ? <Text style={styles.attention}>{pendingByWorkspace[workspace.id]} 项待处理</Text> : null}
         {[...(surfaces[workspace.id] ?? [])].sort((a, b) => compareActivity(activity[activityKey({ workspaceId: workspace.id, surfaceId: a.id })], activity[activityKey({ workspaceId: workspace.id, surfaceId: b.id })])).map((surface) => <View key={surface.id} style={[styles.surfaceRow, target?.surfaceId === surface.id && styles.selected]}>
-          <Pressable onPress={() => openSurface(machine, workspace.id, surface.id)} style={styles.surface} accessibilityRole="button" accessibilityState={{ selected: target?.surfaceId === surface.id }}><Text numberOfLines={2} style={styles.surfaceText}>{surface.title}</Text><TerminalActivityBadge activity={activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })]} /></Pressable>
+          <Pressable onPress={() => openSurface(machine, workspace.id, surface.id)} style={[styles.surface, { flexDirection: 'row', alignItems: 'center', gap: 6 }]} accessibilityRole="button" accessibilityLabel={surface.title} accessibilityState={{ selected: target?.surfaceId === surface.id }}><TerminalActivityBadge activity={activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })]} /><Text numberOfLines={2} style={[styles.surfaceText, { flex: 1 }]}>{surface.title}</Text></Pressable>
           {desktop ? <DesktopCloseButton label={`关闭终端 ${surface.title}`} disabled={!connected || workspace.access === 'read' || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
             onPress={() => { setCloseError(null); void requestTerminalClose(machine, terminalActions, workspace, surface, confirmClose).catch(error => setCloseError(describeError(error))); }} /> : null}
         </View>)}

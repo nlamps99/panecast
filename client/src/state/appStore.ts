@@ -6,7 +6,7 @@ import { parsePairingUrl } from '../protocol/pairing';
 import { forgetInbox, inboxStorageKey } from '../session/inboxPersistence';
 import { InboxStore } from '../session/inboxStore';
 import { TerminalSession, type RpcChannel, type StatusSource } from '../session/terminalSession';
-import { WorkspaceStore } from '../session/workspaceStore';
+import { WorkspaceStore, forgetWorkspaceCache } from '../session/workspaceStore';
 import {
   EMPTY_COMPUTER_LIST,
   removeComputer,
@@ -26,7 +26,8 @@ import { RpcCallError } from '../protocol/connection';
 import { AccountError, accountRequest, accountServer, type AccountComputer, type AccountSession } from '../account/api';
 import { loadAccount, saveAccount, signIn } from '../account/store';
 import { desktopBridge } from '../platform/desktop';
-import { TerminalActivityStore, type ActivityTarget } from '../session/terminalActivity';
+import { TerminalActivityStore } from '../session/terminalActivity';
+import { TerminalRepository, terminalCaches, forgetTerminalCaches } from '../session/terminalRepository';
 
 export { PairingError } from './connect';
 
@@ -40,6 +41,7 @@ export type Machine = {
   workspaces: WorkspaceStore;
   inbox: InboxStore;
   activity?: TerminalActivityStore;
+  terminalRepository?: TerminalRepository;
 };
 
 export type AppStoreState = {
@@ -151,6 +153,7 @@ export class AppStore {
     void forgetInbox(inboxStorageKey(computerId));
     void forgetInputs(computerId).catch(() => {});
     void forgetConversations(computerId).catch(() => {});
+    void forgetTerminalCaches(computerId); void forgetWorkspaceCache(computerId);
     sessionMemory.forgetComputer(computerId);
     void keyboardProfiles().forgetComputer(computerId);
   }
@@ -316,6 +319,7 @@ export class AppStore {
       void forgetInbox(inboxStorageKey(computer.id));
       void forgetInputs(computer.id).catch(() => {});
       void forgetConversations(computer.id).catch(() => {});
+      void forgetTerminalCaches(computer.id); void forgetWorkspaceCache(computer.id);
       sessionMemory.forgetComputer(computer.id);
       void keyboardProfiles().forgetComputer(computer.id);
     }
@@ -345,20 +349,22 @@ export class AppStore {
   /** The demo's inbox is not saved; a computer's inbox is, per computer. */
   private stores(channel: RpcChannel, computer: StoredComputer | null = null) {
     const memory = computer ? sessionMemory.computer(computer.id) : null;
+    const cached = computer && desktopBridge() ? terminalCaches(computer.id) : undefined;
+    const terminalRepository = cached ? new TerminalRepository(channel, cached.heads) : undefined;
     const session = new TerminalSession(channel, { liveLines: getPrefs().historyLines, log,
+      screenCache: cached?.screens,
       ...(computer ? { readingForTarget: (target) => sessionMemory.computer(computer.id).reading[surfaceMemoryKey(target)] ?? null,
         saveReading: (target, position) => sessionMemory.rememberReading(computer.id, target, position) } : {}),
     });
     if (memory?.lastTarget) session.setTarget(memory.lastTarget);
-    const workspaces = new WorkspaceStore(channel, memory?.windowId ?? null);
+    const workspaces = new WorkspaceStore(channel, memory?.windowId ?? null, terminalRepository && computer ? {
+      computerId: computer.id, background: (method, params) => terminalRepository.background(method, params),
+    } : {});
     const inbox = new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {});
     const activity = computer && desktopBridge() ? new TerminalActivityStore(channel, {
+      repository: terminalRepository,
       targets: () => {
-        const state = workspaces.getState();
-        const targets: ActivityTarget[] = state.workspaces.flatMap(workspace => (state.surfaces[workspace.id] ?? []).map(surface => ({
-          workspaceId: workspace.id, surfaceId: surface.id, title: surface.title, workspaceTitle: workspace.title, windowId: state.selectedWindowId,
-        })));
-        return [...sessionMemory.computer(computer.id).recent, ...targets];
+        return [...sessionMemory.computer(computer.id).recent, ...workspaces.activityTargets()];
       },
       onActivity: (target, at) => sessionMemory.activity(computer.id, target, at),
       onComplete: (target, id, body) => {
@@ -372,7 +378,7 @@ export class AppStore {
       },
     }) : undefined;
     return {
-      session, workspaces, inbox, activity,
+      session, workspaces, inbox, activity, terminalRepository,
     };
   }
 
@@ -382,6 +388,7 @@ export class AppStore {
     const previous = this.state.machine;
     if (previous) {
       previous.activity?.dispose();
+      previous.terminalRepository?.dispose();
       previous.session.setTarget(null);
       previous.session.dispose();
       previous.workspaces.dispose();
@@ -406,11 +413,15 @@ export class AppStore {
   private observeMachine(machine: Machine): void {
     const computerId = machine.computer!.id;
     let lastTarget = machine.session.getState().target;
+    let lastInputRevision = machine.session.getState().inputRevision ?? 0;
     let validated = false;
     const capture = () => {
       const target = machine.session.getState().target, state = machine.workspaces.getState();
       if (!target) { lastTarget = null; return; }
       const changed = !lastTarget || surfaceMemoryKey(lastTarget) !== surfaceMemoryKey(target);
+      const inputRevision = machine.session.getState().inputRevision ?? 0;
+      if (changed || inputRevision !== lastInputRevision) machine.activity?.prioritize(target);
+      lastInputRevision = inputRevision;
       lastTarget = target;
       const workspace = state.workspaces.find((w) => w.id === target.workspaceId) ?? state.known.workspaces[target.workspaceId];
       const surface = (state.surfaces[target.workspaceId] ?? state.known.surfaces[target.workspaceId] ?? []).find((s) => s.id === target.surfaceId);

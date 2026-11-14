@@ -5,6 +5,7 @@ import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
 import { applicationPageHasPayload, olderApplicationRows, sameApplicationViewport, type ApplicationHistoryPage } from './applicationHistory';
+import type { SnapshotCache } from './snapshotCache';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -60,6 +61,7 @@ export type TerminalState = {
   readingNotice?: string | null;
   /** Alternate-screen programs own their history and consume mouse-wheel input. */
   applicationScroll?: { columns: number; rows: number; busy: boolean; error: string | null } | null;
+  fromCache?: boolean;
 };
 
 export type SendReceipt = { status: 'sent' | 'not_sent' | 'unknown'; message: string };
@@ -73,6 +75,7 @@ export type TerminalSessionOptions = {
   log?: (message: string) => void;
   readingForTarget?: (target: SurfaceTarget) => ReadingPosition | null;
   saveReading?: (target: SurfaceTarget, position: ReadingPosition | null) => void;
+  screenCache?: SnapshotCache<ScreenState>;
 };
 
 const SUBSCRIBE_ATTEMPTS = 4;
@@ -138,6 +141,8 @@ export class TerminalSession {
   private subscribedLines: number | null = null;
   private readonly historyPageLines: number;
   private readonly log: (message: string) => void;
+  private screens = new Map<string, ScreenState>();
+  private receivedScreen = false;
 
   constructor(
     private readonly channel: RpcChannel,
@@ -173,6 +178,7 @@ export class TerminalSession {
   };
 
   dispose(): void {
+    void this.options.screenCache?.flush();
     this.disposed = true;
     this.restoreApplicationViewport();
     for (const dispose of this.disposers) dispose();
@@ -207,9 +213,13 @@ export class TerminalSession {
     this.readingTask++;
     this.restoringPosition = false;
     this.pendingReading = target ? this.options.readingForTarget?.(target) ?? null : null;
+    const key = target ? JSON.stringify([target.workspaceId, target.surfaceId]) : '';
+    const cached = this.screens.get(key) ?? this.options.screenCache?.peek(key);
+    this.receivedScreen = false;
     this.update({
       target,
-      screen: EMPTY_SCREEN,
+      screen: cached ? { ...cached, rev: 0 } : EMPTY_SCREEN,
+      fromCache: Boolean(cached),
       subscription: 'none',
       subscriptionError: null,
       browse: null,
@@ -219,6 +229,12 @@ export class TerminalSession {
       readingNotice: null,
       applicationScroll: null,
     });
+    if (target && !cached && this.options.screenCache) {
+      const selection = this.selectionIntent;
+      void this.options.screenCache.get(key).then(screen => {
+        if (screen && !this.disposed && selection === this.selectionIntent && !this.receivedScreen) this.update({ screen: { ...screen, rev: 0 }, fromCache: true });
+      });
+    }
     if (target) void this.subscribeCurrent();
   }
 
@@ -251,7 +267,12 @@ export class TerminalSession {
           if (token !== this.subscribeToken) return;
           continue;
         }
-        this.update({ subscription: 'error', subscriptionError: describeError(error) });
+        const inaccessible = error instanceof RpcCallError && ['source_revoked', 'read_only', 'invalid_target', 'not_found'].includes(error.code);
+        if (inaccessible) {
+          const key = JSON.stringify([target.workspaceId, target.surfaceId]);
+          this.screens.delete(key); this.options.screenCache?.remove(key);
+        }
+        this.update({ subscription: 'error', subscriptionError: describeError(error), ...(inaccessible ? { screen: EMPTY_SCREEN, fromCache: false } : {}) });
         return;
       }
     }
@@ -347,6 +368,7 @@ export class TerminalSession {
       }
       case 'screen.diff': {
         if (!target || frame.surfaceId !== target.surfaceId) return;
+        if (this.state.fromCache && frame.ops[0]?.op !== 'clear') { this.resync('awaiting full screen after cache'); return; }
         if (frame.rev > this.state.screen.rev + 1 && frame.ops[0]?.op !== 'clear') {
           this.resync('missing screen diff');
           return;
@@ -383,13 +405,20 @@ export class TerminalSession {
   }
 
   private setScreen(screen: ScreenState): void {
+    this.receivedScreen = true;
+    const target = this.state.target;
+    if (target) {
+      const key = JSON.stringify([target.workspaceId, target.surfaceId]);
+      this.screens.delete(key); this.screens.set(key, screen); this.options.screenCache?.set(key, screen);
+      while (this.screens.size > 24) this.screens.delete(this.screens.keys().next().value!);
+    }
     this.applicationPage?.accept(screen.rows);
     const browse = this.state.browse;
     const rowsChanged = screen.rows !== this.state.screen.rows;
     if (browse && browse.kind !== 'application' && rowsChanged && !browse.liveChanged) {
-      this.update({ screen, browse: { ...browse, liveChanged: true } });
+      this.update({ screen, fromCache: false, browse: { ...browse, liveChanged: true } });
     } else {
-      this.update({ screen });
+      this.update({ screen, fromCache: false });
     }
     if (this.pendingReading && !this.restoringPosition) void this.restoreReadingPosition();
   }
@@ -432,7 +461,7 @@ export class TerminalSession {
   /** Fetch the first immutable page while the current screen is being read. */
   prepareHistory(): void {
     const target = this.state.target, rows = this.state.screen.rows;
-    if (!this.scrollModeChecked || this.preparedHistory || this.state.browse || this.state.applicationScroll || !rows.length
+    if (this.state.fromCache || !this.scrollModeChecked || this.preparedHistory || this.state.browse || this.state.applicationScroll || !rows.length
       || !target || !this.channel.isOpen || this.disposed) return;
     const generation = this.historyToken;
     this.preparedHistory = this.channel.call('surface.history', {

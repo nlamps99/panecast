@@ -190,6 +190,24 @@ describe('WorkspaceStore windows', () => {
     expect(channel.listed('workspace.list').at(-1)).toEqual({ window_id: 'win-a' });
   });
 
+  it('restores an already visited window immediately while refreshing its current contents', async () => {
+    const channel = new CmuxChannel(); const store = new WorkspaceStore(channel);
+    await store.refresh(); await store.selectWindow('win-a'); await store.selectWindow('win-b');
+    channel.holdNext.add('workspace.list');
+    const refresh = store.selectWindow('win-a');
+    expect(store.getState().loaded).toBe(true); expect(titles(store)).toEqual(['Alpha', 'Beta']);
+    channel.release(); await refresh; store.dispose();
+  });
+
+  it('discovers running targets in another window without changing the selected one', async () => {
+    const channel = new CmuxChannel();
+    const store = new WorkspaceStore(channel, null, { background: channel.call.bind(channel) });
+    await store.refresh(); await flush();
+    expect(store.getState().selectedWindowId).toBe('win-b');
+    expect(store.activityTargets()).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceId: 'a1', windowId: 'win-a' })]));
+    store.dispose();
+  });
+
   it('ignores selecting the listed window or one cmux did not report', async () => {
     const channel = new CmuxChannel();
     const store = new WorkspaceStore(channel);

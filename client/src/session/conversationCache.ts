@@ -1,6 +1,8 @@
 import { sha256, toHex, utf8Encode } from '../protocol/sha256';
 import { agentThread, agentTurns } from './agentData';
 import type { AgentThread, AgentTurn, SourceInfo } from './sourceStore';
+import { Platform } from 'react-native';
+import { cacheStorage } from './cacheStorage';
 
 export type PreparedHistory = { cursor: string; turns: AgentTurn[]; nextCursor: string | null };
 export type CachedConversation = { sourceId: string; thread: AgentThread; turns: AgentTurn[]; cursor: string | null; prepared?: PreparedHistory; at: number };
@@ -168,6 +170,7 @@ export class ConversationCache {
 
 const computers = new Map<string, ConversationCache>();
 function fileStorage(computerId: string): ConversationStorage {
+  if (Platform.OS === 'web') return cacheStorage(`codex-conversations:${computerId}`);
   const fs = () => import('expo-file-system/legacy');
   const directory = async () => {
     const api = await fs();

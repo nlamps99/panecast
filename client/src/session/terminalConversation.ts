@@ -3,6 +3,7 @@ import { agentItem } from './agentData';
 import { itemText, type AgentItem } from './sourceStore';
 import { describeError, type RpcChannel, type SendReceipt, type SurfaceTarget, type TerminalSession } from './terminalSession';
 import { plainTerminalRows } from '../terminal/textTools';
+import { terminalKey, type TerminalHead, type TerminalRepository } from './terminalRepository';
 
 export type TerminalChatSubmission = { id: string; text: string; status: 'sending' | SendReceipt['status']; at: number; base: number; message?: string };
 export type TerminalConversationState = {
@@ -10,6 +11,7 @@ export type TerminalConversationState = {
   available: boolean | null; items: AgentItem[]; revision: string | null; cursor: string | null; headSequence: number;
   loading: boolean; loadingOlder: boolean; active: boolean; error: string | null; historyError: string | null; blocked: boolean;
   branch: string | null;
+  fromCache?: boolean;
   submissions: TerminalChatSubmission[]; output: string;
 };
 const same = (a: SurfaceTarget | null, b: SurfaceTarget | null) => a?.workspaceId === b?.workspaceId && a?.surfaceId === b?.surfaceId;
@@ -50,9 +52,11 @@ export class TerminalConversationStore {
   private fallbackBaseline: readonly string[] | null = null;
   private historyStarted = false;
   private historyVersion = 0;
+  private memory = new Map<string, { state: TerminalConversationState; historyStarted: boolean }>();
 
-  constructor(private channel: RpcChannel, private terminal: TerminalSession) {
-    this.state = initial(terminal.getState().target);
+  constructor(private channel: RpcChannel, private terminal: TerminalSession, private repository?: TerminalRepository) {
+    this.state = this.cachedState(terminal.getState().target);
+    void this.restoreCached();
     this.disposers.push(terminal.subscribe(() => this.terminalChanged()), channel.onStatus(status => {
       if (status.state === 'open' && this.active) void this.refresh();
       else if (status.state !== 'open') {
@@ -65,15 +69,46 @@ export class TerminalConversationStore {
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(patch: Partial<TerminalConversationState>) {
     if (this.disposed) return;
+    if (Object.entries(patch).every(([key, value]) => this.state[key as keyof TerminalConversationState] === value)) return;
     this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener();
   }
-  start() { if (this.active) return; this.active = true; this.terminal.resumeLive(); this.terminalChanged(); void this.refresh(); }
-  stop() { this.active = false; this.generation++; this.head = this.older = null; if (this.timer) clearTimeout(this.timer); this.timer = null; this.update({ loading: false, loadingOlder: false }); }
+  start() { if (this.active) return; this.active = true; this.terminal.resumeLive(); this.terminalChanged(); this.repository?.setViewing(this.state.target); void this.restoreCached(); void this.refresh(); }
+  stop() { this.remember(); if (this.state.target && this.repository?.isViewing(this.state.target)) this.repository.setViewing(null); this.active = false; this.generation++; this.head = this.older = null; if (this.timer) clearTimeout(this.timer); this.timer = null; this.update({ loading: false, loadingOlder: false }); }
   dispose() { this.stop(); this.disposed = true; this.disposers.forEach(dispose => dispose()); this.listeners.clear(); }
+  private remember() {
+    if (!this.state.target || this.state.available !== true || this.state.blocked) return;
+    const key = terminalKey(this.state.target); this.memory.delete(key);
+    // Very large paged histories fall back to the bounded persistent head.
+    if (this.state.items.length > 400) return;
+    this.memory.set(key, { state: this.state, historyStarted: this.historyStarted });
+    while (this.memory.size > 8) this.memory.delete(this.memory.keys().next().value!);
+  }
+  private fromHead(target: SurfaceTarget, raw: TerminalHead): TerminalConversationState {
+    return { ...initial(target), available: true, fromCache: true, conversationId: optionalText(raw.conversation_id), generation: optionalText(raw.generation) ?? '',
+      provider: optionalText(raw.provider) ?? 'terminal', name: optionalText(raw.name) ?? '终端输出', revision: optionalText(raw.revision), branch: optionalText(raw.branch),
+      cursor: optionalText(raw.next_cursor), headSequence: typeof raw.head_sequence === 'number' ? raw.head_sequence : 0,
+      items: Array.isArray(raw.items) ? raw.items.map(agentItem).filter((item): item is AgentItem => item !== null) : [] };
+  }
+  private cachedState(target: SurfaceTarget | null): TerminalConversationState {
+    if (!target) return initial(null);
+    const memory = this.memory.get(terminalKey(target));
+    if (memory) { this.historyStarted = memory.historyStarted; return { ...memory.state, active: false, loading: false, loadingOlder: false, fromCache: true, error: null, historyError: null }; }
+    const head = this.repository?.peek(target);
+    return head?.available === true ? this.fromHead(target, head) : initial(target);
+  }
+  private async restoreCached() {
+    const target = this.state.target, generation = this.generation;
+    if (!target || this.state.available !== null || !this.repository) return;
+    const head = await this.repository.restore(target);
+    if (head && generation === this.generation && !this.disposed && this.state.available === null) this.update(this.fromHead(target, head));
+  }
   private terminalChanged() {
     const current = this.terminal.getState();
     if (!same(current.target, this.state.target)) {
-      this.generation++; this.head = this.older = null; this.fallbackBaseline = null; this.historyStarted = false; this.update(initial(current.target));
+      this.remember();
+      this.generation++; this.head = this.older = null; this.fallbackBaseline = null; this.historyStarted = false; this.update(this.cachedState(current.target));
+      if (this.active) this.repository?.setViewing(current.target);
+      void this.restoreCached();
       if (this.active) void this.refresh();
       return;
     }
@@ -91,7 +126,7 @@ export class TerminalConversationStore {
   }
   private schedule() {
     if (this.timer) clearTimeout(this.timer);
-    if (this.active && !this.disposed) this.timer = setTimeout(() => { this.timer = null; void this.refresh(); }, 1200);
+    if (this.active && !this.disposed) this.timer = setTimeout(() => { this.timer = null; void this.refresh(); }, this.state.active || this.state.submissions.length ? 1200 : 5000);
   }
   refresh(): Promise<void> {
     if (this.head) return this.head;
@@ -116,16 +151,17 @@ export class TerminalConversationStore {
   private async read(target: SurfaceTarget, generation: number, cursor: string | null) {
     const historyVersion = this.historyVersion;
     try {
-      const raw = record(await this.channel.call('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: 80,
-        ...(cursor ? { cursor } : { ...(this.state.revision ? { revision: this.state.revision } : {}), ...(this.state.branch ? { branch: this.state.branch } : {}) }) }, 15000));
+      const raw = record(await (!cursor && this.repository ? this.repository.readHead(target, true) : this.channel.call('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: 80,
+        ...(cursor ? { cursor } : { ...(this.state.revision ? { revision: this.state.revision } : {}), ...(this.state.branch ? { branch: this.state.branch } : {}) }) }, 15000)));
       if (generation !== this.generation || this.disposed || !same(target, this.state.target)) return;
       if (cursor && historyVersion !== this.historyVersion) return;
       const id = optionalText(raw.conversation_id), epoch = optionalText(raw.generation) ?? '';
       if (cursor && (id !== this.state.conversationId || epoch !== this.state.generation)) { this.update({ loadingOlder: false }); return; }
       const changed = raw.reset === true || id !== this.state.conversationId || Boolean(epoch && this.state.generation && epoch !== this.state.generation);
       if (changed) { this.historyVersion++; this.historyStarted = false; this.older = null; }
-      const parsed = Array.isArray(raw.items) ? raw.items.map(agentItem).filter((item): item is AgentItem => item !== null) : [];
-      const items = raw.available !== true ? [] : raw.unchanged ? this.state.items : mergeTerminalItems(changed ? [] : this.state.items, parsed);
+      const unchanged = !cursor && !changed && (raw.unchanged === true || Boolean(raw.revision && raw.revision === this.state.revision));
+      const parsed = !unchanged && Array.isArray(raw.items) ? raw.items.map(agentItem).filter((item): item is AgentItem => item !== null) : [];
+      const items = raw.available !== true ? [] : unchanged ? this.state.items : mergeTerminalItems(changed ? [] : this.state.items, parsed);
       const matched = new Set<string>();
       const submissions = (changed && this.state.conversationId && id !== this.state.conversationId ? [] : this.state.submissions).filter(submission => {
         const echo = submission.status !== 'not_sent' && items.find(item => !matched.has(item.id) && item.type === 'userMessage' && (item.sequence ?? 0) >= submission.base && clean(itemText(item)) === clean(submission.text));
@@ -133,15 +169,16 @@ export class TerminalConversationStore {
         return !echo;
       });
       this.update({ conversationId: id, generation: epoch, provider: optionalText(raw.provider) ?? 'terminal', name: optionalText(raw.name) ?? '终端输出',
-        available: raw.available === true, items, submissions, loading: false, loadingOlder: cursor || changed ? false : this.state.loadingOlder, error: null, blocked: false,
+        available: raw.available === true, items, submissions: submissions.length === this.state.submissions.length ? this.state.submissions : submissions, fromCache: false, loading: false, loadingOlder: cursor || changed ? false : this.state.loadingOlder, error: null, blocked: false,
         ...(!cursor ? { revision: optionalText(raw.revision), branch: optionalText(raw.branch), active: raw.active === true, headSequence: typeof raw.head_sequence === 'number' ? raw.head_sequence : this.state.headSequence } : {}),
-        ...(raw.available !== true ? { cursor: null } : !raw.unchanged && (cursor || changed || !this.historyStarted) ? { cursor: optionalText(raw.next_cursor) } : {}) });
+        ...(raw.available !== true ? { cursor: null } : !unchanged && (cursor || changed || !this.historyStarted) ? { cursor: optionalText(raw.next_cursor) } : {}) });
       this.terminalChanged();
     } catch (error) {
       if (generation !== this.generation || this.disposed) return;
       const code = error instanceof RpcCallError ? error.code : '';
       const unsupported = ['method_not_found', '-32601'].includes(code);
       const blocked = ['source_revoked', 'invalid_target', 'read_only'].includes(code);
+      if (blocked || /^conversation_/.test(code)) this.memory.delete(terminalKey(target));
       if (cursor) { this.update({ loadingOlder: false, historyError: describeError(error) }); return; }
       this.update({ loading: false, loadingOlder: false, active: false, error: unsupported ? null : describeError(error), blocked,
         ...(unsupported ? { available: false, provider: 'terminal', name: '终端输出' } : {}),
@@ -159,6 +196,7 @@ export class TerminalConversationStore {
     if (this.state.available === false) this.fallbackBaseline = plainTerminalRows(this.terminal.getState().screen.rows);
     this.update({ submissions: [...this.state.submissions, submission].slice(-40), ...(this.state.available === false ? { output: '' } : {}) });
     const receipt = await this.terminal.submitLine(text);
+    this.repository?.invalidate(target);
     if (!this.disposed && selection === this.terminal.selectionVersion && same(target, this.state.target)) {
       this.update({ submissions: this.state.submissions.map(item => item.id === id ? { ...item, status: receipt.status, message: receipt.message } : item) });
       if (this.active) void this.refresh();

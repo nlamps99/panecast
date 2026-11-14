@@ -2,18 +2,21 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { windowLabel, type WindowInfo } from '../session/surfaces';
 import { colors, fonts } from './theme';
+import type { ActivityState } from '../session/terminalActivity';
+import { TerminalActivityBadge } from './TerminalActivityBadge';
 
 type Props = {
   windows: readonly WindowInfo[];
   selectedId: string | null;
   onSelect: (windowId: string) => void;
+  activity?: ActivityState;
 };
 
 /**
  * Picks which cmux window's workspaces are listed. Hidden with a single window
  * (and with older cmux, which reports none), where it would only be noise.
  */
-export function WindowChips({ windows, selectedId, onSelect }: Props) {
+export function WindowChips({ windows, selectedId, onSelect, activity }: Props) {
   if (windows.length < 2) return null;
   return (
     <ScrollView horizontal style={styles.scroller} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} keyboardShouldPersistTaps="handled">
@@ -21,6 +24,7 @@ export function WindowChips({ windows, selectedId, onSelect }: Props) {
         const selected = window.id === selectedId;
         const label = windowLabel(window);
         const count = window.workspaceCount;
+        const running = Object.values(activity ?? {}).find(item => item.windowId === window.id && item.status === 'running');
         return (
           <Pressable
             key={window.id}
@@ -34,7 +38,7 @@ export function WindowChips({ windows, selectedId, onSelect }: Props) {
               .filter(Boolean)
               .join('，')}
           >
-            {window.key ? <View style={[styles.keyDot, selected && styles.keyDotSelected]} /> : null}
+            {running ? <TerminalActivityBadge activity={running} color={selected ? colors.canvas : colors.green} /> : window.key ? <View style={[styles.keyDot, selected && styles.keyDotSelected]} /> : null}
             <Text style={[styles.label, selected && styles.labelSelected]}>{label}</Text>
             {count !== null ? <Text style={[styles.count, selected && styles.countSelected]}>{count}</Text> : null}
           </Pressable>
