@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
 import {
   FlatList,
   Platform,
@@ -43,7 +43,16 @@ type Props = {
   onTap: () => void;
   readOnly?: boolean;
   active?: boolean;
+  /**
+   * Phones: no tool row above the terminal (the screen's menu opens the tools
+   * through `ref`), and history status floats over the text only while
+   * browsing, so every other point goes to terminal lines.
+   */
+  compact?: boolean;
+  ref?: Ref<TerminalViewHandle>;
 };
+
+export type TerminalViewHandle = { openTools: () => void };
 
 /**
  * The terminal as an inverted list of fixed-height lines: index 0 is the
@@ -54,7 +63,7 @@ type Props = {
  * with `surface.history`. Back at the bottom the live screen resumes. Pinch
  * changes the font size.
  */
-export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, onTap, readOnly = false, active = true }: Props) {
+export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, onTap, readOnly = false, active = true, compact = false, ref }: Props) {
   const [width, setWidth] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -316,6 +325,44 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     end: () => { savePosition(); dragging.current = false; },
   });
 
+  const openTools = () => {
+    wasLiveBeforeTools.current = !session.getState().browse;
+    session.startBrowsing({ freezeApplication: true });
+    setToolsOpen(true);
+  };
+  useImperativeHandle(ref, () => ({ openTools }));
+
+  // Desktop: rows above the terminal, the history row always there so the
+  // terminal does not resize when browsing starts. Phone: one floating stack
+  // at the bottom left, shown only while there is something to say.
+  const historyStatus = !compact || browse;
+  const statusText = compact ? styles.floatingStatusText : styles.historyStatusText;
+  const status = <>
+    {state.restoringReading || state.readingNotice ? <Text style={[styles.readingNotice, compact && styles.floatingNotice]}>{state.restoringReading ? '正在恢复上次阅读的位置…' : state.readingNotice}</Text> : null}
+    {applicationScroll && historyStatus ? <View testID="terminal-application-scroll" style={[styles.historyStatus, compact && styles.floatingStatus]}>
+      <Text style={statusText}>{readOnly ? '程序内历史需要终端控制权限' : '连续滑动查看程序内历史'}</Text>
+      {!readOnly ? <>
+        <Pressable testID="terminal-application-older" style={styles.historyLoad} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
+        <Pressable testID="terminal-application-newer" style={styles.historyLoad} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
+      </> : null}
+    </View> : null}
+    {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError, compact && styles.floatingNotice]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
+    {!applicationScroll && historyStatus ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, compact ? styles.floatingStatus : styles.stableHistoryStatus]}>
+      <Text style={statusText}>
+        {!browse ? '向上滑动查看历史' : browse.exhausted && browse.olderRows.length === 0
+          ? `电脑只返回当前 ${browse.frozenRows.length} 行，未提供更早历史`
+          : `已加载 ${browse.olderRows.length} 行历史${browse.exhausted ? ' · 已到本次起点' : ''}`}
+      </Text>
+      {browse && !browse.exhausted ? <Pressable testID="terminal-history-load" disabled={browse.loading || state.restoringReading}
+        style={styles.historyLoad} onPress={() => void session.loadOlder({ retry: Boolean(browse.error) })} accessibilityRole="button">
+        <Text style={styles.historyLoadText}>{browse.restartRequired ? '重新加载' : '加载更早'}</Text>
+      </Pressable> : null}
+    </View> : null}
+    {browse?.error ? <Pressable testID="terminal-history-retry" style={[styles.historyRetry, compact && styles.floatingNotice]} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
+      <Text style={styles.edgeError}>{browse.error} · {browse.restartRequired ? '重新加载历史' : '重试'}</Text>
+    </Pressable> : null}
+  </>;
+
   const terminalList = (
     <GestureDetector gesture={nativeScroll}>
     <FlatList
@@ -353,35 +400,13 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
 
   return (
     <View testID="terminal-output" style={styles.container} onLayout={onLayout}>
-      <View style={styles.toolRow}>
+      {!compact ? <View style={styles.toolRow}>
         <Pressable style={styles.tools} onPress={() => setPrefs({ terminalWrap: !terminalWrap })} accessibilityRole="button" accessibilityLabel={terminalWrap ? '切换为原始列宽' : '切换为自动折行'}><Text style={styles.toolsText}>{terminalWrap ? '自动折行' : '原始列宽 ↔'}</Text></Pressable>
-        <Pressable style={styles.tools} onPress={() => { wasLiveBeforeTools.current = !state.browse; session.startBrowsing({ freezeApplication: true }); setToolsOpen(true); }} accessibilityRole="button" accessibilityLabel="搜索和复制终端输出">
+        <Pressable style={styles.tools} onPress={openTools} accessibilityRole="button" accessibilityLabel="搜索和复制终端输出">
           <Text style={styles.toolsText}>搜索 · 复制输出</Text>
         </Pressable>
-      </View>
-      {state.restoringReading || state.readingNotice ? <Text style={styles.readingNotice}>{state.restoringReading ? '正在恢复上次阅读的位置…' : state.readingNotice}</Text> : null}
-      {applicationScroll ? <View testID="terminal-application-scroll" style={styles.historyStatus}>
-        <Text style={styles.historyStatusText}>{readOnly ? '程序内历史需要终端控制权限' : '连续滑动查看程序内历史'}</Text>
-        {!readOnly ? <>
-          <Pressable testID="terminal-application-older" style={styles.historyLoad} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
-          <Pressable testID="terminal-application-newer" style={styles.historyLoad} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
-        </> : null}
       </View> : null}
-      {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
-      {!applicationScroll ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, styles.stableHistoryStatus]}>
-        <Text style={styles.historyStatusText}>
-          {!browse ? '向上滑动查看历史' : browse.exhausted && browse.olderRows.length === 0
-            ? `电脑只返回当前 ${browse.frozenRows.length} 行，未提供更早历史`
-            : `已加载 ${browse.olderRows.length} 行历史${browse.exhausted ? ' · 已到本次起点' : ''}`}
-        </Text>
-        {browse && !browse.exhausted ? <Pressable testID="terminal-history-load" disabled={browse.loading || state.restoringReading}
-          style={styles.historyLoad} onPress={() => void session.loadOlder({ retry: Boolean(browse.error) })} accessibilityRole="button">
-          <Text style={styles.historyLoadText}>{browse.restartRequired ? '重新加载' : '加载更早'}</Text>
-        </Pressable> : null}
-      </View> : null}
-      {browse?.error ? <Pressable testID="terminal-history-retry" style={styles.historyRetry} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
-        <Text style={styles.edgeError}>{browse.error} · {browse.restartRequired ? '重新加载历史' : '重试'}</Text>
-      </Pressable> : null}
+      {!compact ? status : null}
       <GestureDetector gesture={pinch}>
         <View testID="terminal-viewport" style={styles.fill} onLayout={(event) => setViewportHeight(event.nativeEvent.layout.height)}>
           {terminalWrap ? terminalList : (
@@ -398,6 +423,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
           <Text style={styles.placeholderText}>{placeholder}</Text>
         </View>
       ) : null}
+      {compact ? <View testID="terminal-floating-status" style={styles.floating} pointerEvents="box-none">{status}</View> : null}
       {pinchSize !== null ? (
         <View style={styles.sizeBadge} pointerEvents="none">
           <Text style={styles.sizeBadgeText}>
@@ -469,6 +495,21 @@ const styles = StyleSheet.create({
   historyStatus: { paddingHorizontal: 12, paddingBottom: 5, flexDirection: 'row', alignItems: 'center', gap: 8 },
   stableHistoryStatus: { height: 37 },
   historyStatusText: { flex: 1, color: colors.muted, fontSize: 12, lineHeight: 17 },
+  // Bottom left, beside "回到底部": the top of the list holds the history edge's own message.
+  floating: { position: 'absolute', bottom: 8, left: 8, right: 128, alignItems: 'flex-start', gap: 4 },
+  floatingStatus: {
+    maxWidth: '100%',
+    paddingLeft: 10,
+    paddingRight: 4,
+    paddingTop: 4,
+    paddingBottom: 4,
+    borderRadius: 8,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  floatingStatusText: { flexShrink: 1, color: colors.muted, fontSize: 12, lineHeight: 17 },
+  floatingNotice: { maxWidth: '100%', paddingLeft: 10, paddingRight: 10, paddingTop: 6, paddingBottom: 6, borderRadius: 8, backgroundColor: colors.surface, overflow: 'hidden' },
   historyLoad: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: 6, backgroundColor: colors.surfaceRaised },
   historyLoadText: { color: colors.blue, fontSize: 12 },
   tools: { alignSelf: 'flex-end', paddingHorizontal: 12, paddingVertical: 5 },

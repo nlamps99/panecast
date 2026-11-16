@@ -59,7 +59,6 @@ export function KeyBar({ session, disabled = false }: { session: TerminalSession
   const { keyHaptics, extraKeyRow } = usePrefs();
   const machine = useMachine();
   const profiles = useKeyboardProfiles();
-  const editor = useSheet();
   const computerId = machine.computer?.id ?? 'demo', workspaceId = session.getState().target?.workspaceId ?? null;
   const profile = selectedKeyboardProfile(profiles, computerId, workspaceId);
   const mainRow: KeySpec[] = shortcutsFor(profile).map((shortcut) => ({ ...shortcut, action: (withCtrl) => shortcutAction(shortcut, withCtrl) }));
@@ -84,7 +83,6 @@ export function KeyBar({ session, disabled = false }: { session: TerminalSession
 
   return (
     <View style={styles.bar}>
-      <Pressable onPress={editor.open} style={styles.profile} accessibilityRole="button" accessibilityLabel={`快捷键配置：${profile.name}，点按自定义`}><Text style={styles.profileText}>{profile.name} · 自定义按键 ›</Text></Pressable>
       {ctrlOn ? <View style={[styles.row, styles.rowDense]}>{row(CTRL_LETTERS)}</View> : null}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scrollingKeys} keyboardShouldPersistTaps="always">{row(mainRow, true)}</ScrollView>
       {extraKeyRow ? (
@@ -106,9 +104,27 @@ export function KeyBar({ session, disabled = false }: { session: TerminalSession
           {row(EXTRA_ROW)}
         </View>
       ) : null}
-      <KeyboardProfileEditor visible={editor.visible} onClose={() => editor.close()} onClosed={editor.onClosed} computerId={computerId} workspaceId={workspaceId} />
     </View>
   );
+}
+
+/**
+ * The key bar's profile: a button for the row of input shortcuts above the
+ * keys, and its editor. The editor is separate because it has text fields:
+ * it must stay mounted when the keyboard hides that row.
+ */
+export function useKeyboardProfileEditor(session: TerminalSession) {
+  const machine = useMachine();
+  const profiles = useKeyboardProfiles();
+  const editor = useSheet();
+  const computerId = machine.computer?.id ?? 'demo', workspaceId = session.getState().target?.workspaceId ?? null;
+  const profile = selectedKeyboardProfile(profiles, computerId, workspaceId);
+  return {
+    button: <Pressable onPress={editor.open} style={styles.profile} accessibilityRole="button" accessibilityLabel={`快捷键配置：${profile.name}，点按自定义`}>
+      <Text style={styles.profileText} numberOfLines={1}>{profile.name} · 自定义按键 ›</Text>
+    </Pressable>,
+    editor: <KeyboardProfileEditor visible={editor.visible} onClose={() => editor.close()} onClosed={editor.onClosed} computerId={computerId} workspaceId={workspaceId} />,
+  };
 }
 
 /** Sends on touch-down. Keys marked `repeat` repeat while held, but never faster than the relay answers. */
@@ -194,8 +210,8 @@ function tapHaptic(): void {
 }
 
 const styles = StyleSheet.create({
-  profile: { alignSelf: 'flex-end', paddingVertical: 2 },
-  profileText: { color: colors.muted, fontSize: 11 },
+  profile: { flexShrink: 1, marginLeft: 'auto' },
+  profileText: { color: colors.muted, fontSize: 12, paddingVertical: 4 },
   scrollingKeys: { gap: 5, flexGrow: 1 },
   fixedKey: { flexGrow: 1, flexShrink: 0, flexBasis: 34, minWidth: 34 },
   fixedWideKey: { flexBasis: 45, minWidth: 45 },

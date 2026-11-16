@@ -25,7 +25,9 @@ jest.mock('../../platform/desktop', () => ({ desktopBridge: () => mockDesktop ? 
 jest.mock('../../platform/alert', () => ({ Alert: {} }));
 jest.mock('../../input/attachImage', () => ({}));
 jest.mock('../../state/hooks', () => ({ useMachine: () => ({ channel: mockChannel, computer: { id: `input-test-${mockComputerId}` } }) }));
-jest.mock('../KeyBar', () => ({ KeyBar: () => 'PHONE_KEYS' }));
+jest.mock('../KeyBar', () => ({ KeyBar: () => 'PHONE_KEYS', useKeyboardProfileEditor: () => ({ button: 'PHONE_PROFILE', editor: null }) }));
+let mockKeyboard = false;
+jest.mock('../useKeyboardVisible', () => ({ useKeyboardVisible: () => mockKeyboard }));
 jest.mock('../InputLibrarySheet', () => ({ InputLibrarySheet: () => null }));
 jest.mock('../ExpandedComposer', () => ({ ExpandedComposer: () => null }));
 jest.mock('../Sheet', () => ({ useSheet: () => ({ visible: false, open: jest.fn(), close: jest.fn(), onClosed: jest.fn() }) }));
@@ -122,4 +124,18 @@ it('retains the phone key row and command mode outside the desktop client', asyn
   expect(session.sendText).not.toHaveBeenCalled();
   await key('Enter');
   expect(session.submitLine).toHaveBeenCalledWith('手机草稿');
+});
+
+it('puts the key profile in the shortcut row and hides that row while the phone keyboard is up', async () => {
+  mockDesktop = false;
+  await act(async () => root.render(<Harness />));
+  expect(container.textContent).toContain('常用输入 · 最近输入');
+  expect(container.textContent).toContain('PHONE_PROFILE');
+  mockKeyboard = true;
+  try {
+    await act(async () => root.render(<Harness key="typing" />));
+    expect(container.textContent).not.toContain('常用输入');
+    expect(container.textContent).not.toContain('PHONE_PROFILE');
+    expect(container.textContent).toContain('PHONE_KEYS');
+  } finally { mockKeyboard = false; }
 });

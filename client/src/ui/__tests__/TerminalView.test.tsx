@@ -14,6 +14,7 @@ let mockWrap = true;
 let mockReadOnly = false;
 let mockShowKeys = false;
 let mockOS = 'ios';
+let mockCompact = false;
 
 jest.mock('react-native', () => {
   // A host adapter keeps the real TerminalView, session and history behavior
@@ -75,7 +76,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  mockOS = 'ios'; mockWrap = true; mockReadOnly = false; mockShowKeys = false; mockNative.clear(); mockScrollToOffset.mockClear(); mockScrollTo.mockClear();
+  mockOS = 'ios'; mockCompact = false; mockWrap = true; mockReadOnly = false; mockShowKeys = false; mockNative.clear(); mockScrollToOffset.mockClear(); mockScrollTo.mockClear();
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   channel = new Channel(); session = new TerminalSession(channel);
 });
@@ -83,7 +84,7 @@ afterEach(async () => { await act(async () => root.unmount()); session.dispose()
 afterAll(() => dom.window.close());
 function Harness() {
   const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
-  return <><TerminalView session={session} state={state} fontSize={13} onFontSizeChange={() => {}} placeholder={null} onTap={() => {}} readOnly={mockReadOnly} />{mockShowKeys ? <KeyBar session={session} /> : null}</>;
+  return <><TerminalView session={session} state={state} fontSize={13} onFontSizeChange={() => {}} placeholder={null} onTap={() => {}} readOnly={mockReadOnly} compact={mockCompact} />{mockShowKeys ? <KeyBar session={session} /> : null}</>;
 }
 function callback(id: string, name: string, event: unknown) { (mockNative.get(id)?.[name] as (event: unknown) => void)(event); }
 function scroll(offset: number, content = 2000) { return { nativeEvent: { contentOffset: { x: 0, y: offset }, contentSize: { width: 390, height: content }, layoutMeasurement: { width: 390, height: 480 } } }; }
@@ -259,6 +260,17 @@ it('keeps history retry visible outside the horizontal content and replaces expi
   await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(100)));
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0)));
   expect(session.getState().browse).toBeNull();
+});
+it('floats phone history status over the terminal only while browsing', async () => {
+  mockCompact = true;
+  await mount();
+  expect(container.textContent).not.toContain('搜索 · 复制输出');
+  expect(container.textContent).not.toContain('向上滑动查看历史');
+  expect(container.querySelector('[data-testid="terminal-history-status"]')).toBeNull();
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(100)));
+  const status = container.querySelector('[data-testid="terminal-history-status"]');
+  expect(status?.textContent).toContain('行历史');
+  expect(status?.closest('[data-testid="terminal-floating-status"]')).not.toBeNull();
 });
 it('distinguishes a server with no scrollback without requiring repeated manual loads', async () => {
   mockWrap = false;

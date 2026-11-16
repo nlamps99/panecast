@@ -89,6 +89,19 @@ describe('layoutRow', () => {
     expect(plain(`\u001b[2m${'━'.repeat(80)}\u001b[0m`, 20)).toEqual(['━'.repeat(20)]);
   });
 
+  it('fits box borders to the screen and keeps their closing corner', () => {
+    expect(plain(`╭${'─'.repeat(148)}╮`, 20)).toEqual([`╭${'─'.repeat(18)}╮`]);
+    expect(plain(`╰${'─'.repeat(148)}╯`, 20)).toEqual([`╰${'─'.repeat(18)}╯`]);
+    expect(plain(`╭${'─'.repeat(10)}╮`, 20)).toEqual([`╭${'─'.repeat(10)}╮`]);
+  });
+
+  it('drops the right border of a framed row wider than the screen', () => {
+    const row = `│ ✻ Welcome to Claude Code!${' '.repeat(120)}│`;
+    expect(plain(row, 20)).toEqual(['│ ✻ Welcome to ', '  Claude Code!']);
+    // A box that fits keeps both borders.
+    expect(plain('│ ok │', 20)).toEqual(['│ ok │']);
+  });
+
   it('wraps rule-like rows that contain other text', () => {
     expect(plain(`── Title ${'─'.repeat(40)}`, 20)).toHaveLength(3);
   });
@@ -100,6 +113,57 @@ describe('layoutRow', () => {
       ['cd', FLAG_BOLD],
       ['ef', 0],
     ]);
+  });
+
+  it('never wraps the padding inside a status line into a blank line', () => {
+    const row = `  ? for shortcuts${' '.repeat(100)}◯ IDE disconnected${' '.repeat(20)}`;
+    const lines = plain(row, 48);
+    expect(lines).toHaveLength(2);
+    expect(lines[0].trim()).toBe('? for shortcuts');
+    expect(lines[1]).toBe('  ◯ IDE disconnected');
+  });
+
+  it('counts symbols the monospace font lacks as two cells', () => {
+    // ◯ comes from a fallback font, about a full em wide.
+    // Counted as one cell, this row fit 49 columns and its last letter was cut off.
+    const row = `${'x'.repeat(30)} ◯ IDE disconnected`;
+    expect(plain(row, 49)).toEqual([`${'x'.repeat(30)} ◯ IDE `, 'disconnected']);
+    expect(plain(row, 50)).toEqual([row]);
+    // ⏺ is drawn as GeistMono's ● and box drawing is in the font: one cell each.
+    expect(plain(`⏺ ${'a'.repeat(8)}`, 10)).toEqual([`⏺ ${'a'.repeat(8)}`]);
+    expect(plain('│'.repeat(10), 10)).toEqual(['│'.repeat(10)]);
+  });
+
+  it('indents continuation lines to the text after a marker', () => {
+    expect(plain('⏺ The quick brown fox jumps', 12)).toEqual(['⏺ The quick ', '  brown fox ', '  jumps']);
+    // ⎿ comes from a fallback font, but is drawn about one cell wide.
+    expect(plain('  ⎿  Updated layout.ts with one addition', 20)).toEqual([
+      '  ⎿  Updated ',
+      '     layout.ts with ',
+      '     one addition',
+    ]);
+    expect(plain('  1. first step of many', 14)).toEqual(['  1. first ', '     step of ', '     many']);
+    expect(plain('      10 -  const size = Math.round(width);', 30)).toEqual(['      10 -  const size = ', '            Math.round(width);']);
+  });
+
+  it('keeps plain indentation for wrapped code', () => {
+    expect(plain('    return first + second', 14)).toEqual(['    return ', '    first + ', '    second']);
+  });
+
+  it('leaves most of the width to deeply indented continuations', () => {
+    const lines = plain(`${' '.repeat(30)}aaa bbb ccc ddd eee fff`, 40);
+    expect(lines[1].startsWith(' '.repeat(16))).toBe(true);
+    expect(lines[1][16]).not.toBe(' ');
+  });
+
+  it('does not treat a number followed by a word as a marker', () => {
+    expect(plain('2024 was a long year indeed', 12)).toEqual(['2024 was a ', 'long year ', 'indeed']);
+  });
+
+  it('keeps closing punctuation off the start of a line', () => {
+    expect(plain('你好世界，再见', 8)).toEqual(['你好世', '界，再见']);
+    expect(plain('一二三四。', 8)).toEqual(['一二三', '四。']);
+    expect(plain('一二三，', 8)).toEqual(['一二三，']);
   });
 
   it('asks for text presentation of emoji-prone symbols', () => {

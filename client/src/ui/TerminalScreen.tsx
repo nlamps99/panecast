@@ -1,6 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
 import { confirmClose } from '../platform/confirm';
 import { desktopBridge } from '../platform/desktop';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,14 +16,15 @@ import { describeError } from '../session/terminalSession';
 import { TerminalConversationStore } from '../session/terminalConversation';
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { backToWorkspaces } from '../state/navigation';
-import { setPrefs, usePrefs } from '../state/prefs';
+import { clampFontSize, FONT_SIZE_MAX, FONT_SIZE_MIN, setPrefs, usePrefs } from '../state/prefs';
 import { sessionMemory } from '../state/sessionMemory';
 import { BatteryBadge } from './BatteryBadge';
 import { Icon } from './Icon';
 import { InputBar } from './InputBar';
 import { ProjectBrowser } from './ProjectBrowser';
 import { statusBanner, statusColor, statusLabel } from './status';
-import { TerminalView } from './TerminalView';
+import { Sheet, SheetRow, useSheet } from './Sheet';
+import { terminalColumns, TerminalView, type TerminalViewHandle } from './TerminalView';
 import { TerminalChatView } from './TerminalChatView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
@@ -39,6 +40,10 @@ import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBa
  *
  * In the chip row, "+" opens a new terminal in the workspace and × (or a long
  * press) closes one on the computer. The title row shows the Mac's battery.
+ *
+ * On a phone the title row also holds the chat/terminal switch and a "⋯"
+ * menu (files, search and copy, wrapping, text size), so the rows that held
+ * them go to the terminal. The desktop keeps them in rows of their own.
  */
 export function TerminalScreen() {
   const { width, height } = useWindowDimensions();
@@ -53,13 +58,17 @@ export function TerminalScreen() {
 
 function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const machine = useMachine();
   const { channel, session } = machine;
   const status = useConnectionStatus(channel);
   const state = useStore(session);
   const { workspaces, surfaces, known } = useStore(machine.workspaces);
-  const { fontSize, inputMode, desktopInputMode, terminalPresentation } = usePrefs();
+  const { fontSize, inputMode, desktopInputMode, terminalPresentation, terminalWrap } = usePrefs();
   const desktop = desktopBridge() !== null;
+  const compact = !desktop;
+  const menu = useSheet();
+  const terminalView = useRef<TerminalViewHandle>(null);
   const chat = terminalPresentation === 'chat';
   const conversation = useMemo(() => new TerminalConversationStore(channel, session, machine.terminalRepository), [channel, session, machine.terminalRepository]);
   const inputRef = useRef<TerminalInputHandle>(null);
@@ -134,11 +143,19 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   // The last reading stays in the store while disconnected; it is stale, so hide it.
   const showBattery = isOpen && battery !== null;
   const side = { paddingLeft: insets.left, paddingRight: insets.right };
+  const presentationTabs = (['chat', 'terminal'] as const).map(mode => <Pressable key={mode} onPress={() => setPrefs({ terminalPresentation: mode })}
+    style={[compact ? styles.segmentTab : styles.presentationTab, mode === terminalPresentation && styles.presentationSelected]} accessibilityRole="tab" accessibilityState={{ selected: mode === terminalPresentation }}
+    accessibilityLabel={mode === 'chat' ? '对话模式' : '终端模式'}>
+    <Text style={[styles.presentationText, mode === terminalPresentation && styles.presentationTextSelected]}>{mode === 'chat' ? '对话' : '终端'}</Text>
+  </Pressable>);
+  const changeFontSize = (delta: number) => setPrefs({ fontSize: clampFontSize(fontSize + delta) });
+  // The phone's terminal spans the window, less the safe area.
+  const columns = sidebar ? null : terminalColumns(windowWidth - insets.left - insets.right, fontSize);
 
   return (
     // Android too: edge-to-edge (forced from API 35) stops adjustResize from shrinking the window.
     <KeyboardAvoidingView nativeID="panecast-terminal" style={styles.screen} behavior="padding">
-      <View style={[styles.header, side, { paddingTop: insets.top }]}>
+      <View style={[styles.header, compact && styles.compactHeader, side, { paddingTop: insets.top }]}>
         <View style={styles.titleRow}>
           <Pressable
             onPress={backToWorkspaces}
@@ -160,17 +177,22 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
               </Text>
             </View>
           </View>
-          {target ? <Pressable onPress={() => setProjectOpen(true)} style={styles.back} accessibilityRole="button" accessibilityLabel="查看项目文件与 Git 改动"><Text style={{ color: colors.blue, fontSize: 13 }}>文件</Text></Pressable> : null}
+          {compact ? <View style={styles.segment} accessibilityRole="tablist">{presentationTabs}</View> : null}
+          {!compact && target ? <Pressable onPress={() => setProjectOpen(true)} style={styles.back} accessibilityRole="button" accessibilityLabel="查看项目文件与 Git 改动"><Text style={{ color: colors.blue, fontSize: 13 }}>文件</Text></Pressable> : null}
           {showBattery || machine.mode === 'demo' ? (
-            <View style={styles.badges}>
+            <View style={[styles.badges, compact && styles.compactBadges]}>
               {showBattery ? <BatteryBadge battery={battery} onPress={() => void host.refresh()} /> : null}
               {machine.mode === 'demo' ? <Text style={styles.demoBadge}>演示</Text> : null}
             </View>
           ) : null}
+          {compact ? <Pressable onPress={menu.open} style={({ pressed }) => [styles.back, pressed && styles.pressed]} hitSlop={4}
+            accessibilityRole="button" accessibilityLabel="更多：文件、搜索复制、折行、字号">
+            <Text style={styles.moreText}>⋯</Text>
+          </Pressable> : null}
         </View>
         {!keyboardVisible && target && siblings.length > 0 ? (
           <>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chips, compact && styles.compactChips]}>
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
                 const itemActivity = activity[activityKey({ workspaceId: target.workspaceId, surfaceId: item.id })];
@@ -237,17 +259,15 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
           </>
         ) : null}
       </View>
-      <View style={[styles.presentation, side]} accessibilityRole="tablist">
-        {(['chat', 'terminal'] as const).map(mode => <Pressable key={mode} onPress={() => setPrefs({ terminalPresentation: mode })}
-          style={[styles.presentationTab, mode === terminalPresentation && styles.presentationSelected]} accessibilityRole="tab" accessibilityState={{ selected: mode === terminalPresentation }}
-          accessibilityLabel={mode === 'chat' ? '对话模式' : '终端模式'}>
-          <Text style={[styles.presentationText, mode === terminalPresentation && styles.presentationTextSelected]}>{mode === 'chat' ? '对话' : '终端'}</Text>
-        </Pressable>)}
+      {!compact ? <View style={[styles.presentation, side]} accessibilityRole="tablist">
+        {presentationTabs}
         {chat ? <Text style={styles.chatHint} numberOfLines={1}>直接发送到当前终端</Text> : null}
-      </View>
+      </View> : null}
       {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
       <View style={[styles.terminal, side]}>
         {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} readOnly={readOnly} onShowTerminal={() => setPrefs({ terminalPresentation: 'terminal' })} /> : <TerminalView
+          ref={terminalView}
+          compact={compact}
           active={terminalActive}
           readOnly={readOnly}
           key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}`}
@@ -268,6 +288,25 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
           presentation={terminalPresentation} onSubmitLine={chat ? text => conversation.send(text) : undefined} />
       </View>
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
+      {compact ? <Sheet visible={menu.visible} title="终端" onClose={() => menu.close()} onClosed={menu.onClosed}>
+        {target ? <SheetRow title="项目文件与 Git 改动" detail="浏览目录，查看未提交的改动" divided={false} onPress={() => menu.close(() => setProjectOpen(true))} /> : null}
+        {!chat ? <>
+          <SheetRow icon="search" title="搜索 · 复制输出" divided={Boolean(target)} accessibilityLabel="搜索和复制终端输出" onPress={() => menu.close(() => terminalView.current?.openTools())} />
+          <SheetRow title="自动折行" detail={terminalWrap ? '按手机宽度折行，续行与上一行的正文对齐' : '保留电脑上的原始列宽，左右滑动查看'}
+            accessibilityLabel={`自动折行：${terminalWrap ? '开' : '关'}`} selected={terminalWrap} onPress={() => setPrefs({ terminalWrap: !terminalWrap })}
+            trailing={<Switch value={terminalWrap} onValueChange={value => setPrefs({ terminalWrap: value })} trackColor={{ false: colors.divider, true: colors.green }} ios_backgroundColor={colors.divider} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />} />
+          <View style={styles.sizeRow}>
+            <View style={styles.sizeText}>
+              <Text style={styles.sizeTitle}>文字大小</Text>
+              <Text style={styles.sizeDetail}>{fontSize} pt{columns ? ` · 每行 ${columns} 列` : ''} · 也可以双指缩放</Text>
+            </View>
+            <Pressable onPress={() => changeFontSize(-1)} disabled={fontSize <= FONT_SIZE_MIN} style={({ pressed }) => [styles.sizeButton, pressed && styles.pressed, fontSize <= FONT_SIZE_MIN && styles.chipBusy]}
+              accessibilityRole="button" accessibilityLabel="缩小文字" accessibilityValue={{ text: `${fontSize} pt` }}><Text style={styles.sizeButtonText}>A−</Text></Pressable>
+            <Pressable onPress={() => changeFontSize(1)} disabled={fontSize >= FONT_SIZE_MAX} style={({ pressed }) => [styles.sizeButton, pressed && styles.pressed, fontSize >= FONT_SIZE_MAX && styles.chipBusy]}
+              accessibilityRole="button" accessibilityLabel="放大文字" accessibilityValue={{ text: `${fontSize} pt` }}><Text style={styles.sizeButtonText}>A+</Text></Pressable>
+          </View>
+        </> : null}
+      </Sheet> : null}
     </KeyboardAvoidingView>
   );
 }
@@ -284,6 +323,18 @@ const styles = StyleSheet.create({
   presentationTab: { borderRadius: 7, paddingHorizontal: 16, paddingVertical: 7 }, presentationSelected: { backgroundColor: colors.surfaceRaised },
   presentationText: { color: colors.muted, fontSize: 13 }, presentationTextSelected: { color: colors.green, fontWeight: '600' },
   chatHint: { flex: 1, textAlign: 'right', paddingRight: 8, color: colors.muted, fontSize: 11 },
+  segment: { flexDirection: 'row', height: 30, padding: 2, borderRadius: 8, backgroundColor: colors.surface },
+  segmentTab: { paddingHorizontal: 10, justifyContent: 'center', borderRadius: 6 },
+  moreText: { color: colors.ink, fontSize: 20, lineHeight: 22, fontWeight: '700' },
+  compactHeader: { paddingBottom: 6 },
+  compactBadges: { marginRight: 0 },
+  compactChips: { paddingTop: 4 },
+  sizeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 54, paddingHorizontal: 18, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider },
+  sizeText: { flex: 1, gap: 2 },
+  sizeTitle: { color: colors.ink, fontSize: 16 },
+  sizeDetail: { color: colors.muted, fontSize: 12 },
+  sizeButton: { width: 44, height: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceRaised },
+  sizeButtonText: { color: colors.ink, fontSize: 15, fontWeight: '600' },
   screen: { flex: 1, backgroundColor: colors.canvas },
   header: {
     backgroundColor: colors.surfaceSunken,

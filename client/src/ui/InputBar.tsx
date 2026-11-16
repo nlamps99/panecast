@@ -29,7 +29,8 @@ import { Keys } from '../protocol/keys';
 import { describeError, type SendReceipt, type TerminalSession } from '../session/terminalSession';
 import { useMachine } from '../state/hooks';
 import { setPrefs, usePrefs } from '../state/prefs';
-import { KeyBar } from './KeyBar';
+import { KeyBar, useKeyboardProfileEditor } from './KeyBar';
+import { useKeyboardVisible } from './useKeyboardVisible';
 import { InputLibrarySheet } from './InputLibrarySheet';
 import { useSheet } from './Sheet';
 import { colors, fonts } from './theme';
@@ -80,6 +81,10 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   const chat = presentation === 'chat';
   const mode = chat ? 'line' : desktop ? desktopInputMode : inputMode;
   const [keysOpen, setKeysOpen] = useState(false);
+  const phoneKeys = !desktop && (!chat || keysOpen);
+  const profileEditor = useKeyboardProfileEditor(session);
+  // While a phone types, the keys and the input are all that stay below the terminal.
+  const keyboardVisible = useKeyboardVisible();
   const { channel, computer } = useMachine();
   const target = session.getState().target;
   const library = inputLibrary(computer?.id ?? 'demo');
@@ -337,7 +342,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
     <View>
       {dragging ? <View style={{ padding: 14, borderWidth: 1, borderColor: colors.green, borderRadius: 10, backgroundColor: colors.surfaceRaised }}><Text style={{ color: colors.green, textAlign: 'center' }}>松开文件，上传到 {computer?.name ?? '当前电脑'}</Text></View> : null}
       {message ? <Text style={[styles.message, messageStyle]}>{message}</Text> : null}
-      <View style={styles.libraryRow}>
+      {desktop || !keyboardVisible ? <View style={[styles.libraryRow, !desktop && styles.phoneLibraryRow]}>
         {desktop ? <Text style={styles.libraryText}>{mode === 'live' ? '直接输入 · Tab、方向键、Ctrl 快捷键' : 'Enter 发送 · Shift+Enter 换行'}</Text> : null}
         {chat && !desktop ? <Pressable onPress={() => setKeysOpen(!keysOpen)} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
         <Pressable onPress={sheet.open} disabled={!ready} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
@@ -345,8 +350,10 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
         {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
         {libraryState.error ? <Text style={styles.messageError}>{libraryState.error}</Text> : null}
         {!session.isConnected ? <Text style={styles.libraryText}>离线 · 可以继续写草稿</Text> : null}
-      </View>
-      {!desktop && (!chat || keysOpen) ? <KeyBar session={session} disabled={disabled || !session.isConnected || sending} /> : null}
+        {phoneKeys ? profileEditor.button : null}
+      </View> : null}
+      {phoneKeys ? <KeyBar session={session} disabled={disabled || !session.isConnected || sending} /> : null}
+      {phoneKeys ? profileEditor.editor : null}
       <View style={styles.row}>
         {!chat && !desktop ? <View style={styles.segment} accessibilityRole="tablist">
           {(['line', 'live'] as const).map((item) => (
@@ -457,6 +464,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
 
 const styles = StyleSheet.create({
   libraryRow: { paddingHorizontal: 12, paddingTop: 4, flexDirection: 'row', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
+  phoneLibraryRow: { justifyContent: 'flex-start', columnGap: 16 },
   libraryText: { color: colors.muted, fontSize: 12, paddingVertical: 4 },
   message: { color: colors.yellow, fontSize: 12, paddingHorizontal: 14, paddingTop: 4 },
   messageHint: { color: colors.yellow },

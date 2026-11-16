@@ -12,7 +12,7 @@ jest.mock('react-native', () => {
   const View = ({ children }: { children?: ReactNode }) => React.createElement('div', null, children);
   const Pressable = ({ children, onPress, disabled, accessibilityLabel }: { children?: ReactNode; onPress?: (event: unknown) => void; disabled?: boolean; accessibilityLabel?: string }) =>
     React.createElement('button', { onClick: () => onPress?.({ stopPropagation() {} }), disabled, 'aria-label': accessibilityLabel }, typeof children === 'function' ? null : children);
-  return { View, ScrollView: View, Text: View, KeyboardAvoidingView: View, ActivityIndicator: () => null, Pressable,
+  return { View, ScrollView: View, Text: View, KeyboardAvoidingView: View, ActivityIndicator: () => null, Pressable, Switch: () => null,
     Platform: { OS: 'ios' }, Alert: { alert: (...args: unknown[]) => mockAlert(...(args as [string, string, AlertButton[]])) },
     useWindowDimensions: () => ({ width: 390, height: 844 }), StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 } };
 });
@@ -28,17 +28,37 @@ jest.mock('../../state/hooks', () => {
     useStore: (store: { subscribe: (fn: () => void) => () => void; getState: () => unknown }) => React.useSyncExternalStore(store.subscribe, store.getState, store.getState) };
 });
 jest.mock('../../state/navigation', () => ({ backToWorkspaces: () => mockBack() }));
-jest.mock('../../state/prefs', () => ({ setPrefs: jest.fn(), usePrefs: () => ({ fontSize: 13, inputMode: 'line', desktopInputMode: 'line', terminalPresentation: 'terminal', tabletSidebar: false }) }));
+jest.mock('../../state/prefs', () => ({ setPrefs: jest.fn(), clampFontSize: (size: number) => size, FONT_SIZE_MIN: 9, FONT_SIZE_MAX: 20,
+  usePrefs: () => ({ fontSize: 13, inputMode: 'line', desktopInputMode: 'line', terminalPresentation: 'terminal', terminalWrap: true, tabletSidebar: false }) }));
+jest.mock('../Sheet', () => {
+  const React = jest.requireActual('react') as typeof import('react');
+  return {
+    useSheet: () => {
+      const [visible, setVisible] = React.useState(false);
+      return { visible, open: () => setVisible(true), close: (then?: () => void) => { setVisible(false); then?.(); }, onClosed: () => {} };
+    },
+    Sheet: ({ visible, children }: { visible: boolean; children?: ReactNode }) => visible ? React.createElement('section', null, children) : null,
+    SheetRow: ({ title, onPress, accessibilityLabel }: { title: string; onPress: () => void; accessibilityLabel?: string }) =>
+      React.createElement('button', { onClick: onPress, 'aria-label': accessibilityLabel ?? title }, title),
+  };
+});
 jest.mock('../../state/sessionMemory', () => ({ sessionMemory: { computer: () => ({ recent: [] }), visit: jest.fn() } }));
 jest.mock('../../session/hostStatus', () => ({ HostStatusStore: class {
   private state = { battery: null };
   getState = () => this.state; subscribe = () => () => {}; start() {} stop() {} refresh() {}
 } }));
 jest.mock('../../session/terminalConversation', () => ({ TerminalConversationStore: class { start() {} stop() {} dispose() {} } }));
-jest.mock('../TerminalView', () => ({ TerminalView: () => null }));
+const mockOpenTools = jest.fn();
+jest.mock('../TerminalView', () => {
+  const React = jest.requireActual('react') as typeof import('react');
+  return {
+    terminalColumns: () => 48,
+    TerminalView: ({ ref }: { ref?: React.Ref<{ openTools: () => void }> }) => { React.useImperativeHandle(ref, () => ({ openTools: () => mockOpenTools() })); return null; },
+  };
+});
 jest.mock('../TerminalChatView', () => ({ TerminalChatView: () => null }));
 jest.mock('../InputBar', () => ({ InputBar: () => null }));
-jest.mock('../ProjectBrowser', () => ({ ProjectBrowser: () => null }));
+jest.mock('../ProjectBrowser', () => ({ ProjectBrowser: () => 'PROJECT_BROWSER' }));
 jest.mock('../BatteryBadge', () => ({ BatteryBadge: () => null }));
 jest.mock('../WorkspaceSidebar', () => ({ WorkspaceSidebar: () => null }));
 jest.mock('../useKeyboardVisible', () => ({ useKeyboardVisible: () => false }));
@@ -119,4 +139,28 @@ it('closes the workspace with its last terminal and returns to the list', async 
 it('offers no close button for a read-only source', async () => {
   await mount(2, true);
   expect(button('关闭终端 terminal 0')).toBeNull();
+});
+
+it('keeps the phone header to the title row and the terminal tabs', async () => {
+  await mount();
+  // The chat/terminal switch sits in the title row; files and display options are in the menu.
+  expect(button('对话模式')).not.toBeNull();
+  expect(button('终端模式')).not.toBeNull();
+  expect(button('查看项目文件与 Git 改动')).toBeNull();
+  expect(container.textContent).not.toContain('直接发送到当前终端');
+
+  await act(async () => button('更多：文件、搜索复制、折行、字号')!.click());
+  expect(container.textContent).toContain('13 pt · 每行 48 列');
+  await act(async () => button('放大文字')!.click());
+  const { setPrefs } = jest.requireMock('../../state/prefs') as { setPrefs: jest.Mock };
+  expect(setPrefs).toHaveBeenLastCalledWith({ fontSize: 14 });
+  await act(async () => button('自动折行：开')!.click());
+  expect(setPrefs).toHaveBeenLastCalledWith({ terminalWrap: false });
+
+  await act(async () => button('搜索和复制终端输出')!.click());
+  expect(mockOpenTools).toHaveBeenCalledTimes(1);
+
+  await act(async () => button('更多：文件、搜索复制、折行、字号')!.click());
+  await act(async () => button('项目文件与 Git 改动')!.click());
+  expect(container.textContent).toContain('PROJECT_BROWSER');
 });
