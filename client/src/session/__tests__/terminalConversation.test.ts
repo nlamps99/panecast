@@ -26,14 +26,33 @@ beforeEach(async () => { channel = new Channel(); terminal = new TerminalSession
 afterEach(() => { store.dispose(); terminal.dispose(); });
 
 it('sends exact Chinese text and Enter through the selected terminal, then reconciles its real transcript echo', async () => {
-  expect((await store.send('请检查这个项目\n保留中文')).status).toBe('sent');
+  expect((await store.send('请检查这个项目，保留中文')).status).toBe('sent');
   const sends = channel.calls.filter(call => ['surface.send_text', 'surface.send_key'].includes(call.method));
-  expect(sends).toEqual([{ method: 'surface.send_text', params: { workspace_id: 'workspace', surface_id: 'surface', text: '请检查这个项目\n保留中文' } },
+  expect(sends).toEqual([{ method: 'surface.send_text', params: { workspace_id: 'workspace', surface_id: 'surface', text: '请检查这个项目，保留中文' } },
     { method: 'surface.send_key', params: { workspace_id: 'workspace', surface_id: 'surface', key: 'enter' } }]);
   expect(channel.calls.some(call => call.method.startsWith('agent.'))).toBe(false);
   await store.refresh();
-  channel.snapshot = { ...channel.snapshot, revision: 'r2', items: [message('echo', 101, '请检查这个项目\n保留中文')] };
+  channel.snapshot = { ...channel.snapshot, revision: 'r2', items: [message('echo', 101, '请检查这个项目，保留中文')] };
   await store.refresh(); expect(store.getState().submissions).toHaveLength(0); expect(store.getState().items).toHaveLength(1);
+});
+
+it('preserves a multi-line draft on older gateways instead of submitting each line separately', async () => {
+  expect((await store.send('first line\nsecond line')).status).toBe('not_sent');
+  expect(channel.calls.some(c => ['terminal.paste', 'surface.send_text', 'surface.send_key'].includes(c.method))).toBe(false);
+});
+
+it('sends multi-line chat as one bracketed paste when the host advertises support', async () => {
+  channel.snapshot = { ...channel.snapshot, input_method: 'terminal.paste' }; await store.refresh();
+  expect((await store.send('first line\nsecond line')).status).toBe('sent');
+  expect(channel.calls.filter(c => ['terminal.paste', 'surface.send_text', 'surface.send_key'].includes(c.method))).toEqual([
+    { method: 'terminal.paste', params: { workspace_id: 'workspace', surface_id: 'surface', text: 'first line\nsecond line', submit_key: 'return' } },
+  ]);
+});
+
+it('keeps free text out of a live choice dialog and preserves it as a draft', async () => {
+  for (const push of channel.pushes) push({ type: 'screen.full', surfaceId: 'surface', rev: 1, rows: ['Choose environment:', '› 1. Staging', '  2. Production', 'Enter to select · Esc to cancel'], cols: 80, rowsCount: 4, cursor: { x: 0, y: 0 } });
+  expect((await store.send('my draft')).status).toBe('not_sent');
+  expect(channel.calls.some(c => ['terminal.paste', 'surface.send_text', 'surface.send_key'].includes(c.method))).toBe(false);
 });
 
 it('retains older pages and does not reload exhausted history on a head poll', async () => {

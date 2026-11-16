@@ -18,3 +18,9 @@ test('multiple text parts share one preview budget', () => {
   const item = agentItem({ id: 'user', type: 'userMessage', content: Array.from({ length: 8 }, () => ({ type: 'text', text: 'x'.repeat(16_000) })) });
   expect(itemText(item!)).toHaveLength(16_000); expect(item?.truncated).toBe(true);
 });
+
+test('occupied conversations retain verified navigation to their original terminal', () => {
+  const thread = agentThread({ id: 'thread', writerState: 'other_process', originalTerminal: { workspaceId: 'cmux~ws', surfaceId: 'cmux~sf', sourceName: 'cmux' } });
+  expect(thread?.writerState).toBe('other_process');
+  expect(thread?.originalTerminal?.surfaceId).toBe('cmux~sf');
+});

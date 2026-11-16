@@ -13,6 +13,7 @@ import { colors, fonts } from '../../ui/theme';
 import { sessionMemory } from '../../state/sessionMemory';
 import { SourceNavigation } from '../../state/sourceNavigation';
 import { conversationCache } from '../../session/conversationCache';
+import { openSurface } from '../../state/navigation';
 
 const modes = { terminal: '终端', history: '仅历史', attach: '共享会话服务', managed: '独立会话服务' };
 const statuses = { online: '在线', offline: '离线', revoked: '未授权', unknown: '检查中' };
@@ -116,7 +117,7 @@ function SourcesContent() {
           <View style={styles.row}><Text style={styles.meta}>{modes[source.mode]} · {source.capabilities.control ? '可操作' : '只读'}</Text><Button label="刷新" onPress={() => void store.loadThreads()} /></View>
           {source.capabilities.control ? <Button label="新建对话" disabled={state.busy || connection.state !== 'open' || source.status !== 'online'} onPress={() => { setNewConversation(true); void store.loadProjects(); }} /> : null}
           {!state.loading && !state.threads.length ? <Text style={styles.help}>没有可显示的会话</Text> : null}
-          {state.threads.map((thread) => <Pressable key={thread.id} style={styles.card} onPress={() => { navigation.cancel(); navigation.markCompleted(`${computerId}:saved:`); if (routeSourceId) router.setParams({ sourceId: undefined, threadId: undefined }); void store.openThread(thread.id); }} accessibilityRole="button"><Text style={styles.cardTitle}>{thread.name}</Text><Text style={styles.meta} numberOfLines={2}>{thread.cwd}</Text><Text style={styles.meta}>{thread.live === false || thread.status?.type === 'history' ? '已保存的历史' : thread.status?.type === 'active' ? '正在运行 · 已连接' : thread.live ? '已连接 · 可继续' : thread.status?.type ?? '已保存'}</Text></Pressable>)}
+          {state.threads.map((thread) => <Pressable key={thread.id} style={styles.card} onPress={() => { navigation.cancel(); navigation.markCompleted(`${computerId}:saved:`); if (routeSourceId) router.setParams({ sourceId: undefined, threadId: undefined }); void store.openThread(thread.id); }} accessibilityRole="button"><Text style={styles.cardTitle}>{thread.name}</Text><Text style={styles.meta} numberOfLines={2}>{thread.cwd}</Text><Text style={styles.meta}>{thread.writerState === 'other_process' ? '仍在原 Codex 进程中打开' : thread.live === false || thread.status?.type === 'history' ? '已保存的历史' : thread.status?.type === 'active' ? '正在运行 · 已连接' : thread.live ? '已连接 · 可继续' : thread.status?.type ?? '已保存'}</Text></Pressable>)}
           {state.threadCursor ? <Button label="更多会话" disabled={state.loading} onPress={() => void store.loadThreads(true)} /> : null}
         </ScrollView>
       )}
@@ -126,6 +127,7 @@ function SourcesContent() {
 }
 
 function Conversation({ source, store, connected }: { source: SourceInfo; store: SourceStore; connected: boolean }) {
+  const machine = useMachine();
   const state = useStore(store);
   const [draft, setDraft] = useState('');
   const draftRef = useRef('');
@@ -200,9 +202,15 @@ function Conversation({ source, store, connected }: { source: SourceInfo; store:
           });
         }} />
       </View> : source.capabilities.control ? <View style={styles.resume}>
-        <Text style={styles.help}>继续这条已保存的对话，或基于它的历史开始一条新对话。</Text>
+        <Text style={styles.help}>{state.thread?.writerState === 'other_process'
+          ? '这条对话仍由原 Codex 终端或服务打开，即使任务已完成也可能被占用。可以去原终端操作；关闭原会话后可重试，也可以从历史新建一条对话。'
+          : '继续这条已保存的对话，或基于它的历史开始一条新对话。'}</Text>
         <View style={styles.row}>
-          <Button label={state.busy ? '正在连接…' : '继续对话'} disabled={!connected || !state.threadVerified || state.busy || state.loading} onPress={() => void store.action('agent.resume')} />
+          {state.thread?.originalTerminal ? <Button label="去原终端继续" disabled={!connected} onPress={() => {
+            const terminal = store.getState().thread?.originalTerminal;
+            if (terminal) openSurface(machine, terminal.workspaceId, terminal.surfaceId);
+          }} /> : null}
+          <Button label={state.busy ? '正在连接…' : state.thread?.writerState === 'other_process' ? '重试继续对话' : '继续对话'} disabled={!connected || !state.threadVerified || state.busy || state.loading} onPress={() => void store.action('agent.resume')} />
           <Button label="从历史新建" disabled={!connected || !state.threadVerified || state.busy || state.loading} onPress={() => void store.action('agent.fork')} />
         </View>
       </View> : <Text style={styles.help}>当前来源只读。请切换到已授权操作的 Codex 桌面来源来继续或新建对话。</Text>}

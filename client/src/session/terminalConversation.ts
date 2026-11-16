@@ -4,6 +4,7 @@ import { itemText, type AgentItem } from './sourceStore';
 import { describeError, type RpcChannel, type SendReceipt, type SurfaceTarget, type TerminalSession } from './terminalSession';
 import { plainTerminalRows } from '../terminal/textTools';
 import { terminalKey, type TerminalHead, type TerminalRepository } from './terminalRepository';
+import { terminalDecision } from './terminalPrompt';
 
 export type TerminalChatSubmission = { id: string; text: string; status: 'sending' | SendReceipt['status']; at: number; base: number; message?: string };
 export type TerminalConversationState = {
@@ -12,6 +13,7 @@ export type TerminalConversationState = {
   loading: boolean; loadingOlder: boolean; active: boolean; error: string | null; historyError: string | null; blocked: boolean;
   branch: string | null;
   fromCache?: boolean;
+  inputMethod?: 'terminal.paste';
   submissions: TerminalChatSubmission[]; output: string;
 };
 const same = (a: SurfaceTarget | null, b: SurfaceTarget | null) => a?.workspaceId === b?.workspaceId && a?.surfaceId === b?.surfaceId;
@@ -169,6 +171,7 @@ export class TerminalConversationStore {
         return !echo;
       });
       this.update({ conversationId: id, generation: epoch, provider: optionalText(raw.provider) ?? 'terminal', name: optionalText(raw.name) ?? '终端输出',
+        inputMethod: raw.input_method === 'terminal.paste' ? 'terminal.paste' : undefined,
         available: raw.available === true, items, submissions: submissions.length === this.state.submissions.length ? this.state.submissions : submissions, fromCache: false, loading: false, loadingOlder: cursor || changed ? false : this.state.loadingOlder, error: null, blocked: false,
         ...(!cursor ? { revision: optionalText(raw.revision), branch: optionalText(raw.branch), active: raw.active === true, headSequence: typeof raw.head_sequence === 'number' ? raw.head_sequence : this.state.headSequence } : {}),
         ...(raw.available !== true ? { cursor: null } : !unchanged && (cursor || changed || !this.historyStarted) ? { cursor: optionalText(raw.next_cursor) } : {}) });
@@ -189,13 +192,16 @@ export class TerminalConversationStore {
   async send(text: string): Promise<SendReceipt> {
     const target = this.state.target, current = this.terminal.getState().target;
     if (!text.trim()) return { status: 'not_sent', message: '请输入消息' };
+    if (/[\r\n]/.test(text) && this.state.inputMethod !== 'terminal.paste') return { status: 'not_sent', message: '电脑端尚未提供多行消息发送，请更新网关后重试；草稿已保留' };
+    const screen = this.terminal.getState();
+    if (!screen.fromCache && terminalDecision(plainTerminalRows(screen.screen.rows))) return { status: 'not_sent', message: '终端正在等待选择，请先使用上方的提问卡片；草稿已保留' };
     if (!target || !same(target, current) || this.state.blocked) return { status: 'not_sent', message: '终端已切换，草稿已保留' };
     const selection = this.terminal.selectionVersion;
     const id = `terminal-input:${Date.now()}:${++this.serial}`;
     const submission: TerminalChatSubmission = { id, text, at: Date.now(), base: this.state.headSequence, status: 'sending' };
     if (this.state.available === false) this.fallbackBaseline = plainTerminalRows(this.terminal.getState().screen.rows);
     this.update({ submissions: [...this.state.submissions, submission].slice(-40), ...(this.state.available === false ? { output: '' } : {}) });
-    const receipt = await this.terminal.submitLine(text);
+    const receipt = await this.terminal.submitLine(text, { paste: this.state.inputMethod === 'terminal.paste' });
     this.repository?.invalidate(target);
     if (!this.disposed && selection === this.terminal.selectionVersion && same(target, this.state.target)) {
       this.update({ submissions: this.state.submissions.map(item => item.id === id ? { ...item, status: receipt.status, message: receipt.message } : item) });

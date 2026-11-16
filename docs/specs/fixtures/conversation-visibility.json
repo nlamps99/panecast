@@ -1,0 +1,11 @@
+[
+  {"name":"ordinary prompt mentions agents","input":"请检查子代理 send_input 的实现","expected":"请检查子代理 send_input 的实现"},
+  {"name":"subagent result envelope","input":"<subagent_notification agent_id=\"a\">internal result</subagent_notification>","expected":null},
+  {"name":"team task envelope","input":"<teammate-message teammate_id=\"worker\">delegated prompt</teammate-message>","expected":null},
+  {"name":"agent mailbox","input":"Message Type: MESSAGE\nTask name: /root/worker\nSender: /root\nPayload:\ninternal instruction","expected":null},
+  {"name":"environment only","input":"<environment_context>machine metadata</environment_context>","expected":null},
+  {"name":"context followed by real message","input":"<environment_context>machine metadata</environment_context>\n请继续检查","expected":"请继续检查"},
+  {"name":"question reply","input":"<send_user_message_question_reply>\n[{\"question\":\"使用哪个环境？\",\"answer\":\"测试环境\",\"questionItemId\":\"q\"}]\n</send_user_message_question_reply>","expected":"使用哪个环境？\n测试环境"},
+  {"name":"quoted envelope is real user text","input":"解释下面的格式：\n<subagent_notification>example</subagent_notification>","expected":"解释下面的格式：\n<subagent_notification>example</subagent_notification>"},
+  {"name":"literal code stays visible","input":"```xml\n<environment_context>sample</environment_context>\n```","expected":"```xml\n<environment_context>sample</environment_context>\n```"}
+]

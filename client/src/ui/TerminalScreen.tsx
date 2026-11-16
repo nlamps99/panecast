@@ -240,7 +240,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
       </View>
       {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
       <View style={[styles.terminal, side]}>
-        {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} onShowTerminal={() => setPrefs({ terminalPresentation: 'terminal' })} /> : <TerminalView
+        {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} readOnly={readOnly} onShowTerminal={() => setPrefs({ terminalPresentation: 'terminal' })} /> : <TerminalView
           active={terminalActive}
           readOnly={readOnly}
           key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}`}

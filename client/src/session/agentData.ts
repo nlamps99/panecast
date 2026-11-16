@@ -1,4 +1,5 @@
 import type { AgentItem, AgentThread, AgentTurn } from './sourceStore';
+import { conversationUserText } from './conversationVisibility';
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown, limit = 16_000): string => typeof value === 'string' ? value.slice(-limit) : '';
@@ -12,7 +13,9 @@ export function agentItem(value: unknown): AgentItem | null {
   if (typeof item.id !== 'string' || typeof item.type !== 'string' || !visible.has(item.type)) return null;
   const limit = item.type === 'commandExecution' ? 6000 : 16_000;
   const parts = array(item.content).map(record).filter((c) => c.type === 'text');
-  const content = parts.slice(-8).map((c) => text(c.text)).join('\n');
+  const userText = item.type === 'userMessage' ? conversationUserText(item) : null;
+  if (item.type === 'userMessage' && userText === null) return null;
+  const content = userText ?? parts.slice(-8).map((c) => text(c.text)).join('\n');
   return { id: item.id, type: item.type, text: text(item.text, limit),
     ...(typeof item.sequence === 'number' && Number.isFinite(item.sequence) ? { sequence: item.sequence } : {}),
     ...(typeof item.updatedSequence === 'number' && Number.isFinite(item.updatedSequence) ? { updatedSequence: item.updatedSequence } : {}),
@@ -41,7 +44,11 @@ export function agentTurns(value: unknown): AgentTurn[] { return array(value).ma
 export function agentThread(value: unknown): AgentThread | null {
   const thread = record(value);
   if (typeof thread.id !== 'string') return null;
+  const terminal = record(thread.originalTerminal);
   return { id: thread.id, name: text(thread.name, 300) || 'Codex 会话', cwd: text(thread.cwd, 4096),
     status: { type: text(record(thread.status).type, 100) || 'unknown' },
-    ...(typeof thread.live === 'boolean' ? { live: thread.live } : {}) };
+    ...(typeof thread.live === 'boolean' ? { live: thread.live } : {}),
+    ...(thread.writerState === 'other_process' ? { writerState: 'other_process' as const } : {}),
+    ...(typeof terminal.workspaceId === 'string' && typeof terminal.surfaceId === 'string' && typeof terminal.sourceName === 'string'
+      ? { originalTerminal: { workspaceId: text(terminal.workspaceId, 4096), surfaceId: text(terminal.surfaceId, 4096), sourceName: text(terminal.sourceName, 100) } } : {}) };
 }

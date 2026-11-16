@@ -94,6 +94,30 @@ describe('TerminalSession history prefetch', () => {
 });
 
 describe('TerminalSession subscription', () => {
+  it('sends a prompt navigation sequence only to the unchanged target and screen', async () => {
+    const channel = new FakeChannel(), session = new TerminalSession(channel);
+    session.setTarget(target); await flush(); channel.push(firstTick(['select a choice']));
+    const screen = session.getState().screen;
+    const receipt = session.sendPromptKeys([{ name: 'down' }, { name: 'down' }], screen);
+    await flush(); expect((await receipt).status).toBe('sent');
+    expect(channel.calls.filter(c => c.method === 'surface.send_key').map(c => c.params.key)).toEqual(['down', 'down']);
+    channel.push(firstTick(['new prompt'], 2));
+    expect((await session.sendPromptKeys([{ name: 'enter' }], screen)).status).toBe('not_sent');
+    expect(channel.calls.filter(c => c.method === 'surface.send_key')).toHaveLength(2);
+    session.dispose();
+  });
+
+  it('stops a prompt sequence when the selected terminal changes during focus', async () => {
+    const channel = new FakeChannel(), session = new TerminalSession(channel);
+    session.setTarget(target); await flush(); channel.push(firstTick(['select a choice']));
+    channel.autoReply.delete('surface.focus');
+    const receipt = session.sendPromptKeys([{ name: 'down' }, { name: 'enter' }], session.getState().screen);
+    await flush(); session.setTarget({ workspaceId: 'other', surfaceId: 'other' });
+    channel.calls.find(c => c.method === 'surface.focus')!.resolve({});
+    await flush(); expect((await receipt).status).not.toBe('sent');
+    expect(channel.calls.some(c => c.method === 'surface.send_key')).toBe(false);
+    session.dispose();
+  });
   it('requests a fresh screen when a non-snapshot diff skips a revision', async () => {
     const channel = new FakeChannel(), session = new TerminalSession(channel);
     session.setTarget(target); await flush(); channel.push(firstTick(['first', 'second'], 1));

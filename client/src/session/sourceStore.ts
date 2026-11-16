@@ -11,7 +11,8 @@ export type SourceInfo = {
   capabilities: { read: boolean; control: boolean; realtime: boolean; create: boolean; resume?: boolean };
 };
 export type AgentProject = { id: string; name: string; cwd: string };
-export type AgentThread = { id: string; name: string; cwd: string; status?: { type: string }; updatedAt?: number; live?: boolean };
+export type AgentThread = { id: string; name: string; cwd: string; status?: { type: string }; updatedAt?: number; live?: boolean;
+  writerState?: 'other_process'; originalTerminal?: { workspaceId: string; surfaceId: string; sourceName: string } };
 export type AgentItem = { id: string; type: string; clientId?: string; text?: string; content?: { type: string; text?: string }[];
   command?: string; aggregatedOutput?: string; status?: string; changes?: { path: string; diff?: string }[]; server?: string; tool?: string; truncated?: boolean;
   sequence?: number; updatedSequence?: number; timestamp?: number };
@@ -338,6 +339,12 @@ export class SourceStore {
       if (token === this.generation) this.update({ error: unknown ? '操作结果未知，请先刷新会话确认，避免重复操作' : describeError(error),
         ...(inputId ? { submissions: unknown ? this.state.submissions.map((s) => s.id === inputId ? { ...s, status: 'unknown' as const } : s) : this.state.submissions.filter((s) => s.id !== inputId) } : {}) });
       if (token === this.generation && error instanceof RpcCallError && error.code === 'turn_changed') void this.readThread();
+      if (token === this.generation && error instanceof RpcCallError && error.code === 'thread_owned_elsewhere') {
+        if (this.state.thread) this.update({ thread: { ...this.state.thread, live: false, writerState: 'other_process' }, activeTurnId: null });
+        void this.readThread().then(() => {
+          if (token === this.generation && this.state.thread?.writerState === 'other_process') this.update({ error: describeError(error) });
+        });
+      }
       return false;
     }
     finally { if (token === this.generation) this.update({ busy: false }); }

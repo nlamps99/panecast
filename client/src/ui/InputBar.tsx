@@ -369,6 +369,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
           <TerminalInputView
             ref={inputRef}
             mode={mode}
+            // Phones put newlines in chat messages and send with the button; desktops keep Enter to send, Shift-Enter for a newline.
+            submitOnEnter={!chat || desktop}
             editable={!disabled && ready && !sending && (mode === 'line' || session.isConnected)}
             placeholder={chat ? '发消息到当前终端…' : mode === 'live' ? desktop ? '直接操作终端，支持中文输入…' : '打字直接发到终端' : '输入命令'}
             placeholderColor={colors.muted}

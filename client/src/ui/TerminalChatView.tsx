@@ -4,16 +4,17 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from '
 import { agentTimeline, type AgentTimelineRow } from '../session/agentTimeline';
 import type { TerminalConversationStore } from '../session/terminalConversation';
 import type { TerminalSession } from '../session/terminalSession';
-import { terminalPrompt } from '../session/terminalPrompt';
+import { terminalDecision, terminalPrompt } from '../session/terminalPrompt';
 import { useStore } from '../state/hooks';
 import { plainTerminalRows } from '../terminal/textTools';
 import { AgentMessage, AgentToolsSummary } from './AgentConversationItem';
+import { TerminalDecisionCard } from './TerminalDecisionCard';
 import { colors, fonts } from './theme';
 import { TerminalActivityBadge } from './TerminalActivityBadge';
 const EMPTY: ReadonlySet<string> = new Set();
 
-export function TerminalChatView({ store, session, connected, onShowTerminal }: {
-  store: TerminalConversationStore; session: TerminalSession; connected: boolean; onShowTerminal(): void;
+export function TerminalChatView({ store, session, connected, onShowTerminal, readOnly = false }: {
+  store: TerminalConversationStore; session: TerminalSession; connected: boolean; onShowTerminal(): void; readOnly?: boolean;
 }) {
   const state = useStore(store);
   const terminal = useStore(session);
@@ -24,14 +25,18 @@ export function TerminalChatView({ store, session, connected, onShowTerminal }: 
   const expanded = expansion.identity === identity ? expansion.keys : EMPTY;
   const away = position.identity === identity && position.away;
   const rows = useMemo(() => agentTimeline([{ id: identity, status: 'completed', items: state.items }], expanded).reverse(), [state.items, identity, expanded]);
-  const prompt = state.available && !terminal.fromCache ? terminalPrompt(plainTerminalRows(terminal.screen.rows)) : null;
+  // A cached screen can show a question that was answered meanwhile.
+  const live = state.available && !terminal.fromCache;
+  const prompt = live ? terminalPrompt(plainTerminalRows(terminal.screen.rows)) : null;
+  const decision = live ? terminalDecision(plainTerminalRows(terminal.screen.rows)) : null;
   const lastSubmission = state.submissions.at(-1)?.id;
   useEffect(() => { if (lastSubmission) list.current?.scrollToOffset({ offset: 0, animated: true }); }, [lastSubmission]);
 
   return <View style={styles.container} testID="terminal-chat">
     {state.fromCache && !connected ? <Text style={styles.meta}>本机缓存</Text> : null}
     {state.error ? <View style={styles.notice}><Text style={styles.error}>{state.error}</Text><Pressable onPress={() => void store.refresh()} accessibilityRole="button"><Text style={styles.link}>重试读取</Text></Pressable></View> : null}
-    {prompt ? <View style={styles.prompt} accessibilityLiveRegion="polite">
+    {decision ? <TerminalDecisionCard key={decision.id} decision={decision} screen={terminal.screen} session={session}
+      enabled={connected && !readOnly && !terminal.input.busy && !state.blocked} onShowTerminal={onShowTerminal} /> : prompt ? <View style={styles.prompt} accessibilityLiveRegion="polite">
       <Text style={styles.promptTitle}>终端等待选择</Text><Text selectable numberOfLines={6} style={styles.code}>{prompt}</Text>
       <Pressable onPress={onShowTerminal} accessibilityRole="button"><Text style={styles.link}>打开终端进行选择 →</Text></Pressable>
     </View> : null}
@@ -54,7 +59,7 @@ export function TerminalChatView({ store, session, connected, onShowTerminal }: 
         {state.available === false && !state.blocked ? <View style={styles.output}>
           <Text style={styles.meta}>终端输出</Text><Text selectable style={styles.code}>{state.output || '等待终端输出…'}</Text>
         </View> : null}
-        {state.active && connected ? <View style={styles.activity}><TerminalActivityBadge activity={{ status: 'running', at: 0 }} /></View> : null}
+        {state.active && connected && !decision && !prompt ? <View style={styles.activity}><TerminalActivityBadge activity={{ status: 'running', at: 0 }} /></View> : null}
       </View>}
       ListFooterComponent={<View style={styles.boundary}>
         {(state.loading && !state.items.length) || state.loadingOlder ? <ActivityIndicator color={colors.green} /> : null}

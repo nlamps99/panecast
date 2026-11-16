@@ -19,6 +19,8 @@ for (let index = 0; index < 2; index++) {
   const values = [{ type: 'session_meta', payload: { id: ids[index] } }];
   for (let turn = 0; turn < 90; turn++) values.push(
     completed(index, `turn-${turn}`, message('UserMessage', 'user', `CHAT_${index}_QUESTION_${turn}`)),
+    completed(index, `turn-${turn}`, message('UserMessage', 'internal', '<subagent_notification agent_id="worker">INTERNAL_AGENT_INPUT</subagent_notification>')),
+    { type: 'event_msg', payload: { type: 'item_completed', threadId: 'child-thread', item: message('UserMessage', 'child', 'CHILD_AGENT_INPUT') } },
     completed(index, `turn-${turn}`, { type: 'CommandExecution', id: 'tool', command: ['zsh', '-lc', 'npm test'], aggregated_output: `CHAT_TOOL_OUTPUT_${index}_${turn}`, status: 'completed' }),
     completed(index, `turn-${turn}`, message('AgentMessage', 'answer', `CHAT_${index}_ANSWER_${turn}`)),
   );
@@ -27,7 +29,19 @@ for (let index = 0; index < 2; index++) {
 const sends = [], reads = []; let counter = 0;
 class Session extends RelaySession {
   pending = new Map();
-  screen(surface) { this.send({ type: 'screen.full', surface_id: surface, rev: ++counter, rows: [`SHELL_SCREEN_${surfaces.indexOf(surface)}`, '$ ready'], cols: 80, rowsCount: 2, cursor: { x: 0, y: 1 } }); }
+  decisions = new Map();
+  screen(surface) {
+    const selected = this.decisions.get(surface);
+    const rows = selected !== undefined ? ['Which environment should I use?', `${selected === 0 ? '›' : ' '} 1. Staging`, `${selected === 1 ? '›' : ' '} 2. Production`, 'Enter to select · Esc to cancel'] : [`SHELL_SCREEN_${surfaces.indexOf(surface)}`, '$ ready'];
+    this.send({ type: 'screen.full', surface_id: surface, rev: ++counter, rows, cols: 80, rowsCount: rows.length, cursor: { x: 0, y: 1 } });
+  }
+  async submit(p, text) {
+    const index = surfaces.indexOf(p.surface_id), turn = `sent-${++counter}`;
+    if (p.workspace_id !== workspace || index < 0) throw new Error('wrong target');
+    if (text === 'QUESTION_TEST') { this.decisions.set(p.surface_id, 0); this.screen(p.surface_id); return; }
+    await appendFile(files[index], [completed(index, turn, message('UserMessage', 'input', text)),
+      completed(index, turn, message('AgentMessage', 'reply', `CHAT_REPLY_${index}: ${text}`))].map(line).join(''));
+  }
   async dispatch(method, p) {
     if (method === 'window.list') return { windows: [{ id: 'qa-window', key: true }] };
     if (method === 'workspace.list') return { workspaces: [{ id: workspace, title: '终端对话测试', selected: true }] };
@@ -39,16 +53,22 @@ class Session extends RelaySession {
     if (method === 'terminal.conversation') {
       const index = surfaces.indexOf(p.surface_id); if (p.workspace_id !== workspace || index < 0) throw new Error('wrong target');
       reads.push({ surface: p.surface_id, cursor: Boolean(p.cursor) });
-      return reader.read({ kind: 'codex', checkpoint_id: ids[index], execution_location: 'local' }, p);
+      return { ...await reader.read({ kind: 'codex', checkpoint_id: ids[index], execution_location: 'local' }, p), input_method: 'terminal.paste' };
     }
+    if (method === 'terminal.paste') { sends.push({ method, ...p }); await this.submit(p, p.text); return {}; }
     if (method === 'surface.send_text') { this.pending.set(p.surface_id, p.text); sends.push({ ...p }); return {}; }
     if (method === 'surface.send_key') {
       sends.push({ ...p });
+      if (this.decisions.has(p.surface_id)) {
+        const selected = this.decisions.get(p.surface_id);
+        if (p.key === 'down' || p.key === 'up') this.decisions.set(p.surface_id, p.key === 'down' ? 1 : 0);
+        if (p.key === 'enter') { this.decisions.delete(p.surface_id); await this.submit(p, selected ? 'DECISION_PRODUCTION' : 'DECISION_STAGING'); }
+        if (p.key === 'escape') this.decisions.delete(p.surface_id);
+        this.screen(p.surface_id); return {};
+      }
       if (p.key === 'enter' && this.pending.has(p.surface_id)) {
-        const text = this.pending.get(p.surface_id), index = surfaces.indexOf(p.surface_id), turn = `sent-${++counter}`; this.pending.delete(p.surface_id);
-        if (p.workspace_id !== workspace || index < 0) throw new Error('wrong target');
-        await appendFile(files[index], [completed(index, turn, message('UserMessage', 'input', text)),
-          completed(index, turn, message('AgentMessage', 'reply', `CHAT_REPLY_${index}: ${text}`))].map(line).join(''));
+        const text = this.pending.get(p.surface_id); this.pending.delete(p.surface_id);
+        await this.submit(p, text);
       }
       return {};
     }

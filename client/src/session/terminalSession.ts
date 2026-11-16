@@ -66,7 +66,8 @@ export type TerminalState = {
 
 export type SendReceipt = { status: 'sent' | 'not_sent' | 'unknown'; message: string };
 type InputItem = { kind: 'text'; text: string } | { kind: 'key'; key: Key }
-  | { kind: 'line'; text: string; target: SurfaceTarget; resolve: (result: SendReceipt) => void };
+  | { kind: 'line'; text: string; target: SurfaceTarget; paste?: boolean; resolve: (result: SendReceipt) => void }
+  | { kind: 'promptKeys'; keys: readonly Key[]; screen: ScreenState; target: SurfaceTarget; resolve: (result: SendReceipt) => void };
 
 export type TerminalSessionOptions = {
   /** Rows kept on the live screen; `surface.subscribe`'s `lines`. */
@@ -165,7 +166,7 @@ export class TerminalSession {
 
   private discardQueuedInput(): void {
     for (const item of this.queue) {
-      if (item.kind === 'line') item.resolve({ status: 'not_sent', message: '尚未发送，草稿已保留' });
+      if (item.kind === 'line' || item.kind === 'promptKeys') item.resolve({ status: 'not_sent', message: '尚未发送，草稿已保留' });
     }
     this.queue = [];
   }
@@ -842,15 +843,29 @@ export class TerminalSession {
     void this.pump();
   }
 
+  /** Explicit prompt controls are pinned to the screen the user actually saw. */
+  sendPromptKeys(keys: readonly Key[], screen: ScreenState): Promise<SendReceipt> {
+    const target = this.state.target;
+    if (!target || !this.channel.isOpen || this.disposed || this.state.input.busy || !sameVisibleRows(screen.rows, this.state.screen.rows)
+      || !keys.length || keys.length > 12 || keys.some(key => !['up', 'down', 'left', 'right', 'enter', 'escape', 'space', 'tab'].includes(key.name) || key.modifiers?.length)) {
+      return Promise.resolve({ status: 'not_sent', message: '终端状态已变化，请查看最新选项后重试' });
+    }
+    this.revealInputResult();
+    return new Promise(resolve => {
+      this.queue.push({ kind: 'promptKeys', keys, screen, target, resolve });
+      void this.pump();
+    });
+  }
+
   /** Command mode: the line, then Enter. An empty line sends just Enter. */
-  submitLine(line: string): Promise<SendReceipt> {
+  submitLine(line: string, options: { paste?: boolean } = {}): Promise<SendReceipt> {
     const target = this.state.target;
     if (!target || !this.channel.isOpen || this.disposed) {
       return Promise.resolve({ status: 'not_sent', message: '尚未连接，草稿已保留' });
     }
     this.revealInputResult();
     return new Promise((resolve) => {
-      this.queue.push({ kind: 'line', text: line, target, resolve });
+      this.queue.push({ kind: 'line', text: line, target, paste: options.paste, resolve });
       void this.pump();
     });
   }
@@ -877,27 +892,39 @@ export class TerminalSession {
       const target = this.state.target;
       const item = this.queue.shift()!;
       if (!target) {
-        if (item.kind === 'line') item.resolve({ status: 'not_sent', message: '终端已关闭，草稿已保留' });
+        if (item.kind === 'line' || item.kind === 'promptKeys') item.resolve({ status: 'not_sent', message: '终端已关闭，草稿已保留' });
         this.discardQueuedInput();
         break;
       }
       try {
         await this.execute(target, item);
-        if (item.kind === 'line') item.resolve({ status: 'sent', message: '已送达终端' });
+        if (item.kind === 'line' || item.kind === 'promptKeys') item.resolve({ status: 'sent', message: '已送达终端' });
       } catch (failure) {
         this.discardQueuedInput();
         error = describeError(failure);
-        if (item.kind === 'line') item.resolve({ status: 'unknown', message: `发送未确认：${error}。请先检查终端，再决定是否重发` });
+        if (item.kind === 'line' || item.kind === 'promptKeys') item.resolve({ status: 'unknown', message: `发送未确认：${error}。请先检查终端，再决定是否重发` });
       }
     }
     this.pumping = false;
     this.update({ input: { busy: false, error } });
   }
 
-  private async execute(target: SurfaceTarget, item: InputItem): Promise<void> {
+  private async execute(target: SurfaceTarget, item: InputItem, expectedScreen?: ScreenState): Promise<void> {
     const ids = { workspace_id: target.workspaceId, surface_id: target.surfaceId };
+    if (item.kind === 'promptKeys') {
+      if (!sameVisibleRows(this.state.screen.rows, item.screen.rows) || !sameTarget(target, item.target)) throw new RpcCallError('target_changed', '提问已变化，请查看最新内容');
+      for (let index = 0; index < item.keys.length; index++) {
+        if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
+        await this.execute(target, { kind: 'key', key: item.keys[index] }, index === 0 ? item.screen : undefined);
+      }
+      return;
+    }
     if (item.kind === 'line') {
       if (!sameTarget(target, item.target)) throw new RpcCallError('target_changed', '终端已切换');
+      if (item.paste) {
+        await this.channel.call('terminal.paste', { ...ids, text: item.text, submit_key: 'return' });
+        return;
+      }
       if (item.text) await this.channel.call('surface.send_text', { ...ids, text: item.text });
       if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
       await this.execute(target, { kind: 'key', key: { name: 'enter' } });
@@ -914,6 +941,8 @@ export class TerminalSession {
     if (!focus || focus.surfaceId !== target.surfaceId || now - focus.at > FOCUS_REUSE_MS) {
       await this.channel.call('surface.focus', ids);
     }
+    if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
+    if (expectedScreen && !sameVisibleRows(expectedScreen.rows, this.state.screen.rows)) throw new RpcCallError('prompt_changed', '提问已变化，请查看最新内容');
     await this.channel.call('surface.send_key', { ...ids, key: encodeKey(item.key) });
     this.lastFocus = { surfaceId: target.surfaceId, at: Date.now() };
   }

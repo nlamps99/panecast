@@ -1,6 +1,46 @@
 import XCTest
 
 final class TerminalChat: XCTestCase {
+  func testQuestionsMultilineAndInternalMessages() throws {
+    continueAfterFailure = false
+    let app = XCUIApplication(bundleIdentifier: "com.nzx.panecast")
+    let control: (String) -> XCUIElement = { app.descendants(matching: .any).matching(identifier: $0).firstMatch }
+    app.launch()
+    if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }
+    let pair = app.buttons["没法扫码？粘贴配对链接"]
+    if pair.waitForExistence(timeout: 3) {
+      pair.tap(); let input = app.secureTextFields.firstMatch
+      XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
+      input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4493&relay=qa-chat&code=qa-pair-only")
+      app.buttons["配对"].tap()
+    }
+    if app.buttons["返回工作区"].exists { app.buttons["返回工作区"].tap() }
+    let workspace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "终端对话测试，")).firstMatch
+    XCTAssertTrue(workspace.waitForExistence(timeout: 20)); workspace.tap()
+    if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }
+    if control("第一个终端").exists { control("第一个终端").tap() }
+    control("对话模式").tap()
+    XCTAssertTrue(app.staticTexts["CHAT_0_ANSWER_89"].firstMatch.waitForExistence(timeout: 15))
+    XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "INTERNAL_AGENT_INPUT")).firstMatch.exists)
+    XCTAssertFalse(app.staticTexts["CHILD_AGENT_INPUT"].firstMatch.exists)
+    let composer = app.textViews.firstMatch
+    composer.tap(); composer.typeText("QUESTION_TEST"); app.buttons["发送消息到当前终端"].tap()
+    XCTAssertTrue(app.staticTexts["等待你的回答"].firstMatch.waitForExistence(timeout: 10))
+    let choice = app.buttons["选择 Production"]
+    XCTAssertTrue(choice.waitForExistence(timeout: 5)); choice.tap()
+    let selected = NSPredicate(format: "selected == true")
+    expectation(for: selected, evaluatedWith: choice); waitForExpectations(timeout: 10)
+    XCTAssertFalse(app.staticTexts["CHAT_REPLY_0: DECISION_PRODUCTION"].firstMatch.exists)
+    app.buttons["确认当前选择"].tap()
+    XCTAssertTrue(app.staticTexts["CHAT_REPLY_0: DECISION_PRODUCTION"].firstMatch.waitForExistence(timeout: 15))
+    XCTAssertFalse(app.staticTexts["等待你的回答"].firstMatch.exists)
+    composer.tap(); composer.typeText("first line\nsecond line")
+    XCTAssertFalse(app.staticTexts["CHAT_REPLY_0: first line"].firstMatch.exists)
+    app.buttons["发送消息到当前终端"].tap()
+    XCTAssertTrue(app.staticTexts["CHAT_REPLY_0: first line\nsecond line"].firstMatch.waitForExistence(timeout: 15))
+    let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "Answered question and multiline chat"; shot.lifetime = .keepAlways; add(shot)
+  }
+
   func testChatFoldsToolsSendsToSelectedTerminalAndScrollsContinuously() throws {
     continueAfterFailure = false
     let app = XCUIApplication(bundleIdentifier: "com.nzx.panecast")
