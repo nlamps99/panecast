@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { TerminalInputHandle } from '../../modules/terminal-input';
 import type { ConnectionStatus } from '../protocol/connection';
 import { HostStatusStore } from '../session/hostStatus';
-import { canCloseSurface, SurfaceActions } from '../session/surfaceActions';
+import { SurfaceActions } from '../session/surfaceActions';
 import { pickDefaultTarget } from '../session/surfaces';
 import { requestTerminalClose } from '../session/closeRequests';
 import { actionErrorText, workspaceActionsFor } from '../session/workspaceActions';
@@ -28,15 +28,15 @@ import { TerminalChatView } from './TerminalChatView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
-import { DesktopCloseButton } from './DesktopCloseButton';
+import { CloseButton } from './CloseButton';
 
 /**
  * The terminal tab. Top to bottom: back to the list, the workspace and its
  * terminals (hidden while typing), the terminal, the key row, and the input
  * right above the keyboard. The tab bar is hidden here.
  *
- * In the chip row, "+" opens a new terminal in the workspace and a long press
- * closes one on the Mac. The title row shows the Mac's battery.
+ * In the chip row, "+" opens a new terminal in the workspace and × (or a long
+ * press) closes one on the computer. The title row shows the Mac's battery.
  */
 export function TerminalScreen() {
   const { width, height } = useWindowDimensions();
@@ -45,11 +45,11 @@ export function TerminalScreen() {
   const split = tabletSidebar && width >= 850 && Math.min(width, height) >= 600;
   return <View style={styles.layout}>
     {split ? <View style={{ paddingTop: insets.top, paddingBottom: insets.bottom, backgroundColor: colors.surfaceSunken }}><WorkspaceSidebar /></View> : null}
-    <TerminalPane />
+    <TerminalPane sidebar={split} />
   </View>;
 }
 
-function TerminalPane() {
+function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const insets = useSafeAreaInsets();
   const machine = useMachine();
   const { channel, session } = machine;
@@ -170,12 +170,16 @@ function TerminalPane() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
-                const closable = !readOnly && (desktop || canCloseSurface(siblings));
+                const closable = !readOnly;
                 const busy = running !== null || Boolean(workspaceActionState.pending[target.workspaceId]);
                 const close = () => {
                   if (!isOpen || !workspace || readOnly || busy) return;
-                  if (!closable) { actions.refuseLastClose(); return; }
-                  void requestTerminalClose(machine, actions, workspace, item, confirmClose).catch(error => setTargetError(describeError(error)));
+                  void requestTerminalClose(machine, actions, workspace, item, confirmClose).then(() => {
+                    // The last terminal took its workspace with it. Without a sidebar there
+                    // is nothing left to show here, so return to the list instead of
+                    // following some other terminal that cmux has focused.
+                    if (!desktop && !sidebar && session.getState().target === null) backToWorkspaces();
+                  }, error => setTargetError(describeError(error)));
                 };
                 return (
                   <View key={item.id} style={[styles.terminalChip, selected && styles.chipSelected, busy && !selected && styles.chipBusy]}>
@@ -195,7 +199,7 @@ function TerminalPane() {
                       {item.title}
                     </Text>
                   </Pressable>
-                  {desktop ? <DesktopCloseButton label={`关闭终端 ${item.title}`} disabled={busy || readOnly || !isOpen} onPress={close} /> : null}
+                  {closable ? <CloseButton label={`关闭终端 ${item.title}`} disabled={busy || !isOpen} onPress={close} /> : null}
                   </View>
                 );
               })}

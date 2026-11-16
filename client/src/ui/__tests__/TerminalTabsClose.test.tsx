@@ -1,0 +1,122 @@
+import { act, type ReactNode } from 'react';
+import { TerminalSession, type RpcChannel } from '../../session/terminalSession';
+import { WorkspaceStore } from '../../session/workspaceStore';
+import { TerminalScreen } from '../TerminalScreen';
+
+type AlertButton = { text: string; style?: string; onPress?: () => void };
+const mockAlert = jest.fn<void, [string, string, AlertButton[]]>();
+const mockBack = jest.fn();
+let mockMachine: { channel: RpcChannel; session: TerminalSession; workspaces: WorkspaceStore; computer: null; mode: 'live' };
+jest.mock('react-native', () => {
+  const React = jest.requireActual('react') as typeof import('react');
+  const View = ({ children }: { children?: ReactNode }) => React.createElement('div', null, children);
+  const Pressable = ({ children, onPress, disabled, accessibilityLabel }: { children?: ReactNode; onPress?: (event: unknown) => void; disabled?: boolean; accessibilityLabel?: string }) =>
+    React.createElement('button', { onClick: () => onPress?.({ stopPropagation() {} }), disabled, 'aria-label': accessibilityLabel }, typeof children === 'function' ? null : children);
+  return { View, ScrollView: View, Text: View, KeyboardAvoidingView: View, ActivityIndicator: () => null, Pressable,
+    Platform: { OS: 'ios' }, Alert: { alert: (...args: unknown[]) => mockAlert(...(args as [string, string, AlertButton[]])) },
+    useWindowDimensions: () => ({ width: 390, height: 844 }), StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 } };
+});
+jest.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
+jest.mock('expo-router', () => {
+  const React = jest.requireActual('react') as typeof import('react');
+  return { useFocusEffect: (effect: () => void | (() => void)) => React.useEffect(effect, [effect]) };
+});
+jest.mock('../../platform/desktop', () => ({ desktopBridge: () => null }));
+jest.mock('../../state/hooks', () => {
+  const React = jest.requireActual('react') as typeof import('react');
+  return { useMachine: () => mockMachine, useConnectionStatus: () => ({ state: mockMachine.channel.isOpen ? 'open' : 'idle' }),
+    useStore: (store: { subscribe: (fn: () => void) => () => void; getState: () => unknown }) => React.useSyncExternalStore(store.subscribe, store.getState, store.getState) };
+});
+jest.mock('../../state/navigation', () => ({ backToWorkspaces: () => mockBack() }));
+jest.mock('../../state/prefs', () => ({ setPrefs: jest.fn(), usePrefs: () => ({ fontSize: 13, inputMode: 'line', desktopInputMode: 'line', terminalPresentation: 'terminal', tabletSidebar: false }) }));
+jest.mock('../../state/sessionMemory', () => ({ sessionMemory: { computer: () => ({ recent: [] }), visit: jest.fn() } }));
+jest.mock('../../session/hostStatus', () => ({ HostStatusStore: class {
+  private state = { battery: null };
+  getState = () => this.state; subscribe = () => () => {}; start() {} stop() {} refresh() {}
+} }));
+jest.mock('../../session/terminalConversation', () => ({ TerminalConversationStore: class { start() {} stop() {} dispose() {} } }));
+jest.mock('../TerminalView', () => ({ TerminalView: () => null }));
+jest.mock('../TerminalChatView', () => ({ TerminalChatView: () => null }));
+jest.mock('../InputBar', () => ({ InputBar: () => null }));
+jest.mock('../ProjectBrowser', () => ({ ProjectBrowser: () => null }));
+jest.mock('../BatteryBadge', () => ({ BatteryBadge: () => null }));
+jest.mock('../WorkspaceSidebar', () => ({ WorkspaceSidebar: () => null }));
+jest.mock('../useKeyboardVisible', () => ({ useKeyboardVisible: () => false }));
+jest.mock('../Icon', () => ({ Icon: () => '×' }));
+
+let dom: { window: Window & typeof globalThis };
+let container: HTMLDivElement;
+type Root = { render(children: ReactNode): void; unmount(): void };
+let root: Root;
+let createRoot: (node: Element) => Root;
+const calls: { method: string; params?: Record<string, unknown> }[] = [];
+beforeAll(() => {
+  const { JSDOM } = jest.requireActual('jsdom');
+  dom = new JSDOM('<!doctype html><html><body></body></html>');
+  for (const key of ['window', 'document', 'navigator', 'HTMLElement']) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: (dom.window as unknown as Record<string, unknown>)[key] });
+  createRoot = jest.requireActual('react-dom/client').createRoot;
+});
+beforeEach(() => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  jest.clearAllMocks(); calls.length = 0;
+  container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+});
+afterEach(async () => { await act(async () => root.unmount()); mockMachine?.session.dispose(); mockMachine?.workspaces.dispose(); container.remove(); });
+afterAll(() => dom.window.close());
+
+async function mount(count = 2, readOnly = false) {
+  let surfaces = Array.from({ length: count }, (_, index) => ({ id: `s${index}`, title: `terminal ${index}`, index, type: 'terminal' }));
+  let exists = true;
+  const channel: RpcChannel = { isOpen: true, onPush: () => () => {}, onStatus: () => () => {}, async call<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+    calls.push({ method, params });
+    if (method === 'workspace.list') return { workspaces: exists ? [{ id: 'w', title: 'project', index: 0, access: readOnly ? 'read' : 'control' }] : [] } as T;
+    if (method === 'surface.list') return { surfaces } as T;
+    if (method === 'surface.close') surfaces = surfaces.filter(s => s.id !== params?.surface_id);
+    if (method === 'workspace.close') exists = false;
+    return {} as T;
+  } };
+  const session = new TerminalSession(channel), workspaces = new WorkspaceStore(channel);
+  await workspaces.refresh(); session.setTarget({ workspaceId: 'w', surfaceId: 's0' });
+  mockMachine = { channel, session, workspaces, computer: null, mode: 'live' };
+  await act(async () => root.render(<TerminalScreen />));
+}
+const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+/** Presses the alert button with this text, as the user would on the phone. */
+async function answer(text: string) {
+  const buttons = mockAlert.mock.calls.at(-1)![2];
+  await act(async () => buttons.find(b => b.text === text)!.onPress!());
+}
+
+it('shows a close button on each terminal tab on the phone and closes after confirmation', async () => {
+  await mount();
+  await act(async () => button('关闭终端 terminal 0')!.click());
+  expect(mockAlert).toHaveBeenCalledWith('关闭终端？', expect.stringContaining('terminal 0'), expect.any(Array), expect.anything());
+  await answer('关闭');
+  expect(calls.filter(call => call.method === 'surface.close')).toEqual([{ method: 'surface.close', params: { workspace_id: 'w', surface_id: 's0' } }]);
+  expect(mockMachine.session.getState().target?.surfaceId).toBe('s1');
+  expect(mockBack).not.toHaveBeenCalled();
+});
+
+it('keeps everything when the confirmation is cancelled', async () => {
+  await mount();
+  await act(async () => button('关闭终端 terminal 1')!.click());
+  await answer('取消');
+  expect(calls.some(call => call.method === 'surface.close' || call.method === 'workspace.close')).toBe(false);
+  expect(mockMachine.session.getState().target?.surfaceId).toBe('s0');
+});
+
+it('closes the workspace with its last terminal and returns to the list', async () => {
+  await mount(1);
+  await act(async () => button('关闭终端 terminal 0')!.click());
+  expect(mockAlert).toHaveBeenCalledWith('关闭最后一个终端？', expect.stringContaining('同时关闭这个工作区'), expect.any(Array), expect.anything());
+  await answer('关闭');
+  expect(calls.some(call => call.method === 'workspace.close')).toBe(true);
+  expect(calls.some(call => call.method === 'surface.close')).toBe(false);
+  expect(mockMachine.session.getState().target).toBeNull();
+  expect(mockBack).toHaveBeenCalledTimes(1);
+});
+
+it('offers no close button for a read-only source', async () => {
+  await mount(2, true);
+  expect(button('关闭终端 terminal 0')).toBeNull();
+});

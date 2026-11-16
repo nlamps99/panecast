@@ -3,7 +3,6 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { confirmClose } from '../platform/confirm';
-import { desktopBridge } from '../platform/desktop';
 import { requestTerminalClose, requestWorkspaceClose } from '../session/closeRequests';
 import { SurfaceActions } from '../session/surfaceActions';
 import { actionErrorText, workspaceActionsFor } from '../session/workspaceActions';
@@ -15,12 +14,11 @@ import { WindowChips } from './WindowChips';
 import { colors } from './theme';
 import { activityKey, compareActivity, type TerminalActivity } from '../session/terminalActivity';
 import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBadge';
-import { DesktopCloseButton } from './DesktopCloseButton';
+import { CloseButton } from './CloseButton';
 
 export function WorkspaceSidebar() {
   const machine = useMachine();
   const activity = useTerminalActivity(machine);
-  const desktop = desktopBridge() !== null;
   const connected = useConnectionStatus(machine.channel).state === 'open';
   const terminalActions = useMemo(() => new SurfaceActions(machine), [machine]);
   const terminalActionState = useStore(terminalActions);
@@ -51,14 +49,14 @@ export function WorkspaceSidebar() {
     <ScrollView style={styles.scroller} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.list}>
       {shown.map((workspace) => <View key={workspace.id} style={styles.group}>
         <View style={styles.row}><Text numberOfLines={1} style={styles.workspace}>{workspace.title}</Text><Pressable onPress={() => sessionMemory.pin(id, workspace.id)} accessibilityRole="button" accessibilityLabel={`${memory.pinned.includes(workspace.id) ? '取消置顶' : '置顶'}${workspace.title}`} style={styles.pin}><Text style={styles.pinText}>{memory.pinned.includes(workspace.id) ? '★' : '☆'}</Text></Pressable>
-          {desktop ? <DesktopCloseButton label={`关闭工作区 ${workspace.title}`} disabled={!connected || workspace.access === 'read' || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
-            onPress={() => { setCloseError(null); void requestWorkspaceClose(machine, workspace, confirmClose).catch(error => setCloseError(describeError(error))); }} /> : null}
+          <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={!connected || workspace.access === 'read' || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
+            onPress={() => { setCloseError(null); void requestWorkspaceClose(machine, workspace, confirmClose).catch(error => setCloseError(describeError(error))); }} />
         </View>
         {pendingByWorkspace[workspace.id] ? <Text style={styles.attention}>{pendingByWorkspace[workspace.id]} 项待处理</Text> : null}
         {[...(surfaces[workspace.id] ?? [])].sort((a, b) => compareActivity(activity[activityKey({ workspaceId: workspace.id, surfaceId: a.id })], activity[activityKey({ workspaceId: workspace.id, surfaceId: b.id })])).map((surface) => <View key={surface.id} style={[styles.surfaceRow, target?.surfaceId === surface.id && styles.selected]}>
           <Pressable onPress={() => openSurface(machine, workspace.id, surface.id)} style={[styles.surface, { flexDirection: 'row', alignItems: 'center', gap: 6 }]} accessibilityRole="button" accessibilityLabel={surface.title} accessibilityState={{ selected: target?.surfaceId === surface.id }}><TerminalActivityBadge activity={activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })]} /><Text numberOfLines={2} style={[styles.surfaceText, { flex: 1 }]}>{surface.title}</Text></Pressable>
-          {desktop ? <DesktopCloseButton label={`关闭终端 ${surface.title}`} disabled={!connected || workspace.access === 'read' || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
-            onPress={() => { setCloseError(null); void requestTerminalClose(machine, terminalActions, workspace, surface, confirmClose).catch(error => setCloseError(describeError(error))); }} /> : null}
+          <CloseButton label={`关闭终端 ${surface.title}`} disabled={!connected || workspace.access === 'read' || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
+            onPress={() => { setCloseError(null); void requestTerminalClose(machine, terminalActions, workspace, surface, confirmClose).catch(error => setCloseError(describeError(error))); }} />
         </View>)}
       </View>)}
       {!shown.length ? <Text style={styles.hint}>没有匹配的工作区</Text> : null}
