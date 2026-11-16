@@ -15,7 +15,7 @@ import { statusBanner } from '../../ui/status';
 import { colors, fonts } from '../../ui/theme';
 import { WindowChips } from '../../ui/WindowChips';
 import { WorkspaceMenu, type WorkspaceMenuStage } from '../../ui/WorkspaceMenu';
-import { activityKey, compareActivity } from '../../session/terminalActivity';
+import { activityKey, compareActivity, type ActivityState } from '../../session/terminalActivity';
 import { TerminalActivityBadge, useTerminalActivity } from '../../ui/TerminalActivityBadge';
 import { CloseButton } from '../../ui/CloseButton';
 import { confirmClose } from '../../platform/confirm';
@@ -147,6 +147,8 @@ export default function WorkspacesScreen() {
           key={workspace.id}
           workspace={workspace}
           surfaces={surfaces[workspace.id] ?? []}
+          activity={activity}
+          connected={status.state === 'open'}
           unread={unreadByWorkspace[workspace.id] ?? 0}
           needsAttention={pendingByWorkspace[workspace.id] ?? 0}
           pinned={memory.pinned.includes(workspace.id)}
@@ -225,6 +227,8 @@ function ErrorRow({ text, onDismiss }: { text: string; onDismiss: () => void }) 
 type CardProps = {
   workspace: WorkspaceInfo;
   surfaces: readonly SurfaceInfo[];
+  activity: ActivityState;
+  connected: boolean;
   unread: number;
   needsAttention: number;
   pinned: boolean;
@@ -239,9 +243,11 @@ type CardProps = {
   onDismissError: () => void;
 };
 
-function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, onPin, currentSurfaceId, busy, error, onOpen, onMenu, onClose, onDismissError }: CardProps) {
+function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needsAttention, pinned, onPin, currentSurfaceId, busy, error, onOpen, onMenu, onClose, onDismissError }: CardProps) {
   const primary = surfaces.find((s) => s.id === currentSurfaceId) ?? surfaces.find((s) => s.focused) ?? surfaces[0];
   const isCurrent = currentSurfaceId !== null;
+  const surfaceActivity = (surface: SurfaceInfo) => activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })];
+  const running = surfaces.filter((surface) => surfaceActivity(surface)?.status === 'running');
   const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.access === 'read' ? ' · 只读' : ''}${workspace.selected ? ' · 电脑上正在用' : ''}`;
   return (
     <View style={[styles.card, isCurrent && styles.cardCurrent, busy && styles.cardBusy]}>
@@ -254,6 +260,7 @@ function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, on
         accessibilityLabel={`${workspace.title}，${surfaces.length} 个终端${needsAttention ? `，${needsAttention} 项待处理` : ''}`}
         accessibilityHint="长按可以重命名或关闭"
         accessibilityState={{ disabled: busy !== null, busy: busy !== null }}
+        accessibilityValue={running.length ? { text: `${running.length} 个正在运行` } : undefined}
         accessibilityActions={[
           { name: 'longpress', label: '更多操作' },
           { name: 'rename', label: '重命名' },
@@ -268,17 +275,21 @@ function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, on
           <Text style={[styles.indexText, isCurrent && styles.indexTextCurrent]}>{String(workspace.index + 1).padStart(2, '0')}</Text>
         </View>
         <View style={styles.cardText}>
-          <Text style={styles.cardTitle} numberOfLines={1}>
-            {workspace.title}
-          </Text>
+          <View style={styles.cardTitleRow}>
+            {running.length ? <TerminalActivityBadge activity={surfaceActivity(running[0])} /> : null}
+            <Text style={styles.cardTitle} numberOfLines={1}>
+              {workspace.title}
+            </Text>
+          </View>
           <Text style={styles.cardMeta} numberOfLines={1}>
-            {needsAttention ? <Text style={{ color: colors.yellow }}>{needsAttention} 项待处理 · </Text> : null}{meta}
+            {needsAttention ? <Text style={{ color: colors.yellow }}>{needsAttention} 项待处理 · </Text> : null}
+            {running.length && !busy ? <Text style={{ color: colors.green }}>{surfaces.length > 1 ? `${running.length} 个正在运行` : '正在运行'} · </Text> : null}{meta}
           </Text>
         </View>
         <Pressable onPress={(event) => { event.stopPropagation(); onPin(); }} hitSlop={6} style={styles.pin} accessibilityRole="button" accessibilityLabel={`${pinned ? '取消置顶' : '置顶'} ${workspace.title}`}>
           <Text style={[styles.pinText, pinned && styles.pinActive]}>{pinned ? '★' : '☆'}</Text>
         </Pressable>
-        {workspace.access === 'read' ? null : <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={busy !== null} onPress={onClose} />}
+        {workspace.access === 'read' ? null : <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={busy !== null || !connected} onPress={onClose} />}
         {unread > 0 ? (
           <View style={styles.unread}>
             <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
@@ -298,6 +309,7 @@ function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, on
       {surfaces.length > 1 || (surfaces.length === 1 && surfaces[0].title !== workspace.title)
         ? surfaces.map((surface) => {
             const current = surface.id === currentSurfaceId;
+            const runningHere = surfaceActivity(surface)?.status === 'running';
             return (
               <Pressable
                 key={surface.id}
@@ -307,8 +319,10 @@ function WorkspaceCard({ workspace, surfaces, unread, needsAttention, pinned, on
                 style={({ pressed }) => [styles.surface, pressed && styles.pressed]}
                 accessibilityRole="button"
                 accessibilityLabel={`打开终端 ${surface.title}`}
+                accessibilityValue={runningHere ? { text: '正在运行' } : undefined}
               >
-                <Text style={[styles.surfaceMark, current && styles.surfaceMarkCurrent]}>{current ? '›' : '·'}</Text>
+                {runningHere ? <View style={styles.surfaceMarkBox}><TerminalActivityBadge activity={surfaceActivity(surface)} /></View>
+                  : <Text style={[styles.surfaceMark, current && styles.surfaceMarkCurrent]}>{current ? '›' : '·'}</Text>}
                 <Text style={[styles.surfaceTitle, current && styles.surfaceTitleCurrent]} numberOfLines={1}>
                   {surface.title}
                 </Text>
@@ -383,7 +397,8 @@ const styles = StyleSheet.create({
   indexText: { color: colors.muted, fontFamily: fonts.mono, fontSize: 13 },
   indexTextCurrent: { color: colors.green },
   cardText: { flex: 1, gap: 3 },
-  cardTitle: { color: colors.ink, fontSize: 16, fontWeight: '600' },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  cardTitle: { flexShrink: 1, color: colors.ink, fontSize: 16, fontWeight: '600' },
   cardMeta: { color: colors.muted, fontSize: 12 },
   unread: {
     minWidth: 20,
@@ -405,6 +420,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.divider,
   },
   surfaceMark: { width: 12, color: colors.muted, fontFamily: fonts.mono, fontSize: 14 },
+  surfaceMarkBox: { width: 12, alignItems: 'center' },
   surfaceMarkCurrent: { color: colors.green },
   surfaceTitle: { flex: 1, color: colors.inkDim, fontSize: 14 },
   surfaceTitleCurrent: { color: colors.ink },

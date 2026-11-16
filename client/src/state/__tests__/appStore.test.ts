@@ -210,6 +210,37 @@ describe('AppStore with several computers', () => {
     expect(mockChannels).toHaveLength(2);
   });
 
+  it('watches terminal status and keeps a local cache on a phone, slowing down in the background', async () => {
+    const store = await storeWith([stored('a')]);
+    const machine = store.getState().machine!;
+    expect(machine.activity).toBeDefined();
+    expect(machine.terminalRepository).toBeDefined();
+    const activity = jest.spyOn(machine.activity!, 'setBackground');
+    const workspaces = jest.spyOn(machine.workspaces, 'setBackground');
+    store.sleep();
+    expect(activity).toHaveBeenLastCalledWith(true);
+    expect(workspaces).toHaveBeenLastCalledWith(true);
+    store.wake();
+    expect(activity).toHaveBeenLastCalledWith(false);
+    expect(workspaces).toHaveBeenLastCalledWith(false);
+  });
+
+  it('a hidden desktop window keeps watching every terminal', async () => {
+    const store = await storeWith([stored('a')]);
+    const activity = jest.spyOn(store.getState().machine!.activity!, 'setBackground');
+    const host = globalThis as { window?: { panecastDesktop?: unknown } };
+    const hadWindow = 'window' in host;
+    host.window ??= {};
+    host.window.panecastDesktop = { version: 1 };
+    try {
+      store.sleep();
+      expect(activity).not.toHaveBeenCalled();
+    } finally {
+      delete host.window!.panecastDesktop;
+      if (!hadWindow) delete host.window;
+    }
+  });
+
   describe('in the demo', () => {
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => {

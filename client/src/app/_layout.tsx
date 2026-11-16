@@ -37,6 +37,7 @@ export default function RootLayout() {
     const subscription = AppState.addEventListener('change', (state) => {
       // iOS may have killed the socket while we were suspended.
       if (state === 'active') appStore.wake();
+      else if (state === 'background') appStore.sleep();
     });
     return () => subscription.remove();
   }, []);

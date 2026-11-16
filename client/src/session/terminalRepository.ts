@@ -21,10 +21,13 @@ export function parseTerminalScreen(value: unknown): ScreenState | null {
 }
 type LocalCaches = { heads: SnapshotCache<TerminalHead>; screens: SnapshotCache<ScreenState> };
 const caches = new Map<string, LocalCaches>();
-export function terminalCaches(computerId: string): LocalCaches {
+export type CacheLimits = { entries: number; bytes: number };
+/** The first call for a computer sets its limits (the defaults suit the desktop app). */
+export function terminalCaches(computerId: string, limits?: CacheLimits): LocalCaches {
   let result = caches.get(computerId);
   if (!result) {
-    result = { heads: new SnapshotCache(cacheStorage(`terminal-heads:${computerId}`), parseTerminalHead), screens: new SnapshotCache(cacheStorage(`terminal-screens:${computerId}`), parseTerminalScreen) };
+    result = { heads: new SnapshotCache(cacheStorage(`terminal-heads:${computerId}`), parseTerminalHead, limits),
+      screens: new SnapshotCache(cacheStorage(`terminal-screens:${computerId}`), parseTerminalScreen, limits) };
     caches.set(computerId, result);
   }
   return result;

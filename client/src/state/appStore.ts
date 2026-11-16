@@ -31,6 +31,8 @@ import { TerminalRepository, terminalCaches, forgetTerminalCaches } from '../ses
 
 export { PairingError } from './connect';
 
+const PHONE_CACHE_LIMITS = { entries: 32, bytes: 12 * 1024 * 1024 };
+
 /** Everything that exists while connected to one Mac (or the demo). */
 export type Machine = {
   mode: 'relay' | 'demo';
@@ -220,7 +222,21 @@ export class AppStore {
   wake(): void {
     const channel = this.state.machine?.channel;
     if (isComputerChannel(channel)) channel.wake();
+    this.state.machine?.activity?.setBackground(false);
+    this.state.machine?.workspaces.setBackground(false);
     if (this.state.account) void this.refreshAccount().catch(() => {});
+  }
+
+  /**
+   * The phone app went to the background. Only running terminals are still
+   * watched (a finished turn can raise a local alert while the OS lets the app
+   * run); idle ones and other windows wait until `wake`. A desktop window that
+   * is merely hidden keeps watching everything, since that is how it notifies.
+   */
+  sleep(): void {
+    if (desktopBridge()) return;
+    this.state.machine?.activity?.setBackground(true);
+    this.state.machine?.workspaces.setBackground(true);
   }
 
   async login(server: string, username: string, password: string, create: boolean): Promise<void> {
@@ -349,7 +365,10 @@ export class AppStore {
   /** The demo's inbox is not saved; a computer's inbox is, per computer. */
   private stores(channel: RpcChannel, computer: StoredComputer | null = null) {
     const memory = computer ? sessionMemory.computer(computer.id) : null;
-    const cached = computer && desktopBridge() ? terminalCaches(computer.id) : undefined;
+    // Phones keep a smaller cache: it is for showing the last screen at once
+    // after the OS dropped the connection, not for a long history.
+    const desktop = desktopBridge() !== null;
+    const cached = computer ? terminalCaches(computer.id, desktop ? undefined : PHONE_CACHE_LIMITS) : undefined;
     const terminalRepository = cached ? new TerminalRepository(channel, cached.heads) : undefined;
     const session = new TerminalSession(channel, { liveLines: getPrefs().historyLines, log,
       screenCache: cached?.screens,
@@ -361,8 +380,10 @@ export class AppStore {
       computerId: computer.id, background: (method, params) => terminalRepository.background(method, params),
     } : {});
     const inbox = new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {});
-    const activity = computer && desktopBridge() ? new TerminalActivityStore(channel, {
+    const activity = computer ? new TerminalActivityStore(channel, {
       repository: terminalRepository,
+      // A phone is often on mobile data and battery; half the desktop's pace is still prompt.
+      pollMs: desktop ? 1000 : 2000,
       targets: () => {
         return [...sessionMemory.computer(computer.id).recent, ...workspaces.activityTargets()];
       },

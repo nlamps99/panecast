@@ -95,6 +95,7 @@ export class WorkspaceStore {
   private discovering = false;
   private discoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  private inBackground = false;
   private liveLoaded = false;
   private cache: SnapshotCache<SavedWorkspaces> | null = null;
 
@@ -246,9 +247,15 @@ export class WorkspaceStore {
     })));
     return [...targets, ...current];
   }
+  /** Other windows are listed only while the app is in front; the visible list still follows cmux events. */
+  setBackground(background: boolean) {
+    if (this.inBackground === background) return;
+    this.inBackground = background;
+    if (!background) void this.discoverWindows();
+  }
   private persist() { this.cache?.set('state', { state: this.state, snapshots: [...this.snapshots] }); }
   private async discoverWindows() {
-    if (!this.options.background || this.discovering || this.disposed || !this.channel.isOpen) return;
+    if (!this.options.background || this.inBackground || this.discovering || this.disposed || !this.channel.isOpen) return;
     this.discovering = true;
     if (this.discoveryTimer) clearTimeout(this.discoveryTimer);
     const channel: RpcChannel = { ...this.channel, isOpen: this.channel.isOpen, call: this.options.background, onPush: () => () => {}, onStatus: () => () => {} };

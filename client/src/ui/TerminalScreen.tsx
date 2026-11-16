@@ -29,6 +29,8 @@ import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
 import { CloseButton } from './CloseButton';
+import { activityKey } from '../session/terminalActivity';
+import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBadge';
 
 /**
  * The terminal tab. Top to bottom: back to the list, the workspace and its
@@ -73,6 +75,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const workspaceActionState = useStore(workspaceActions);
   const host = useMemo(() => new HostStatusStore(channel), [channel]);
   const { battery } = useStore(host);
+  const activity = useTerminalActivity(machine);
   useEffect(() => () => conversation.dispose(), [conversation]);
   useEffect(() => {
     if (terminalActive && chat) conversation.start(); else conversation.stop();
@@ -170,6 +173,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
+                const itemActivity = activity[activityKey({ workspaceId: target.workspaceId, surfaceId: item.id })];
                 const closable = !readOnly;
                 const busy = running !== null || Boolean(workspaceActionState.pending[target.workspaceId]);
                 const close = () => {
@@ -192,9 +196,12 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
                     disabled={busy}
                     style={styles.terminalChipLabel}
                     accessibilityRole="tab"
+                    accessibilityLabel={item.title}
                     accessibilityState={{ selected, disabled: busy }}
+                    accessibilityValue={itemActivity?.status === 'running' ? { text: '正在运行' } : undefined}
                     accessibilityHint={closable ? '长按可以关闭这个终端' : undefined}
                   >
+                    <TerminalActivityBadge activity={itemActivity} color={selected ? colors.green : colors.muted} />
                     <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
                       {item.title}
                     </Text>
@@ -305,7 +312,7 @@ const styles = StyleSheet.create({
   },
   chips: { gap: 6, paddingHorizontal: 12, paddingTop: 8 },
   terminalChip: { maxWidth: 230, height: 30, flexDirection: 'row', alignItems: 'center', borderRadius: 8, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.divider },
-  terminalChipLabel: { flexShrink: 1, height: 28, justifyContent: 'center', paddingHorizontal: 12 },
+  terminalChipLabel: { flexShrink: 1, height: 28, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12 },
   chip: {
     maxWidth: 200,
     height: 30,
@@ -318,7 +325,7 @@ const styles = StyleSheet.create({
   },
   chipSelected: { backgroundColor: colors.surfaceRaised, borderColor: colors.green },
   chipBusy: { opacity: 0.6 },
-  chipText: { color: colors.muted, fontSize: 13 },
+  chipText: { flexShrink: 1, color: colors.muted, fontSize: 13 },
   chipTextSelected: { color: colors.ink, fontWeight: '600' },
   newChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, borderColor: colors.green },
   newChipPressed: { backgroundColor: colors.surfaceRaised },

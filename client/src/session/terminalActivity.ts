@@ -12,6 +12,10 @@ type Options = {
   targets(): ActivityTarget[];
   onActivity(target: ActivityTarget, at: number): void;
   onComplete(target: ActivityTarget, id: string, body: string): void;
+  /** Pause between automatic reads while the app is in front (default 1 s). */
+  pollMs?: number;
+  /** In the background only running terminals are read, this far apart (default 5 s). */
+  backgroundPollMs?: number;
 };
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === 'string' ? value : '';
@@ -27,6 +31,7 @@ export class TerminalActivityStore {
   private generation = 0;
   private disposed = false;
   private unsupported = false;
+  private inBackground = false;
   private unsubscribe: () => void;
   private unwatch: () => void = () => {};
   private observed = new WeakSet<object>();
@@ -53,6 +58,16 @@ export class TerminalActivityStore {
     this.disposed = true; this.generation++; this.unsubscribe(); this.unwatch(); this.listeners.clear();
     if (this.timer) clearTimeout(this.timer);
   }
+  /**
+   * A phone in the background keeps reading only running terminals, slowly, so
+   * a finished turn can still raise a local alert without a steady stream of
+   * reads for idle ones. Back in front, everything is checked again.
+   */
+  setBackground(background: boolean) {
+    if (this.inBackground === background) return;
+    this.inBackground = background;
+    if (!background && !this.disposed) { if (this.timer) clearTimeout(this.timer); void this.refresh(); }
+  }
   prioritize(target: SurfaceTarget) { this.retryAfter.set(activityKey(target), -1); this.options.repository?.invalidate(target); }
   refresh(force = false): Promise<void> {
     if (this.pending) return this.pending;
@@ -63,7 +78,8 @@ export class TerminalActivityStore {
     const retained = new Set(targets.map(activityKey));
     for (const key of this.snapshots.keys()) if (!retained.has(key)) { this.snapshots.delete(key); this.retryAfter.delete(key); }
     if (Object.keys(this.state).some(key => !retained.has(key))) this.replace(Object.fromEntries(Object.entries(this.state).filter(([key]) => retained.has(key))));
-    const due = targets.filter(target => !this.options.repository?.isViewing(target) && (force || (this.retryAfter.get(activityKey(target)) ?? 0) <= Date.now()))
+    const due = targets.filter(target => !this.options.repository?.isViewing(target) && (force || (this.retryAfter.get(activityKey(target)) ?? 0) <= Date.now())
+      && (!this.inBackground || this.state[activityKey(target)]?.status === 'running'))
       .sort((a, b) => (this.retryAfter.get(activityKey(a)) ?? 0) - (this.retryAfter.get(activityKey(b)) ?? 0) || Number(this.state[activityKey(b)]?.status === 'running') - Number(this.state[activityKey(a)]?.status === 'running'));
     // Automatic polling has a fixed request budget, independent of how many
     // recent conversations exist. Foreground reads supply their own status.
@@ -75,7 +91,8 @@ export class TerminalActivityStore {
     };
     const task = worker().finally(() => {
       if (this.pending === task) this.pending = null;
-      if (generation === this.generation && !this.disposed && !this.unsupported) this.timer = setTimeout(() => { void this.refresh(); }, 1000);
+      if (generation === this.generation && !this.disposed && !this.unsupported) this.timer = setTimeout(() => { void this.refresh(); },
+        this.inBackground ? this.options.backgroundPollMs ?? 5000 : this.options.pollMs ?? 1000);
     });
     this.pending = task; return task;
   }

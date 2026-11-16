@@ -208,6 +208,18 @@ describe('WorkspaceStore windows', () => {
     store.dispose();
   });
 
+  it('lists other windows only while the app is in front', async () => {
+    const channel = new CmuxChannel();
+    const store = new WorkspaceStore(channel, null, { background: channel.call.bind(channel) });
+    store.setBackground(true);
+    await store.refresh(); await flush();
+    expect(channel.listed('workspace.list')).toHaveLength(1);
+    expect(store.activityTargets().some((target) => target.windowId === 'win-a')).toBe(false);
+    store.setBackground(false); await flush();
+    expect(store.activityTargets()).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceId: 'a1', windowId: 'win-a' })]));
+    store.dispose();
+  });
+
   it('ignores selecting the listed window or one cmux did not report', async () => {
     const channel = new CmuxChannel();
     const store = new WorkspaceStore(channel);

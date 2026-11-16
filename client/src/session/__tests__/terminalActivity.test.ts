@@ -91,3 +91,28 @@ it('bounds background requests for 24 conversations instead of polling every one
   expect(channel.rpc.mock.calls.length).toBeLessThanOrEqual(61);
   expect(Object.keys(store.getState())).toHaveLength(24);
 });
+
+it('in the background reads only running terminals, less often, and checks all of them again when back in front', async () => {
+  // Every reply is a new object, as over a real connection.
+  channel.rpc.mockImplementation(async (_method: string, params: Record<string, unknown>) => structuredClone(channel.responses.get(String(params.surface_id))));
+  channel.responses.set('a', snapshot(false, [final('old')]));
+  channel.responses.set('b', snapshot(true, [user('question')]));
+  await store.refresh(true);
+  store.setBackground(true);
+  channel.rpc.mockClear();
+  await jest.advanceTimersByTimeAsync(60_000);
+  const surfaces = channel.rpc.mock.calls.map(([, params]) => params.surface_id);
+  expect(new Set(surfaces)).toEqual(new Set(['b']));
+  // One read per five seconds at most, instead of one a second.
+  expect(surfaces.length).toBeLessThanOrEqual(13);
+  channel.responses.set('b', snapshot(false, [user('question'), final('answer')]));
+  await jest.advanceTimersByTimeAsync(10_000);
+  expect(onComplete).toHaveBeenCalledWith(b, 'terminal-complete:chat:answer', '测试通过');
+  channel.rpc.mockClear();
+  // Nothing is running any more: the background makes no reads at all.
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(channel.rpc).not.toHaveBeenCalled();
+  store.setBackground(false);
+  await jest.advanceTimersByTimeAsync(20_000);
+  expect(new Set(channel.rpc.mock.calls.map(([, params]) => params.surface_id))).toEqual(new Set(['a', 'b']));
+});
