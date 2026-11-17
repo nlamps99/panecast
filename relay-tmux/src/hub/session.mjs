@@ -1,4 +1,4 @@
-import { RelaySession } from '../server.mjs';
+import { RelaySession, inputItems, sendInputItems } from '../server.mjs';
 import { RpcError } from '../tmux.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scopeResult, scoped, targetParams } from './ids.mjs';
@@ -6,7 +6,8 @@ import { TERMINAL_TYPES, terminalBackend } from './registry.mjs';
 import { TerminalConversationReader, localConversationSource } from './terminal-conversation.mjs';
 
 const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
-const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'terminal.scroll', 'notification.create']);
+const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'notification.create']);
+const MAX_BATCH = 64, BATCH_PARALLEL = 4;
 
 /** A phone keeps one authenticated connection while sources keep independent transports. */
 /** Explains the two cmux failures a user can fix: cmux not running, or cmux refusing the relay. */
@@ -129,6 +130,7 @@ export class HubSession extends RelaySession {
       if (source.config.type !== 'codex') throw new RpcError('invalid_source', '请选择 Codex 来源');
       return this.registry.codex(p.source_id).dispatch(method, p);
     }
+    if (method === 'terminal.conversation.batch') return this.conversationBatch(p);
     if (!READS.has(method) && !WRITES.has(method)) throw new RpcError('method_not_found', '统一网关不支持这个操作');
     if (method === 'window.list') {
       const lists = await Promise.all(this.terminals().map(async (source) => {
@@ -171,6 +173,12 @@ export class HubSession extends RelaySession {
       catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('conversation_unavailable', '对话记录暂时不可用，请稍后重试'); }
     }
     if ((method === 'terminal.replay' || method === 'terminal.scroll') && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持应用内滚动');
+    if (method === 'surface.input') {
+      // Runs on the hub, next to the terminal: the phone or desktop pays one
+      // network round trip for everything typed meanwhile, in order.
+      const items = inputItems(params), client = this.client(id);
+      return sendInputItems(items, { workspace_id: params.workspace_id, surface_id: params.surface_id }, (name, values) => client.call(name, values));
+    }
     if (params.window_id === 'default') delete params.window_id;
     if (method === 'surface.unsubscribe') this.savedSubscriptions.get(id)?.delete(params.surface_id);
     const result = scopeResult(id, await this.client(id).call(method, params));
@@ -183,6 +191,25 @@ export class HubSession extends RelaySession {
       result.workspaces = (result.workspaces ?? []).map((w) => ({ ...w, source_id: id, access: source.config.access }));
     }
     return result;
+  }
+
+  /**
+   * Activity for many terminals in one request. Each entry is answered on its
+   * own, so one unavailable transcript does not fail the rest.
+   */
+  async conversationBatch(p) {
+    const requests = p.requests;
+    if (!Array.isArray(requests) || requests.length > MAX_BATCH || requests.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) throw new RpcError('invalid_params', '无效请求');
+    const results = new Array(requests.length); let next = 0;
+    const worker = async () => {
+      while (next < requests.length) {
+        const index = next++;
+        try { results[index] = { ok: true, result: await this.dispatch('terminal.conversation', { ...requests[index] }) }; }
+        catch (error) { results[index] = { ok: false, error: { code: error.code ?? 'internal_error', message: error.message } }; }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(BATCH_PARALLEL, requests.length) }, worker));
+    return { results };
   }
 
   terminals() { return [...this.registry.sources.values()].filter((s) => s.config.type !== 'codex'); }

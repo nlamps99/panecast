@@ -17,11 +17,58 @@ const equal = (a, b) => timingSafeEqual(hash(a), hash(b));
 const clamp = (n, fallback, max) => Number.isInteger(n) ? Math.min(max, Math.max(1, n)) : fallback;
 const json = (response, status, body) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); };
 const bearer = (request) => /^Bearer (.+)$/i.exec(request.headers.authorization ?? '')?.[1];
+/** Reads that change nothing; they may overtake the ordered input lane. */
+export const CONCURRENT_READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.history', 'surface.read_text', 'terminal.replay',
+  'terminal.conversation', 'terminal.conversation.batch', 'project.list', 'project.read', 'project.diff', 'relay.info', 'relay.snippets',
+  'relay.diagnostics', 'source.list', 'host.battery']);
+const MAX_CONCURRENT_READS = 6;
+/** The same-user credential the hub leaves for a desktop app on this computer. */
+export const LOCAL_CLIENT_ID = 'panecast-local-gateway';
+const MAX_INPUT_ITEMS = 512, MAX_INPUT_TEXT = 256 * 1024;
+
+/**
+ * `surface.input` items: everything typed while the previous request was in
+ * flight, in order. One request replaces a round trip per key.
+ */
+export function inputItems(params) {
+  const items = params?.items;
+  if (!Array.isArray(items) || !items.length || items.length > MAX_INPUT_ITEMS) throw new RpcError('invalid_params', '输入内容无效');
+  let size = 0;
+  return items.map((item) => {
+    if (item && typeof item.text === 'string' && item.key === undefined && item.text.length) { size += item.text.length; if (size > MAX_INPUT_TEXT) throw new RpcError('invalid_params', '一次输入的内容过长'); return { text: item.text }; }
+    if (item && typeof item.key === 'string' && item.text === undefined && /^[\x20-\x7e]{1,48}$/.test(item.key)) return { key: item.key };
+    throw new RpcError('invalid_params', '输入内容无效');
+  });
+}
+
+/** Sends the items one after another; a failure reports how many already arrived. */
+export async function sendInputItems(items, target, call) {
+  let sent = 0;
+  for (const item of items) {
+    try { await call(item.text !== undefined ? 'surface.send_text' : 'surface.send_key', { ...target, ...item }); }
+    catch (error) { const failure = new RpcError(error.code ?? 'input_failed', error.message ?? '发送失败'); failure.data = { sent }; throw failure; }
+    sent++;
+  }
+  return { sent };
+}
 const privateIP = (ip = '') => /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip.replace(/^::ffff:/, '')) || ip === '::1';
 async function bodyJSON(request) {
   const parts = []; let size = 0;
   for await (const chunk of request) { size += chunk.length; if (size > 65_536) throw new Error('request too large'); parts.push(chunk); }
   return JSON.parse(Buffer.concat(parts).toString() || '{}');
+}
+
+/**
+ * tmux counts the cursor row within the visible pane, while the rows sent
+ * start with history above it. Viewers draw the cursor in row space; one
+ * that is not known goes past the last row, which viewers treat as hidden.
+ */
+export function screenCursor(rows, surface) {
+  const cursor = surface?.cursor, height = surface?.height;
+  if (!cursor || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y)) return { x: 0, y: rows.length };
+  if (!Number.isInteger(height) || height < 1) return cursor;
+  const top = rows.length - height;
+  return top >= 0 && cursor.y < height ? { x: cursor.x, y: top + cursor.y } : { x: 0, y: rows.length };
 }
 
 export class RelaySession {
@@ -30,8 +77,27 @@ export class RelaySession {
     this.hello = false; this.disposed = false; this.subscriptions = new Map(); this.history = new Map(); this.queue = Promise.resolve();
     this.timer = setTimeout(() => { if (!this.hello) close(); }, 100);
   }
-  dispose() { this.disposed = true; clearTimeout(this.timer); this.subscriptions.clear(); this.history.clear(); }
-  receive(text) { this.queue = this.queue.then(() => this.process(text)).catch(() => this.close()); }
+  dispose() { this.disposed = true; clearTimeout(this.timer); this.subscriptions.clear(); this.history.clear(); this.readWaiters = []; }
+  /**
+   * Input, subscriptions and every other write run one at a time in arrival
+   * order. Pure reads run beside that lane (bounded), so a slow transcript,
+   * history or listing read never holds up the keystrokes queued behind it.
+   */
+  receive(text) {
+    if (this.hello && !this.disposed) {
+      let request; try { request = JSON.parse(text); } catch { this.close(); return; }
+      if (CONCURRENT_READS.has(request?.method)) { void this.concurrently(() => this.handle(request)).catch(() => this.close()); return; }
+      this.queue = this.queue.then(() => this.handle(request)).catch(() => this.close());
+      return;
+    }
+    this.queue = this.queue.then(() => this.process(text)).catch(() => this.close());
+  }
+  async concurrently(run) {
+    this.reading ??= 0; this.readWaiters ??= [];
+    if (this.reading >= MAX_CONCURRENT_READS) await new Promise((resolve) => this.readWaiters.push(resolve));
+    this.reading++;
+    try { return await run(); } finally { this.reading--; this.readWaiters.shift()?.(); }
+  }
   async process(text) {
     if (this.disposed) return;
     let request; try { request = JSON.parse(text); } catch { this.close(); return; }
@@ -39,12 +105,17 @@ export class RelaySession {
       if (request.protocolVersion !== 1 || typeof request.deviceId !== 'string') { this.close(); return; }
       this.hello = true; clearTimeout(this.timer); return;
     }
-    if (typeof request.id !== 'string' || typeof request.method !== 'string') return;
+    return this.handle(request);
+  }
+  async handle(request) {
+    if (this.disposed || !request || typeof request.id !== 'string' || typeof request.method !== 'string') return;
     try {
       const result = request.method === 'inbox.sync' && this.inboxSync
         ? await this.inboxSync(request.params ?? {}) : await this.dispatch(request.method, request.params ?? {});
       if (!this.disposed) this.send({ id: request.id, ok: true, result });
-    } catch (error) { if (!this.disposed) this.send({ id: request.id, ok: false, error: { code: error.code ?? 'internal_error', message: error.message } }); }
+    } catch (error) {
+      if (!this.disposed) this.send({ id: request.id, ok: false, error: { code: error.code ?? 'internal_error', message: error.message, ...(error.data ? { data: error.data } : {}) } });
+    }
   }
   async dispatch(method, p) {
     if (method === 'relay.info') return { backend: 'tmux', max_message_bytes: MAX_MESSAGE, max_upload_bytes: 12 * 1024 * 1024 };
@@ -57,6 +128,10 @@ export class RelaySession {
     }
     if (method === 'surface.unsubscribe') { this.subscriptions.delete(p.surface_id); return {}; }
     if (method === 'surface.history') return this.historyPage(p);
+    if (method === 'surface.input') {
+      const items = inputItems(p); await this.backend.surface(p);
+      return sendInputItems(items, { workspace_id: p.workspace_id, surface_id: p.surface_id }, (name, params) => this.backend.dispatch(name, params));
+    }
     if (method === 'notification.create') {
       await this.backend.surface(p);
       const notification = { ...p, id: randomUUID(), title: String(p.title ?? '终端通知').slice(0, 300), body: String(p.body ?? '').slice(0, 2000), ts: Date.now() / 1000 };
@@ -94,7 +169,7 @@ export class RelaySession {
     try {
       const { rows, surface } = await this.backend.capture(sub, sub.lines);
       if (this.disposed || this.subscriptions.get(sub.surface_id) !== sub) return;
-      const current = { rows, cursor: surface.cursor, cols: surface.cols };
+      const current = { rows, cursor: screenCursor(rows, surface), cols: surface.cols };
       if (JSON.stringify(current) === JSON.stringify(sub.last)) return;
       const previous = sub.last; sub.last = current;
       if (previous && previous.rows.length === rows.length && previous.cols === surface.cols) {
@@ -174,7 +249,34 @@ export async function createTmuxRelay(config, options = {}) {
       if (!stopped) { reconnect = setTimeout(connectBroker, backoff); backoff = Math.min(30_000, backoff * 2); }
     });
   }
-  const authenticated = (request) => { const token = bearer(request); return token ? Object.entries(devices).find(([, d]) => equal(d.token_hash, hash(token).toString('hex')))?.[0] : undefined; };
+  // A desktop app on this computer reads an owner-only file instead of pairing:
+  // the same user can already read the gateway's own configuration. The token
+  // rotates with every gateway start and is accepted only over loopback.
+  const localGatewayPath = config.local_gateway === false ? null : options.localGateway ?? null;
+  let localDeviceId = null;
+  async function publishLocalGateway() {
+    if (!localGatewayPath || !server.listening) return;
+    for (const [id, device] of Object.entries(devices)) if (device.client_id === LOCAL_CLIENT_ID) { delete devices[id]; disconnectDevice(id); }
+    const id = randomUUID(), token = randomBytes(32).toString('base64url');
+    devices[id] = { client_id: LOCAL_CLIENT_ID, name: '本机桌面版', token_hash: hash(token).toString('hex'), loopback_only: true };
+    await persistDevices(); localDeviceId = id;
+    const { port } = server.address();
+    const listening = config.host && !['0.0.0.0', '::', '[::]'].includes(config.host) ? config.host : '127.0.0.1';
+    const host = net.isIPv6(listening) ? `[${listening}]` : listening;
+    await writeJSON(localGatewayPath, { version: 1, url: `ws://${host}:${port}/v1/ws`, health_url: `http://${host}:${port}/v1/health`,
+      device_id: id, token, relay_id: config.broker?.relay_id ?? null, broker_url: config.broker?.url ?? null, backend: options.backendName ?? 'tmux' });
+  }
+  async function withdrawLocalGateway() {
+    if (!localDeviceId) return;
+    try { if (JSON.parse(await readFile(localGatewayPath, 'utf8')).device_id === localDeviceId) await unlink(localGatewayPath); } catch {}
+    delete devices[localDeviceId]; localDeviceId = null; await persistDevices().catch(() => {});
+  }
+  const loopback = (ip = '') => /^(127\.|::ffff:127\.)/.test(ip) || ip === '::1';
+  const authenticated = (request) => {
+    const token = bearer(request); if (!token) return undefined;
+    const [id, device] = Object.entries(devices).find(([, d]) => equal(d.token_hash, hash(token).toString('hex'))) ?? [];
+    return device && (!device.loopback_only || loopback(request.socket.remoteAddress)) ? id : undefined;
+  };
   const server = http.createServer(async (request, response) => {
     const path = new URL(request.url, 'http://localhost').pathname;
     try {
@@ -237,7 +339,12 @@ export async function createTmuxRelay(config, options = {}) {
       await new Promise((res, rej) => { notifyServer.once('error', rej); notifyServer.listen(notifyPath, res); });
       ownsNotifySocket = !pipe;
       if (!pipe) await chmod(notifyPath, 0o600);
-      if (config.lan) await new Promise((res, rej) => { server.once('error', rej); server.listen(config.port ?? 4399, config.host ?? '127.0.0.1', res); });
+      const listen = () => new Promise((res, rej) => { server.once('error', rej); server.listen(config.port ?? 4399, config.host ?? '127.0.0.1', res); });
+      if (config.lan) await listen();
+      // Without LAN pairing the listener only serves the local desktop app; a
+      // busy port (another gateway) leaves that app on the network path.
+      else if (localGatewayPath) await listen().catch(() => {});
+      await publishLocalGateway();
       connectBroker(); return server.address();
     },
     async close() {
@@ -247,6 +354,7 @@ export async function createTmuxRelay(config, options = {}) {
       if (server.listening) await new Promise((res) => server.close(res));
       if (notifyServer.listening) await new Promise((res) => notifyServer.close(res));
       if (ownsNotifySocket) await unlink(notifyPath).catch(() => {});
+      await withdrawLocalGateway();
       await deviceWrites; await publishing.catch(() => {}); await journal.writes.catch(() => {});
     },
   };

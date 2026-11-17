@@ -12,6 +12,7 @@ export async function createHub(config, options = {}) {
   const registry = new SourceRegistry(config.sources ?? [], options);
   const effective = { ...config, hub_event_monitor: true, port: config.port ?? 4400, state_directory: config.state_directory ?? join(homedir(), '.cmuxremote', 'hub') };
   const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub',
+    localGateway: options.localGateway ?? join(effective.state_directory, 'local-gateway.json'),
     allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.has(frame.payload.source_id),
     createSession: ({ send, close, notify }) => new HubSession(registry, effective, send, close, notify) });
   const supervisor = new SupervisorRuntime(registry, effective, options.supervisor);

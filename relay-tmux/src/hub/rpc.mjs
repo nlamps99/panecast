@@ -88,7 +88,11 @@ export class RpcPeer {
       const pending = this.pending.get(String(message.id));
       if (!pending) return;
       clearTimeout(pending.timer); this.pending.delete(String(message.id));
-      if (message.error || message.ok === false) pending.reject(new RpcError(String(message.error?.code ?? 'upstream_error'), message.error?.message ?? '来源拒绝了请求'));
+      if (message.error || message.ok === false) {
+        const error = new RpcError(String(message.error?.code ?? 'upstream_error'), message.error?.message ?? '来源拒绝了请求');
+        if (message.error?.data && typeof message.error.data === 'object') error.data = message.error.data;
+        pending.reject(error);
+      }
       else pending.resolve(message.result);
     } else {
       if (message.type === 'ping') this.send({ type: 'pong', ts: message.ts });

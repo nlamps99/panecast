@@ -203,21 +203,22 @@ integration("real tunnels: offline events recover after reconnect and restart wi
   assert.equal(persisted.events.length, 3);
 });
 
-for (const stage of ["surface.send_text", "surface.send_key"]) integration(`real client never replays a command after losing its ${stage} acknowledgement`, async (t) => {
+// The client sends a command line as one ordered surface.input (text, then Enter).
+integration("real client never replays a command after losing its surface.input acknowledgement", async (t) => {
+  const stage = "surface.input";
   const fx = await fixture(t, 1), phone = await fx.client(0), node = fx.nodes[0];
   const path = join(fx.directory, "executions.txt");
   fx.proxy.dropNext((frame) => frame.relayId === "computer-0" && frame.request?.method === stage);
   const receipt = await phone.session.submitLine(`printf 'once\\n' >> '${path}'`);
   assert.equal(receipt.status, "unknown"); assert.equal(fx.proxy.dropped.length, 1);
   const before = node.sent.length;
-  if (stage === "surface.send_key") await until(async () => (await readFile(path, "utf8").catch(() => "")) === "once\n", "command executed once");
-  else assert.equal(existsSync(path), false);
+  await until(async () => (await readFile(path, "utf8").catch(() => "")) === "once\n", "command executed once");
   fx.proxy.cut("computer-0"); await until(() => !phone.channel.isOpen, "phone detects missing tunnel");
   fx.proxy.release("computer-0"); await fx.online(0, phone.credentials);
   await until(() => phone.channel.isOpen && phone.session.getState().subscription === "live", "terminal restored");
   await phone.channel.call("workspace.list");
   assert.equal(node.sent.length, before, "reconnecting must not replay text or Enter");
-  assert.equal(stage === "surface.send_key" ? await readFile(path, "utf8") : existsSync(path), stage === "surface.send_key" ? "once\n" : false);
+  assert.equal(await readFile(path, "utf8"), "once\n");
 });
 
 integration("actual LAN/broker connections switch on network reports and foreground wake without replaying input", async (t) => {

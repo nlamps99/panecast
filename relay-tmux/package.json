@@ -1,6 +1,6 @@
 {
   "name": "panecast-cli",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "Connect your Mac's terminals to Panecast",
   "license": "MIT",
