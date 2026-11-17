@@ -118,6 +118,13 @@ describe('native client cases', () => {
     expect(parse(frame)?.id).toBe(record?.id);
   });
 
+  it('names the Antigravity CLI (agy) in a needs-input title', () => {
+    for (const source of ['antigravity', 'agy']) {
+      const record = parse(event('hook', 'agent.needs-input', { workspaceId: 'w1', surfaceId: 's1', source, status: 'needs input' }));
+      expect(record?.title).toBe('Antigravity 需要你回应');
+    }
+  });
+
   it('reads a nested details.message and the bare workspace / surface keys', () => {
     const record = parse(
       event('unknown', 'notification', {

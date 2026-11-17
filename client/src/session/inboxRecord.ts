@@ -39,12 +39,13 @@ const KNOWN_CATEGORIES = new Set(['workspace', 'surface', 'notification', 'syste
 
 const SYNTHETIC_SLUG_LENGTH = 96;
 
-type Source = 'Codex' | 'OpenAI' | 'Claude Code' | 'cmux hook' | 'Agent' | 'cmux';
+type Source = 'Codex' | 'OpenAI' | 'Claude Code' | 'Antigravity' | 'cmux hook' | 'Agent' | 'cmux';
 
 const SOURCE_LABEL: Record<Source, string> = {
   Codex: 'Codex',
   OpenAI: 'OpenAI',
   'Claude Code': 'Claude Code',
+  Antigravity: 'Antigravity',
   'cmux hook': 'cmux',
   Agent: '智能体',
   cmux: 'cmux',
@@ -209,6 +210,8 @@ function sourceOf(signals: Signals): Source {
   if (text.includes('codex')) return 'Codex';
   if (text.includes('openai')) return 'OpenAI';
   if (text.includes('claude')) return 'Claude Code';
+  // The Antigravity CLI's command is `agy`; normalize() turns hyphens and underscores into spaces.
+  if (text.includes('antigravity') || /(?:^|\s)agy(?:\s|$)/.test(text)) return 'Antigravity';
   if (category === 'hook') return 'cmux hook';
   if (category === 'agent') return 'Agent';
   return 'cmux';

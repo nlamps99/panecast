@@ -25,6 +25,24 @@ function question(input) {
   return questions.map(q => [q.question ?? q.title, ...(q.options ?? []).map(o => typeof o === 'string' ? o : `${o.label}${o.description ? `：${o.description}` : ''}`)].filter(Boolean).join('\n')).join('\n\n');
 }
 
+/** An Antigravity prompt is wrapped as <USER_REQUEST>…</USER_REQUEST><ADDITIONAL_METADATA>…. */
+function antigravityUserText(content) {
+  const text = typeof content === 'string' ? content : '';
+  const request = /<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i.exec(text)?.[1] ?? text.replace(/<ADDITIONAL_METADATA>[\s\S]*?(?:<\/ADDITIONAL_METADATA>|$)/gi, '');
+  return visibleUserText(request.trim());
+}
+
+/** Antigravity tool arguments: each value is itself JSON-encoded. */
+function antigravityArgs(args) {
+  const out = {};
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return out;
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string') { try { out[key] = JSON.parse(value); continue; } catch {} }
+    out[key] = value;
+  }
+  return out;
+}
+
 /** Only public messages and tool details leave the host; reasoning/auth records are ignored. */
 export function parseConversation(records, provider, sessionId, options = {}) {
   const result = new Map();
@@ -92,6 +110,50 @@ export function parseConversation(records, provider, sessionId, options = {}) {
         put(id, old?.type ?? 'toolExecution', { aggregatedOutput: clipped(display(p.output), 6000), text: clipped(display(p.output), 6000), status: /(?:exited with code|exit_code["\s:]+)[1-9]/i.test(display(p.output)) ? 'failed' : 'completed' }, record);
       }
     }
+  } else if (provider === 'antigravity') {
+    // brain/<id>/.system_generated/logs/transcript.jsonl: one line per step
+    // (USER_INPUT, PLANNER_RESPONSE with tool_calls, GENERIC tool results,
+    // CHECKPOINT compaction, ERROR_MESSAGE, system reminders). A running step
+    // can be flushed again under the same step_index; the last copy counts.
+    // Results carry no call id: they answer the pending calls in order.
+    const steps = new Map();
+    for (const record of records) {
+      const r = record.value;
+      if (!Number.isSafeInteger(r?.step_index)) continue;
+      steps.set(r.step_index, { offset: steps.get(r.step_index)?.offset ?? record.offset, value: r });
+    }
+    const pending = [];
+    for (const step of [...steps.values()].sort((a, b) => a.offset - b.offset)) {
+      const r = step.value, at = { offset: step.offset, value: { timestamp: r.created_at } }, id = `step:${r.step_index}`;
+      if (r.type === 'USER_INPUT') {
+        const text = antigravityUserText(r.content);
+        if (text) { put(id, 'userMessage', { content: [{ type: 'text', text: clipped(text) }] }, at); active = true; }
+        pending.length = 0;
+      } else if (r.type === 'PLANNER_RESPONSE') {
+        const calls = Array.isArray(r.tool_calls) ? r.tool_calls.slice(0, 64) : [];
+        const text = typeof r.content === 'string' ? clipped(r.content.trim()) : '';
+        if (text) put(id, 'agentMessage', { text, phase: !calls.length && r.status === 'DONE' ? 'final' : 'commentary' }, at);
+        calls.forEach((call, index) => {
+          const args = antigravityArgs(call?.args), name = clipped(String(call?.name ?? 'tool'), 100);
+          const shell = /command|shell|bash|terminal/i.test(name), line = args.CommandLine ?? args.command ?? args.Command ?? args.cmd;
+          const callId = `${id}:call:${index}`;
+          put(callId, shell ? 'commandExecution' : 'toolExecution', { tool: name, command: shell ? command(line) : clipped(display(args), 2000), text: clipped(display(args), 2000), status: 'inProgress' }, at, index + 1);
+          pending.push(callId);
+        });
+        if (r.status === 'RUNNING' || calls.length) active = true;
+        else if (r.status === 'DONE') active = false;
+      } else if (r.type === 'GENERIC') {
+        const callId = pending.shift();
+        if (!callId) continue;
+        const output = typeof r.content === 'string' ? r.content : display(r.content);
+        put(callId, result.get(callId)?.type ?? 'toolExecution', { aggregatedOutput: clipped(output, 6000), text: clipped(output, 6000),
+          status: r.status === 'ERROR' || r.error ? 'failed' : r.status === 'RUNNING' ? 'inProgress' : 'completed' }, at);
+      } else if (r.type === 'ERROR_MESSAGE') {
+        const text = clipped(display(r.error ?? r.content));
+        if (text) put(id, 'agentMessage', { text: `出错：${text}`, phase: 'final' }, at);
+        active = false;
+      }
+    }
   } else {
     // Claude stores branches in one file. Follow only the current main leaf.
     records = records.filter(r => !r.value.sessionId || r.value.sessionId === sessionId);
@@ -137,8 +199,16 @@ export function parseConversation(records, provider, sessionId, options = {}) {
 }
 
 export class TerminalConversationReader {
-  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.files = new Map(); this.heads = new Map(); this.pages = new Map(); this.pageBytes = 0; }
+  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.antigravityHome = options.antigravityHome ?? join(this.home, '.gemini', 'antigravity-cli'); this.files = new Map(); this.heads = new Map(); this.pages = new Map(); this.pageBytes = 0; }
   async find(provider, id) {
+    // Antigravity keeps each conversation in a folder named by its id.
+    if (provider === 'antigravity') {
+      let root; try { root = await realpath(this.antigravityHome); } catch { return null; }
+      try {
+        const actual = await realpath(join(root, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl'));
+        return actual.startsWith(root + sep) && (await lstat(actual)).isFile() ? actual : null;
+      } catch { return null; }
+    }
     const key = `${provider}:${id}`, cached = this.files.get(key);
     if (cached) { try { if ((await lstat(cached.path)).isFile() && (await realpath(cached.path)).startsWith(cached.root + sep)) return cached.path; } catch {} this.files.delete(key); }
     const roots = provider === 'codex' ? [join(this.codexHome, 'sessions'), join(this.codexHome, 'archived_sessions')] : [join(this.claudeHome, 'projects')];
@@ -162,8 +232,8 @@ export class TerminalConversationReader {
   }
   async read(binding, params = {}) {
     const provider = binding?.kind, id = binding?.checkpoint_id;
-    if (!['codex', 'claude'].includes(provider) || !UUID.test(id ?? '')) return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
-    const base = { provider, conversation_id: id, name: provider === 'codex' ? 'Codex' : 'Claude Code' };
+    if (!['codex', 'claude', 'antigravity'].includes(provider) || !UUID.test(id ?? '')) return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
+    const base = { provider, conversation_id: id, name: provider === 'codex' ? 'Codex' : provider === 'antigravity' ? 'Antigravity' : 'Claude Code' };
     const location = typeof binding.execution_location === 'string' ? binding.execution_location : binding.execution_location?.kind;
     if (binding.remote_surface_id || binding.remote_pty_session_id || (location && location !== 'local')) return { ...base, available: false, items: [], next_cursor: null };
     const file = await this.find(provider, id);
@@ -184,8 +254,9 @@ export class TerminalConversationReader {
       const cached = this.heads.get(cacheKey);
       if (!params.cursor && cached?.fileRevision === fileRevision) return reply(cached);
       // Records are only appended, and a cursor names the file it came from:
-      // an older page reads the same until the file is replaced.
-      const pageKey = params.cursor ? `${cacheKey}:${params.cursor}` : null, page = pageKey && this.pages.get(pageKey);
+      // an older page reads the same until the file is replaced. Antigravity
+      // rewrites its transcript in place when it compacts, so it is not kept.
+      const pageKey = params.cursor && provider !== 'antigravity' ? `${cacheKey}:${params.cursor}` : null, page = pageKey && this.pages.get(pageKey);
       if (page && page.epoch === epoch) { this.pages.delete(pageKey); this.pages.set(pageKey, page); return page.value; }
       if (page) { this.pages.delete(pageKey); this.pageBytes -= page.bytes; }
       // Validate the file's own identity, not just its filename.
@@ -193,7 +264,8 @@ export class TerminalConversationReader {
       if (first.indexOf(10) < 0 && first.length < info.size) { first = Buffer.alloc(Math.min(info.size, 2 * 1024 * 1024)); await handle.read(first, 0, first.length, 0); }
       const head = first.toString('utf8').split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
       const identity = head.find(r => provider === 'codex' ? r.type === 'session_meta' : r.sessionId);
-      const actualId = provider === 'codex' ? identity?.payload?.id ?? identity?.payload?.session_id : identity?.sessionId;
+      // An Antigravity transcript names no conversation; its folder does (find()).
+      const actualId = provider === 'antigravity' ? id : provider === 'codex' ? identity?.payload?.id ?? identity?.payload?.session_id : identity?.sessionId;
       if (actualId !== id) throw new RpcError('conversation_identity', '对话记录与当前终端不一致，请刷新后重试');
       const generation = createHash('sha256').update(epoch).digest('hex').slice(0, 16);
       let before = info.size, leaf;
@@ -234,7 +306,7 @@ export class TerminalConversationReader {
       if (!params.cursor) {
         this.heads.delete(cacheKey); this.heads.set(cacheKey, entry);
         while (this.heads.size > HEADS_CACHED) this.heads.delete(this.heads.keys().next().value);
-      } else {
+      } else if (pageKey) {
         const bytes = JSON.stringify(value).length * 2;
         this.pages.set(pageKey, { epoch, value, bytes }); this.pageBytes += bytes;
         while (this.pageBytes > PAGES_CACHED_BYTES && this.pages.size > 1) {

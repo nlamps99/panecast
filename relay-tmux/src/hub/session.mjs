@@ -6,6 +6,7 @@ import { realpath } from 'node:fs/promises';
 import { TERMINAL_TYPES, terminalBackend } from './registry.mjs';
 import { TerminalConversationReader, localConversationSource } from './terminal-conversation.mjs';
 import { shareConversationBinding } from './share-binding.mjs';
+import { AntigravityProcesses } from './antigravity.mjs';
 
 const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
 const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'terminal.paste', 'notification.create']);
@@ -178,7 +179,12 @@ export class HubSession extends RelaySession {
       source.conversationReader ??= new TerminalConversationReader({ codexHome: source.config.codex_home, claudeHome: source.config.claude_home });
       // A shared window's Claude was started with a known session id instead of cmux's binding.
       let binding = info?.resume_binding;
-      if (!['codex', 'claude'].includes(binding?.kind)) binding = await shareConversationBinding(this.config, id, params.workspace_id, params.surface_id) ?? binding;
+      if (!['codex', 'claude', 'antigravity'].includes(binding?.kind)) {
+        // An Antigravity CLI cmux did not bind is found from its own process.
+        source.antigravityProcesses ??= new AntigravityProcesses();
+        binding = await shareConversationBinding(this.config, id, params.workspace_id, params.surface_id)
+          ?? await source.antigravityProcesses.binding(params.workspace_id, params.surface_id) ?? binding;
+      }
       try {
         const result = await source.conversationReader.read(binding, params);
         if (result.available && source.config.access === 'control') {
