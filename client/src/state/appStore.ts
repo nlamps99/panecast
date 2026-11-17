@@ -3,6 +3,7 @@ import { forgetInputs } from '../input/library';
 import { forgetConversations } from '../session/conversationCache';
 import { keyboardProfiles } from '../input/keyboardProfiles';
 import { parsePairingUrl } from '../protocol/pairing';
+import { isShareKey } from '../protocol/shareKey';
 import { forgetInbox, inboxStorageKey } from '../session/inboxPersistence';
 import { InboxStore } from '../session/inboxStore';
 import { TerminalSession, type RpcChannel, type StatusSource } from '../session/terminalSession';
@@ -17,7 +18,7 @@ import {
   type StoredComputer,
   type TransportPreference,
 } from './computers';
-import { createComputerChannel, PairingError, registerComputer, type ComputerChannel } from './connect';
+import { createComputerChannel, PairingError, registerComputer, sharedWindow, type ComputerChannel } from './connect';
 import { loadComputers, saveComputers, storageSupported } from './pairingStorage';
 import { getPrefs } from './prefs';
 import { sessionMemory, surfaceMemoryKey } from './sessionMemory';
@@ -108,9 +109,16 @@ export class AppStore {
     if (this.state.account) void this.refreshAccount().catch(() => {});
   }
 
-  /** Pairs with the computer described by a scanned `cmux://pair?...` URL and switches to it. */
+  /** Pairs with the computer described by a scanned `cmux://pair?...` URL, or opens a shared-window key, and switches to it. */
   async pair(rawUrl: string): Promise<void> {
     if (!storageSupported) throw new PairingError('请使用 Panecast 手机或桌面 App 连接电脑。');
+    if (isShareKey(rawUrl)) {
+      const computer = sharedWindow(rawUrl);
+      const { list: computers } = upsertComputer(this.state.computers, computer);
+      await this.persistComputers(computers);
+      this.connect(computers);
+      return;
+    }
     const parsed = parsePairingUrl(rawUrl);
     if (!parsed.ok) {
       throw new PairingError(

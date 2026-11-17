@@ -7,6 +7,7 @@ import { desktopBridge, DesktopSocket, serviceFetch } from '../platform/desktop'
 import { RelayConnection, type SocketLike } from '../protocol/connection';
 import { brokerEndpoint, healthUrl, lanEndpoint, webSocketUrl } from '../protocol/endpoint';
 import type { PairingPayload } from '../protocol/pairing';
+import { parseShareKey } from '../protocol/shareKey';
 import { registerDevice, RegisterFailure, type DeviceCredentials } from '../protocol/register';
 import type { RpcChannel, StatusSource } from '../session/terminalSession';
 import { AutoChannel, networkKindOf, withTimeout, type ActiveTransport, type NetworkKind, type NetworkWatcher } from './autoChannel';
@@ -41,6 +42,25 @@ export type ComputerChannel = RpcChannel &
  * (the relay issues a separate token); that part is best effort, because the
  * phone may not be on the Mac's Wi-Fi right now.
  */
+/**
+ * The entry for a window shared with a key. The key already carries a
+ * credential for this one window, so nothing is registered.
+ */
+export function sharedWindow(raw: string): StoredComputer {
+  const key = parseShareKey(raw);
+  if (!key) throw new PairingError('分享密钥不完整，请向分享者重新复制一份。');
+  const endpoint = brokerEndpoint(key.serverUrl, key.relayId);
+  if (!endpoint.ok) throw new PairingError(endpoint.error === 'insecure_url' ? '分享密钥里的服务器地址必须是 https。' : '分享密钥里的服务器地址无效。');
+  const name = key.name || '分享窗口';
+  return {
+    id: newComputerId(),
+    name,
+    broker: { serverUrl: endpoint.endpoint.baseUrl, relayId: key.relayId, deviceId: key.deviceId, token: key.token },
+    pairedAt: new Date().toISOString(),
+    share: { name },
+  };
+}
+
 export async function registerComputer(payload: PairingPayload): Promise<StoredComputer> {
   const endpoint = brokerEndpoint(payload.serverUrl, payload.relayId);
   if (!endpoint.ok) {

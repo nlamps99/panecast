@@ -18,6 +18,11 @@ export type StoredComputer = {
   pairedAt: string;
   /** Account-derived credentials are removed when this account signs out. */
   accountId?: string;
+  /**
+   * Set for a window someone else shared with a key. The credential reaches
+   * only that one terminal, so it never stands in for a paired computer.
+   */
+  share?: { name: string };
   online?: boolean;
 };
 
@@ -38,8 +43,14 @@ export function selectedComputer(list: ComputerList): StoredComputer | null {
   return list.computers.find((c) => c.id === list.selectedId) ?? list.computers[0] ?? null;
 }
 
-/** Two records for the same relay on the same broker are the same computer. */
+/**
+ * Two paired records for the same relay on the same broker are the same
+ * computer. A shared window is its own entry, keyed by its credential, so a
+ * key for a window on a paired computer neither replaces nor merges with it.
+ */
 export function sameRelay(a: StoredComputer, b: StoredComputer): boolean {
+  if (Boolean(a.share) !== Boolean(b.share)) return false;
+  if (a.share) return a.broker.deviceId === b.broker.deviceId && a.broker.serverUrl === b.broker.serverUrl;
   return a.broker.relayId === b.broker.relayId && a.broker.serverUrl === b.broker.serverUrl;
 }
 
@@ -71,7 +82,7 @@ export function removeComputer(list: ComputerList, computerId: string): Computer
 
 /** The name a rename would store: trimmed, and the relay id when left blank. */
 export function normalizeComputerName(computer: StoredComputer, name: string): string {
-  return name.trim() || computer.broker.relayId;
+  return name.trim() || computer.share?.name || computer.broker.relayId;
 }
 
 export function renameComputer(list: ComputerList, computerId: string, name: string): ComputerList {

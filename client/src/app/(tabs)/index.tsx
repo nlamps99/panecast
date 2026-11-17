@@ -3,7 +3,7 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { windowLabel, type SurfaceInfo, type WorkspaceInfo } from '../../session/surfaces';
+import { canManage, windowLabel, type SurfaceInfo, type WorkspaceInfo } from '../../session/surfaces';
 import { actionErrorText, workspaceActionsFor } from '../../session/workspaceActions';
 import { useConnectionStatus, useMachine, useStore } from '../../state/hooks';
 import { openRecentSurface, openSurface } from '../../state/navigation';
@@ -45,7 +45,7 @@ export default function WorkspacesScreen() {
   const [createDialog, setCreateDialog] = useState<{ key: number; open: boolean } | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const banner = statusBanner(status);
-  const canCreate = status.state === 'open' && !creating && windows.find((w) => w.id === selectedWindowId)?.access !== 'read';
+  const canCreate = status.state === 'open' && !creating && canManage(windows.find((w) => w.id === selectedWindowId));
 
   useFocusEffect(
     useCallback(() => {
@@ -67,7 +67,7 @@ export default function WorkspacesScreen() {
   const selectedWindow = windows.length > 1 ? windows.find((w) => w.id === selectedWindowId) : undefined;
 
   const openMenu = (workspace: WorkspaceInfo, stage: WorkspaceMenuStage = 'menu') => {
-    if (pending[workspace.id] || workspace.access === 'read') return;
+    if (pending[workspace.id] || !canManage(workspace)) return;
     setMenu((m) => ({ key: (m?.key ?? 0) + 1, workspace, stage, open: true }));
   };
   const dismissMenu = () => setMenu((m) => (m ? { ...m, open: false } : m));
@@ -176,7 +176,7 @@ export default function WorkspacesScreen() {
       ) : null}
       {!loaded ? <Text style={styles.emptyText}>{status.state === 'open' ? '正在读取工作区…' : '正在连接电脑…'}</Text> : null}
       {loaded && workspaces.length > 0 && shown.length === 0 ? <Text style={styles.emptyText}>没有匹配「{query}」的工作区</Text> : null}
-      {shown.some(w => w.access !== 'read') ? <Text style={styles.hint}>点 × 关闭工作区；长按可以重命名</Text> : null}
+      {shown.some(w => canManage(w)) ? <Text style={styles.hint}>点 × 关闭工作区；长按可以重命名</Text> : null}
 
       {createDialog ? (
         <NameDialog
@@ -248,7 +248,7 @@ function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needs
   const isCurrent = currentSurfaceId !== null;
   const surfaceActivity = (surface: SurfaceInfo) => activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })];
   const running = surfaces.filter((surface) => surfaceActivity(surface)?.status === 'running');
-  const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.access === 'read' ? ' · 只读' : ''}${workspace.selected ? ' · 电脑上正在用' : ''}`;
+  const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.access === 'read' ? ' · 只读' : workspace.access === 'shared' ? ' · 别人分享的窗口' : ''}${workspace.selected ? ' · 电脑上正在用' : ''}`;
   return (
     <View style={[styles.card, isCurrent && styles.cardCurrent, busy && styles.cardBusy]}>
       <Pressable
@@ -289,7 +289,7 @@ function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needs
         <Pressable onPress={(event) => { event.stopPropagation(); onPin(); }} hitSlop={6} style={styles.pin} accessibilityRole="button" accessibilityLabel={`${pinned ? '取消置顶' : '置顶'} ${workspace.title}`}>
           <Text style={[styles.pinText, pinned && styles.pinActive]}>{pinned ? '★' : '☆'}</Text>
         </Pressable>
-        {workspace.access === 'read' ? null : <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={busy !== null || !connected} onPress={onClose} />}
+        {!canManage(workspace) ? null : <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={busy !== null || !connected} onPress={onClose} />}
         {unread > 0 ? (
           <View style={styles.unread}>
             <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>

@@ -24,6 +24,8 @@ export type RegistrationResult =
   | { ok: false; reason: 'http'; status: number };
 
 export function brokerTarget(computer: StoredComputer): RegistrationTarget | null {
+  // A shared window's computer never sends its notifications to a guest.
+  if (computer.share) return null;
   const endpoint = brokerEndpoint(computer.broker.serverUrl, computer.broker.relayId);
   if (!endpoint.ok || endpoint.endpoint.kind !== 'broker') return null;
   const { baseUrl, relayId } = endpoint.endpoint;

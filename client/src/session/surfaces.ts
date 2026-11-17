@@ -1,9 +1,19 @@
 import type { RpcChannel, SurfaceTarget } from './terminalSession';
 
-export type WorkspaceInfo = { id: string; title: string; index: number; selected: boolean; sourceId?: string; access?: 'read' | 'control' };
+/**
+ * `shared`: a window someone shared with a key. It takes input like `control`
+ * but cannot be created, renamed or closed from here.
+ */
+export type Access = 'read' | 'control' | 'shared';
+/** Whether workspaces and terminals here may be created, renamed or closed. */
+export function canManage(item: { access?: Access } | null | undefined): boolean {
+  return item?.access !== 'read' && item?.access !== 'shared';
+}
+
+export type WorkspaceInfo = { id: string; title: string; index: number; selected: boolean; sourceId?: string; access?: Access };
 export type SurfaceInfo = { id: string; title: string; index: number; focused: boolean; type: string };
 /** A cmux window. `key` is cmux's key (frontmost) window. */
-export type WindowInfo = { id: string; ref: string; index: number; workspaceCount: number | null; key: boolean; sourceId?: string; access?: 'read' | 'control' };
+export type WindowInfo = { id: string; ref: string; index: number; workspaceCount: number | null; key: boolean; sourceId?: string; access?: Access };
 /** One window's workspaces; `windowId` is the window cmux says it listed, when it says. */
 export type WorkspaceListing = { windowId: string | null; workspaces: WorkspaceInfo[] };
 
@@ -26,7 +36,7 @@ export async function listWindows(channel: RpcChannel): Promise<WindowInfo[]> {
         // cmux calls it `key`, as in key window, not `is_key`.
         key: item.key === true,
         ...(typeof item.source_id === 'string' ? { sourceId: item.source_id } : {}),
-        ...(item.access === 'read' || item.access === 'control' ? { access: item.access } : {}),
+        ...(item.access === 'read' || item.access === 'control' || item.access === 'shared' ? { access: item.access } : {}),
       };
     })
     .filter((w): w is WindowInfo => w !== null)
@@ -70,7 +80,7 @@ function parseWorkspaces(result: unknown): WorkspaceInfo[] {
         index: numberField(item, 'index') ?? position,
         selected: item.selected === true,
         ...(typeof item.source_id === 'string' ? { sourceId: item.source_id } : {}),
-        ...(item.access === 'read' || item.access === 'control' ? { access: item.access } : {}),
+        ...(item.access === 'read' || item.access === 'control' || item.access === 'shared' ? { access: item.access } : {}),
       };
     })
     .filter((w): w is WorkspaceInfo => w !== null)

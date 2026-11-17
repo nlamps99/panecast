@@ -131,11 +131,12 @@ export default function PairScreen() {
         {repairing ? `「${repairing.name}」的配对已失效。在这台 Mac 上` : '在 Mac 上'}运行 <Text style={styles.code}>cmux-relay pair</Text>
         {desktop ? '，然后粘贴它显示的配对链接。' : '，然后扫描它显示的二维码。'}
       </Text>
+      <Text style={styles.body}>别人给了你某个窗口的分享密钥（pcs1. 开头）？直接粘贴到下面，不用配对。</Text>
       {desktop ? null : <View style={styles.cameraBox}>{camera}</View>}
       {busy ? (
         <View style={styles.status}>
           <ActivityIndicator color={colors.ink} />
-          <Text style={styles.body}>正在配对…</Text>
+          <Text style={styles.body}>正在连接…</Text>
         </View>
       ) : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -144,7 +145,7 @@ export default function PairScreen() {
           <TextInput
             value={manualText}
             onChangeText={setManualText}
-            placeholder="粘贴 cmux://pair?... 链接"
+            placeholder="粘贴配对链接或分享密钥"
             placeholderTextColor={colors.muted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -159,12 +160,12 @@ export default function PairScreen() {
             onPress={() => void attempt(manualText)}
             accessibilityRole="button"
           >
-            <Text style={styles.buttonText}>配对</Text>
+            <Text style={styles.buttonText}>连接</Text>
           </Pressable>
         </View>
       ) : (
         <Pressable onPress={() => setManual(true)} accessibilityRole="button">
-          <Text style={styles.link}>没法扫码？粘贴配对链接</Text>
+          <Text style={styles.link}>没法扫码，或者有分享密钥？点这里粘贴</Text>
         </Pressable>
       )}
       {presented ? null : (
