@@ -235,35 +235,36 @@
     }
   ],
   "desktop": {
-    "version": "0.2.12",
+    "version": "0.2.13",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.12-mac-arm64.dmg",
-    "size": 4631489,
-    "sha256": "e98ad6d6043ab6a421ad1196d96959254946b2bf9beedcb7d935d2e4f08f1ea2",
+    "file": "panecast-desktop-0.2.13-mac-arm64.dmg",
+    "size": 4597935,
+    "sha256": "d5e1e43e23c70230ac02942bddd328c813b785eb9d4123f32b1eed237d18128b",
     "archive": {
-      "file": "panecast-desktop-0.2.12-mac-arm64.zip",
-      "size": 4364967,
-      "sha256": "1028296c03324f41e2e27f3431a98138a8d9121fd0e45fa5864776fff0ff1efb"
+      "file": "panecast-desktop-0.2.13-mac-arm64.zip",
+      "size": 4331587,
+      "sha256": "29ef58d0327a8ae370ba677a7d733bd46ade93d0d84ca7515d74c97f974e5bab"
     },
     "installer": {
-      "file": "install-desktop-0.2.12-mac-arm64.sh",
+      "file": "install-desktop-0.2.13-mac-arm64.sh",
       "size": 5632,
-      "sha256": "25c39e877965e368d6fe0e5e082981fd896666b0baca4effa464e0bf86f957d8"
+      "sha256": "74ae0943dea9832efd1a417144df41c88359a1db93a8a7ead48efc94ae16c576"
     },
     "update": {
-      "file": "panecast-desktop-0.2.12-mac-arm64.app.tar.gz",
-      "size": 4358514,
-      "sha256": "e1145bf81f8e427b575a6ed448f21b3247f4645b49915e52bc72ea1928ccfbbb",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ1VUZ04wZEJ0R3laVjVLOThGaVMyMGZvOVZGRUFMSEpkWUxVQURuSUcwcnFWcUVkRStDNXZXcnBwYU84YlIvbkhIVElnMlg4dWpURldBQ2crODM4dXdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTEzMzM0CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTItbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTIKYk5kYnp1MDNkekxOSFVSaWI4c2VUd3J0d0JZdGsvOXkxdkJHaGF5ZnZkMWlzRGRWUzhyVmxLMlh4YUhrUFBwSmhSZmtqVUNHeWtmdTd5bHZUd1NJQnc9PQo="
+      "file": "panecast-desktop-0.2.13-mac-arm64.app.tar.gz",
+      "size": 4325046,
+      "sha256": "7ec938dbad3745f3916269fa92ef49da5e955cb2149bc14c490a26b75c9864ed",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ1NJRTdBOUdmTmtnUk9sbWVKWlgzSUlmUXBZNDduRTFVSFRVOFdpdXBWZHlldW9OUnZBaWRYQmlBZlJiem1xSnBFajVoakowYUlYek14eDdXa0J0L1FRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTE2NjEwCWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTMtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTMKdVVUM1oydWV3ZXg3bU50OE50am9ZRnFUOExoYW5SNlhSdkl3QXR1aUpWSTZ3NE4yWXpjN3lTMmdzVmdsRnRya1YwUSttTDI1VEh5Tzg0WWoxSnZNRHc9PQo="
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-17",
     "notarized": false,
-    "sourceCommit": "9d2274f6334d812b3a7f10a8c2c507277efd7f3a",
+    "sourceCommit": "746cd77417d7407e3df4084a541a25010ee5398a",
     "notes": [
-      "滚动不再卡住：在 Claude Code 等全屏程序里用触控板或滚轮往上翻，历史跟得上手指（加载速度约为原来的 8 倍），远处的历史仍保留颜色",
+      "Claude Code 窗口往上翻历史不再卡住、不再只加载几行：按 Claude Code 的实际滚动方式重写，整段历史通常一秒左右加载完，经服务器远程连接也能跟上",
+      "回到底部时，电脑上的 Claude 窗口准确回到原来的位置，不会停在半路",
       "翻历史时出现「历史暂时无法衔接」后，再滑一下就会自动重试"
     ]
   },
