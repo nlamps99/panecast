@@ -221,32 +221,32 @@
     }
   ],
   "desktop": {
-    "version": "0.2.8",
+    "version": "0.2.9",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.8-mac-arm64.dmg",
-    "size": 3633477,
-    "sha256": "a2ae75208a561be1ce91b056135c9c5722f8dfb9df66018a5f7eba3a2b6ef133",
+    "file": "panecast-desktop-0.2.9-mac-arm64.dmg",
+    "size": 3763900,
+    "sha256": "11474d3673ccd6e6307563b7a13b85af9052474ce43724c698c41b4fe86d7228",
     "archive": {
-      "file": "panecast-desktop-0.2.8-mac-arm64.zip",
-      "size": 3408102,
-      "sha256": "7b724f6f8ba7e12a641cf87b910188fa981c711ad7b5e87a1215df28453a139c"
+      "file": "panecast-desktop-0.2.9-mac-arm64.zip",
+      "size": 3538514,
+      "sha256": "5e11a0ba386b810d51600fbe976f32c3cd6cb31814d6603ff50d0896b89d6ab6"
     },
     "installer": {
-      "file": "install-desktop-0.2.8-mac-arm64.sh",
+      "file": "install-desktop-0.2.9-mac-arm64.sh",
       "size": 5630,
-      "sha256": "022dcb8ce5ecc9ba8cea9caf46441fe6d96ff7066a9a69d30e686553c59bf6a4"
+      "sha256": "aa620c9ddba9c307e240cef7dfd7252d27ec87c3a40d9a83f34a0d78fa369d3f"
     },
     "minimumMacOS": "13.0",
-    "date": "2026-11-14",
+    "date": "2026-11-16",
     "notarized": false,
-    "sourceCommit": "4e3803ec859717d7c679c4adb217307cc21d6da4",
+    "sourceCommit": "0c53484fde359b66cd2c0cc48660f38dabf5bd48",
     "notes": [
-      "会话、终端画面和窗口列表支持本地缓存，切换和重新打开先显示已读内容，再更新最新消息",
-      "修复 0.2.7 后台重复读取造成的卡顿，当前会话优先加载，后台检查按固定请求预算分散执行",
-      "移除“正在处理”文字，改为名称左侧的小进度环；其他窗口也会显示运行状态",
-      "缓存按电脑隔离，忘记电脑或退出关联账号时清除；保留完成通知与终端历史滚动"
+      "按桌面应用重新设计：左侧常驻电脑、工作区和终端列表，去掉手机的底部标签栏和返回按钮，并增加 ⌘ 快捷键",
+      "在运行网关的同一台电脑上直接连接本机网关，按键和画面不经过服务器；连续输入合并成一次发送",
+      "终端使用等宽字体，显示颜色和真实光标（需更新 Mac 上的 cmux relay），默认按电脑上的原始列宽显示",
+      "可以粘贴别人分享的窗口密钥（pcs1. 开头）直接连接，不用配对，只能看到并操作这一个窗口"
     ]
   },
   "windows": {
