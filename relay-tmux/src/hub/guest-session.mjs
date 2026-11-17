@@ -3,6 +3,7 @@ import { RpcError } from '../tmux.mjs';
 import * as relayServer from '../server.mjs';
 import { HubSession } from './session.mjs';
 import { scoped, scopeResult } from './ids.mjs';
+import { listShareFiles, MAX_UPLOAD_BYTES, mimeFor, saveUpload } from './share-files.mjs';
 
 /**
  * Keys a guest may send: enough to answer Claude's menus and interrupt it.
@@ -59,9 +60,9 @@ export function guestKey(key) {
  * drops the connection; a share that cannot be read refuses everything.
  */
 export class GuestSession extends HubSession {
-  constructor(registry, config, send, close, notify, { shares, deviceId, shareId }) {
+  constructor(registry, config, send, close, notify, { shares, deviceId, shareId, fileLinks = null }) {
     super(registry, config, send, close, notify);
-    Object.assign(this, { shares, deviceId, shareId, guest: true, checkedAt: Date.now() });
+    Object.assign(this, { shares, deviceId, shareId, fileLinks, guest: true, checkedAt: Date.now() });
     void this.current().catch(() => {});
   }
 
@@ -106,11 +107,15 @@ export class GuestSession extends HubSession {
     const share = await this.current();
     const own = this.target(share);
     if (method === 'relay.info') {
-      const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id } };
+      const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id,
+        files: { list: true, links: Boolean(this.fileLinks), upload: true } } };
       if (p.source_id !== undefined || p.workspace_id !== undefined || p.surface_id !== undefined) {
         this.check(p, own);
         const limits = await this.client(share.source_id).call('relay.info', {});
-        if (Number.isFinite(limits.max_message_bytes)) info.max_message_bytes = Math.min(32 * 1024 * 1024, limits.max_message_bytes);
+        if (Number.isFinite(limits.max_message_bytes)) {
+          info.max_message_bytes = Math.min(32 * 1024 * 1024, limits.max_message_bytes);
+          info.max_upload_bytes = MAX_UPLOAD_BYTES;
+        }
       }
       return info;
     }
@@ -141,6 +146,23 @@ export class GuestSession extends HubSession {
     if (method === 'terminal.conversation.batch') {
       if (typeof this.conversationBatch !== 'function') throw new RpcError('method_not_found', '统一网关不支持这个操作');
       return this.conversationBatch(p);
+    }
+    // Files of the shared directory only. A guest's own apps open the files from a download link.
+    if (method === 'share.files.list') return listShareFiles(share.directory);
+    if (method === 'share.file.link') {
+      if (!this.fileLinks) throw new RpcError('file_links_unavailable', '这台电脑没有配置中转服务器，不能发送文件');
+      return this.fileLinks.link(share.directory, p.path);
+    }
+    if (method === 'file.upload') {
+      this.check(p, own);
+      if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
+      if (typeof p.data_base64 !== 'string' || p.data_base64.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 || !/^[\w+/]*={0,2}$/.test(p.data_base64)) {
+        throw new RpcError('upload_failed', `文件超过 ${MAX_UPLOAD_BYTES / 1024 / 1024} MB 或格式无效`);
+      }
+      const data = Buffer.from(p.data_base64, 'base64');
+      const saved = await saveUpload(share.directory, p.filename, data);
+      // Relative to the shared folder, where Claude runs: a message starting with an absolute path would read as a / command.
+      return { path: `./${saved.filename}`, filename: saved.filename, size: data.length, bytes: data.length, mime_type: mimeFor(saved.filename) };
     }
     if (!TARGETED.has(method)) throw forbidden();
     this.check(p, own);

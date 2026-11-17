@@ -22,6 +22,8 @@ import { BatteryBadge } from './BatteryBadge';
 import { Icon } from './Icon';
 import { InputBar } from './InputBar';
 import { ProjectBrowser } from './ProjectBrowser';
+import { SharedFilesBar, SharedFilesSheet } from './SharedFiles';
+import { SharedFilesStore } from '../session/sharedFiles';
 import { statusBanner, statusColor, statusLabel } from './status';
 import { Sheet, SheetRow, useSheet } from './Sheet';
 import { terminalColumns, TerminalView, type TerminalViewHandle } from './TerminalView';
@@ -79,6 +81,11 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
+  // A window someone shared: its folder's files open with this device's own apps.
+  const shared = Boolean(machine.computer?.share);
+  const sharedFiles = useMemo(() => shared ? new SharedFilesStore(channel) : null, [shared, channel]);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const showFiles = () => shared ? setFilesOpen(true) : setProjectOpen(true);
   const [terminalActive, setTerminalActive] = useState(false);
   const target = state.target;
   const isOpen = status.state === 'open';
@@ -90,6 +97,11 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const { battery } = useStore(host);
   const activity = useTerminalActivity(machine);
   useEffect(() => () => conversation.dispose(), [conversation]);
+  useEffect(() => {
+    if (!sharedFiles || !terminalActive) return;
+    sharedFiles.start();
+    return () => sharedFiles.stop();
+  }, [sharedFiles, terminalActive]);
   useEffect(() => {
     if (terminalActive && chat) conversation.start(); else conversation.stop();
     return () => conversation.stop();
@@ -208,7 +220,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
             </View>
           </View>
           {compact ? <View style={styles.segment} accessibilityRole="tablist">{presentationTabs}</View> : null}
-          {!compact && target ? <Pressable onPress={() => setProjectOpen(true)} style={styles.back} accessibilityRole="button" accessibilityLabel="查看项目文件与 Git 改动"><Text style={{ color: colors.blue, fontSize: 13 }}>文件</Text></Pressable> : null}
+          {!compact && target ? <Pressable onPress={showFiles} style={styles.back} accessibilityRole="button" accessibilityLabel={shared ? '查看分享目录里的文件' : '查看项目文件与 Git 改动'}><Text style={{ color: colors.blue, fontSize: 13 }}>文件</Text></Pressable> : null}
           {showBattery || machine.mode === 'demo' ? (
             <View style={[styles.badges, compact && styles.compactBadges]}>
               {showBattery ? <BatteryBadge battery={battery} onPress={() => void host.refresh()} /> : null}
@@ -314,12 +326,14 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
       </View>
       <View style={[styles.bottom, side, { paddingBottom: keyboardVisible ? 0 : Math.max(insets.bottom - 10, 0) }]}>
         {readOnly ? <Text style={{ color: colors.yellow, padding: 12 }}>这个连接源只允许读取</Text> : null}
+        {sharedFiles && target ? <SharedFilesBar store={sharedFiles} onShowAll={() => setFilesOpen(true)} /> : null}
         <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${terminalPresentation}:${desktop ? desktopInputMode : inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef}
           presentation={terminalPresentation} onSubmitLine={chat ? text => conversation.send(text) : undefined} />
       </View>
+      {sharedFiles ? <SharedFilesSheet store={sharedFiles} visible={filesOpen} onClose={() => setFilesOpen(false)} /> : null}
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
       {compact ? <Sheet visible={menu.visible} title="终端" onClose={() => menu.close()} onClosed={menu.onClosed}>
-        {target ? <SheetRow title="项目文件与 Git 改动" detail="浏览目录，查看未提交的改动" divided={false} onPress={() => menu.close(() => setProjectOpen(true))} /> : null}
+        {target ? <SheetRow title={shared ? '分享目录里的文件' : '项目文件与 Git 改动'} detail={shared ? '点文件用本机应用打开' : '浏览目录，查看未提交的改动'} divided={false} onPress={() => menu.close(showFiles)} /> : null}
         {!chat ? <>
           <SheetRow icon="search" title="搜索 · 复制输出" divided={Boolean(target)} accessibilityLabel="搜索和复制终端输出" onPress={() => menu.close(() => terminalView.current?.openTools())} />
           <SheetRow title="自动折行" detail={terminalWrap ? '按手机宽度折行，续行与上一行的正文对齐' : '保留电脑上的原始列宽，左右滑动查看'}

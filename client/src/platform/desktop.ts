@@ -27,6 +27,8 @@ export type DesktopBridge = {
   checkForUpdate?(): Promise<unknown>;
   restartToUpdate?(): Promise<void>;
   onUpdate?(listener: (status: unknown) => void): () => void;
+  /** Downloads a shared file into Downloads/Panecast and opens it with the default app; other kinds are only revealed. */
+  openSharedFile?(url: string, name: string): Promise<{ path: string; opened: boolean }>;
 };
 declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {

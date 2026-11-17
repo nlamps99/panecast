@@ -5,6 +5,7 @@ import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { GuestSession } from './guest-session.mjs';
 import { ShareStore, sharesFile } from './share.mjs';
+import { ShareFileLinks } from './share-files.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scoped, scopeResult } from './ids.mjs';
 import { WeixinRuntime } from '../weixin/runtime.mjs';
@@ -14,11 +15,13 @@ export async function createHub(config, options = {}) {
   const registry = new SourceRegistry(config.sources ?? [], options);
   const effective = { ...config, hub_event_monitor: true, port: config.port ?? 4400, state_directory: config.state_directory ?? join(homedir(), '.cmuxremote', 'hub') };
   const shares = options.shares ?? new ShareStore(sharesFile(effective));
+  // One link cache for all guests: a file that did not change is uploaded once.
+  const fileLinks = options.fileLinks ?? (effective.broker?.url && effective.broker.relay_id && effective.broker.relay_token ? new ShareFileLinks(effective.broker) : null);
   const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub', guestSessions: true,
     localGateway: options.localGateway ?? join(effective.state_directory, 'local-gateway.json'),
     allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.has(frame.payload.source_id),
     createSession: ({ send, close, notify, meta = {} }) => meta.guest
-      ? new GuestSession(registry, effective, send, close, notify, { shares, deviceId: meta.deviceId, shareId: meta.guest.shareId })
+      ? new GuestSession(registry, effective, send, close, notify, { shares, fileLinks, deviceId: meta.deviceId, shareId: meta.guest.shareId })
       : new HubSession(registry, effective, send, close, notify) });
   const supervisor = new SupervisorRuntime(registry, effective, options.supervisor);
   const weixin = new WeixinRuntime(registry, effective, relay.journal, { ...options.weixin, supervisor });

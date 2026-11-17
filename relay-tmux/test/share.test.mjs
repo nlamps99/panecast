@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, symlink, realpath } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, symlink, realpath, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -80,13 +80,13 @@ async function broker(t) {
 const SHARE = { id: 's1', name: '论文', directory: '/tmp/paper', source_id: 'cmux', workspace_id: '$1', surface_id: '%1', created_at: '', revoked_at: null,
   guests: [{ device_id: 'guest-a', label: '同学', created_at: '', revoked_at: null }] };
 
-async function setup(t, shares = [SHARE]) {
+async function setup(t, shares = [SHARE], options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'panecast-share-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const upstream = await cmux(t), relay = await broker(t);
   const store = new ShareStore(join(directory, 'state', 'shares', 'shares.json'));
   if (shares) await store.write(structuredClone(shares));
   const hub = await createHub({ state_directory: join(directory, 'state'), port: 0, broker: { url: relay.url, relay_id: 'home', relay_token: 'relay-secret' },
-    sources: [{ id: 'cmux', type: 'cmux', name: 'cmux', enabled: true, access: 'control', url: upstream.url, token: 'upstream-secret', device_id: 'hub' }] });
+    sources: [{ id: 'cmux', type: 'cmux', name: 'cmux', enabled: true, access: 'control', url: upstream.url, token: 'upstream-secret', device_id: 'hub' }] }, options);
   await hub.start(); t.after(() => hub.close());
   await relay.ready();
   return { directory, upstream, relay, store, hub };
@@ -106,7 +106,7 @@ test('a guest sees one source, one workspace and one terminal', async (t) => {
   assert.deepEqual(sources.sources.map((s) => [s.id, s.name, s.status, s.capabilities.create]), [['cmux', '论文', 'online', false]]);
   assert.equal(JSON.stringify(sources).includes('upstream-secret'), false);
   const info = await relay.call('g', 'relay.info');
-  assert.deepEqual(info.share, { id: 's1', name: '论文', ...own });
+  assert.deepEqual(info.share, { id: 's1', name: '论文', ...own, files: { list: true, links: true, upload: true } });
   const { windows } = await relay.call('g', 'window.list');
   assert.equal(windows.length, 1);
   const listing = await relay.call('g', 'workspace.list', { window_id: windows[0].id });
@@ -132,7 +132,7 @@ test('a guest cannot reach any other terminal or management call', async (t) => 
     ['surface.send_text', { ...other, text: 'hi' }], ['surface.list', { workspace_id: other.workspace_id }], ['terminal.conversation', other],
     ['workspace.create', { source_id: 'cmux', title: 'x' }], ['workspace.close', { workspace_id: own.workspace_id }], ['surface.close', own],
     ['surface.create', { workspace_id: own.workspace_id }], ['workspace.rename', { workspace_id: own.workspace_id, title: 'x' }],
-    ['file.upload', { ...own, data_base64: 'aGk=' }], ['notification.create', own], ['agent.threads', { source_id: 'cmux' }],
+    ['file.upload', { ...other, data_base64: 'aGk=' }], ['notification.create', own], ['project.read', { ...own, path: 'a.txt' }], ['project.list', own], ['agent.threads', { source_id: 'cmux' }],
     ['workspace.list', { source_id: 'other' }], ['surface.subscribe', { ...own, pane_id: scoped('cmux', '%0') }],
   ]) await assert.rejects(relay.call('g', method, params), { code: 'forbidden' }, method);
   assert.equal(upstream.calls.some((c) => c.params?.surface_id === '%0' || c.params?.surface_id === '%9' || /create|close|rename/.test(c.method)), false);
@@ -265,4 +265,33 @@ test('input checks stand alone', () => {
   assert.throws(() => guestText('hi!'), { code: 'guest_shell' });
   assert.equal(guestKey('up'), 'up');
   assert.throws(() => guestKey('tab'), { code: 'guest_key' });
+});
+
+test('a guest lists, links and uploads files of the shared directory only', async (t) => {
+  const outside = await mkdtemp(join(tmpdir(), 'panecast-outside-')); t.after(() => rm(outside, { recursive: true, force: true }));
+  const folder = await realpath(await mkdtemp(join(tmpdir(), 'panecast-shared-'))); t.after(() => rm(folder, { recursive: true, force: true }));
+  await writeFile(join(outside, 'id_rsa'), 'secret');
+  await writeFile(join(folder, '论文.docx'), 'paper');
+  await mkdir(join(folder, '.git')); await writeFile(join(folder, '.git', 'config'), 'x');
+  await symlink(join(outside, 'id_rsa'), join(folder, 'key.txt'));
+  const linked = [];
+  const fileLinks = { link: async (root, path) => { linked.push([root, path]); return { url: 'https://files.example/x', name: path, path, size: 5, type: 'x', expires_at: '' }; } };
+  const { relay } = await setup(t, [{ ...SHARE, directory: folder }], { fileLinks });
+  relay.open('g', 'guest-a', { share_id: 's1' });
+  const { files } = await relay.call('g', 'share.files.list');
+  assert.deepEqual(files.map((f) => f.path), ['论文.docx'], 'no hidden folders or links');
+  assert.equal((await relay.call('g', 'share.file.link', { path: '论文.docx' })).url, 'https://files.example/x');
+  assert.deepEqual(linked, [[folder, '论文.docx']], 'links are always resolved inside the shared directory');
+  const info = await relay.call('g', 'relay.info', own);
+  assert.equal(info.max_upload_bytes, 12 * 1024 * 1024);
+  const first = await relay.call('g', 'file.upload', { ...own, filename: '../原稿!.docx', data_base64: Buffer.from('v1').toString('base64'), mime_type: 'x' });
+  assert.equal(first.path, './原稿！.docx');
+  assert.equal(await readFile(join(folder, '原稿！.docx'), 'utf8'), 'v1');
+  const second = await relay.call('g', 'file.upload', { ...own, filename: '原稿!.docx', data_base64: Buffer.from('v2').toString('base64') });
+  assert.equal(second.path, './原稿！ (2).docx', 'an upload never replaces a file');
+  const hidden = await relay.call('g', 'file.upload', { ...own, filename: '.zshrc', data_base64: 'aGk=' });
+  assert.equal(hidden.path, './zshrc');
+  const viaLink = await relay.call('g', 'file.upload', { ...own, filename: 'key.txt', data_base64: 'aGk=' });
+  assert.equal(viaLink.path, './key (2).txt', 'an existing link is never written through');
+  assert.equal(await readFile(join(outside, 'id_rsa'), 'utf8'), 'secret');
 });

@@ -59,6 +59,7 @@ jest.mock('../TerminalView', () => {
 jest.mock('../TerminalChatView', () => ({ TerminalChatView: () => null }));
 jest.mock('../InputBar', () => ({ InputBar: () => null }));
 jest.mock('../ProjectBrowser', () => ({ ProjectBrowser: () => 'PROJECT_BROWSER' }));
+jest.mock('../SharedFiles', () => ({ SharedFilesBar: () => null, SharedFilesSheet: () => null }));
 jest.mock('../BatteryBadge', () => ({ BatteryBadge: () => null }));
 jest.mock('../WorkspaceSidebar', () => ({ WorkspaceSidebar: () => null }));
 jest.mock('../useKeyboardVisible', () => ({ useKeyboardVisible: () => false }));

@@ -8,6 +8,7 @@ import { AccountStore } from "./accounts.mjs";
 import { CloudIdentity } from "./cloud-identity.mjs";
 import { accountRoute } from "./account-routes.mjs";
 import { GuestStore } from "./guests.mjs";
+import { fileLinksFromEnvironment, issueTransfer, validSha256 } from "./file-links.mjs";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 export const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
@@ -255,6 +256,8 @@ export function configFromEnvironment(environment = process.env) {
     relayEnrollment: environment.CMUX_RELAY_ENROLLMENT !== "0",
     // Accounts shared with cmux cloud (CMUX_ACCOUNT_*); unset keeps local passwords.
     cloudIdentity: CloudIdentity.fromEnvironment(environment),
+    // Download links for shared-window files (CMUX_FILES_*); unset leaves them off.
+    files: fileLinksFromEnvironment(environment),
   };
   const file = environment.CMUX_RELAYS_FILE;
   const inline = environment.CMUX_RELAYS_JSON;
@@ -360,6 +363,7 @@ export async function createBrokerServer(options) {
   const pushRequests = new Map();
   const pushLimiter = new SlidingWindowRateLimiter(12, 60_000);
   const guestLimiter = new SlidingWindowRateLimiter(config.guestLimit ?? 60, 60_000);
+  const fileLimiter = new SlidingWindowRateLimiter(config.fileLinkLimit ?? 120, 600_000);
 
   async function syncPushDevices(relayId) {
     await store.load();
@@ -431,6 +435,27 @@ export async function createBrokerServer(options) {
     return true;
   }
 
+  /** A relay asks for a one-time upload and a download link for a file it is about to hand to a guest. */
+  async function fileRoute(request, response, url) {
+    if (url.pathname !== "/v1/relay/files") return false;
+    if (request.method !== "POST") { sendJSON(response, 405, { error: "method_not_allowed" }); return true; }
+    const relayId = url.searchParams.get("relay_id") ?? "";
+    const token = bearerToken(request);
+    if (!relayAccess.has(relayId) || !token || !relayAccess.token(relayId, token)) { sendJSON(response, 401, { error: "unauthorized" }); return true; }
+    if (!config.files) { sendJSON(response, 404, { error: "file_links_unavailable" }); return true; }
+    if (!fileLimiter.allow(relayId)) { sendJSON(response, 429, { error: "too_many_requests" }); return true; }
+    const body = await readJSON(request);
+    const maxBytes = config.files.maxBytes ?? 50 * 1024 * 1024;
+    if (!body || !requiredString(body.name, 500) || !Number.isInteger(body.size) || body.size < 0 || !validSha256(body.sha256) ||
+      (body.type !== undefined && (typeof body.type !== "string" || body.type.length > 200))) {
+      sendJSON(response, 400, { error: "invalid_file" });
+      return true;
+    }
+    if (body.size > maxBytes) { sendJSON(response, 413, { error: "too_large", max_bytes: maxBytes }); return true; }
+    sendJSON(response, 201, issueTransfer(config.files, { name: body.name, type: body.type ?? "", size: body.size, sha256: body.sha256 }));
+    return true;
+  }
+
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
@@ -440,6 +465,7 @@ export async function createBrokerServer(options) {
         sync: () => Promise.all([...relayConnections.keys()].map(syncPushDevices)),
       })) return;
       if (await guestRoute(request, response, url)) return;
+      if (await fileRoute(request, response, url)) return;
       if (request.method === "GET" && url.pathname === "/v1/health") {
         const relayId = url.searchParams.has("relay_id") ? url.searchParams.get("relay_id") : defaultRelayId;
         if (url.searchParams.has("relay_id") && !await authenticatePhone(request, relayId)) {
@@ -456,6 +482,7 @@ export async function createBrokerServer(options) {
           shared_accounts: Boolean(accounts.cloud),
           relay_enrollment: enrollment.enabled,
           window_sharing: true,
+          file_links: Boolean(config.files),
         });
         return;
       }

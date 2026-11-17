@@ -333,6 +333,20 @@ DELETE /v1/relay/guests/<device_id>?relay_id=…
 - 访客不能注册推送，可以用 `DELETE /v1/devices/me` 删除自己。
 - 每台电脑最多 100 把访客密钥。
 
+### 分享窗口的文件中转
+
+访客点分享目录里的文件时，网关把文件传到一个文件中转服务，访客用下载链接在自己的应用里打开。broker 只负责签发链接，文件不经过 broker。
+
+```
+POST /v1/relay/files?relay_id=…   {name, type, size, sha256} → 201 {upload_url, download_url, expires_at}
+```
+
+- broker 用 `CMUX_FILES_URL`（中转服务的 HTTPS 地址）和 `CMUX_FILES_SECRET_FILE`（签名密钥文件）开启，两者都不设时这个接口返回 404，`/v1/health` 里 `file_links` 为 false。
+- 中转服务是 `src/files-server.mjs`，只用 Node 内置模块，和 broker 共用同一个签名密钥（`PANECAST_FILES_SECRET_FILE`）。它只认签名：上传票据 10 分钟有效且只能用一次，内容必须和票据里的大小、sha256 一致；下载链接 1 小时有效，文件保存 2 小时后删除。
+- 下载时 PDF、图片、纯文本和 Office 文件内联显示，其他类型（包括 HTML、SVG）一律当作附件下载；除 PDF 外都带 `Content-Security-Policy: sandbox`。所有下载合计限速（`PANECAST_FILES_RATE`，默认 2 MiB/s），给同机的其他服务留带宽。
+- 单个文件最大 50 MB（`CMUX_FILES_MAX_BYTES` / `PANECAST_FILES_MAX_BYTES`），每台电脑每 10 分钟最多 120 个链接。
+- 当前部署：中转服务在 nzx2 的 `/srv/panecast-files`（容器 `panecast-files`），由 Caddy 把 `https://nzx2.drinklake.com/panecast-files/` 转过去。
+
 ## 排查
 
 | 现象 | 检查 |

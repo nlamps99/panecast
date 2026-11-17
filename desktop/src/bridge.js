@@ -71,6 +71,7 @@
       }).then(stop => { if (disposed) stop(); else unsubscribe = stop; }).catch(() => {});
       return () => { disposed = true; unsubscribe?.(); };
     },
+    openSharedFile: (url, name) => invoke('open_shared_file', { url, name }),
     onNotification: listener => {
       let disposed = false, unsubscribe;
       void window.__TAURI__.event.listen('panecast-notification', event => {

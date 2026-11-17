@@ -3,6 +3,7 @@
 
 mod local_gateway;
 mod security;
+mod shared_file;
 mod transport;
 #[cfg(target_os = "macos")]
 mod updater;
@@ -297,6 +298,48 @@ async fn local_gateway(
     .map_err(|_| "无法读取本机网关".into())
 }
 
+#[derive(serde::Serialize)]
+struct OpenedFile {
+    path: String,
+    opened: bool,
+}
+
+/// Downloads a file a shared window offered and opens it with the default app.
+#[tauri::command]
+async fn open_shared_file(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    url: String,
+    name: String,
+) -> Result<OpenedFile, String> {
+    require_app(&window)?;
+    let url = shared_file::valid_url(&url)?;
+    let directory = app
+        .path()
+        .download_dir()
+        .map_err(|_| "无法找到下载文件夹")?
+        .join("Panecast");
+    let path = shared_file::download(url, &directory, &name).await?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let direct = shared_file::opens_directly(&file_name);
+    let shown = if direct {
+        app.opener()
+            .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+    } else {
+        app.opener().reveal_item_in_dir(&path)
+    };
+    if shown.is_err() {
+        let _ = app.opener().reveal_item_in_dir(&path);
+    }
+    Ok(OpenedFile {
+        path: path.to_string_lossy().into_owned(),
+        opened: direct && shown.is_ok(),
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DialogOptions {
@@ -571,6 +614,7 @@ fn main() {
             notification_settings,
             local_gateway,
             dialog,
+            open_shared_file,
             update_status,
             update_check,
             update_restart
