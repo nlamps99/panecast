@@ -31,6 +31,7 @@ async function main() {
   panecast supervisor start              创建 cmux「监工」并接入微信
   panecast supervisor status | pause | resume
   panecast share create 名称 [--dir 目录]  在 cmux 新开一个受限的 Claude 窗口，并生成给别人的分享密钥
+  panecast share create 名称 --net        文件只限分享目录，网络放开（新网站第一次访问时确认）
   panecast share create 名称 --full       完整权限：不受限、无沙箱的 Claude（拿到密钥的人能操作整台电脑）
   panecast share key 分享 [--guest 名字]   给同一个窗口再发一把密钥
   panecast share reopen 分享               重新打开分享窗口（旧窗口打开后才能用退格等编辑键）

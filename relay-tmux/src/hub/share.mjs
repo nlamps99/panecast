@@ -13,6 +13,16 @@ const exec = promisify(execFile);
 const KEY_PREFIX = 'pcs1.';
 /** Tools the shared Claude may use. Bash runs inside Claude Code's OS sandbox. */
 export const SHARE_TOOLS = 'Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebSearch,TodoWrite,AskUserQuestion';
+/**
+ * Hosts an open-network share reaches without asking: code, packages and
+ * models. Claude Code refuses `*` in the sandbox allowlist, so any other host
+ * asks once per window ("Do you want to allow this connection?").
+ */
+export const OPEN_NETWORK_DOMAINS = ['github.com', '*.github.com', '*.githubusercontent.com', 'pypi.org', '*.pythonhosted.org',
+  'registry.npmjs.org', '*.npmjs.org', 'registry.npmmirror.com', '*.npmmirror.com', 'pypi.tuna.tsinghua.edu.cn', 'mirrors.aliyun.com',
+  'huggingface.co', '*.huggingface.co', '*.hf.co', 'arxiv.org', '*.arxiv.org'];
+/** Services on this computer stay out of reach even when a guest approves a host. */
+export const LOOPBACK_DOMAINS = ['localhost', '127.0.0.1', '[::1]', '0.0.0.0'];
 
 export const sharesDirectory = (config) => join(config.state_directory ?? join(homedir(), '.cmuxremote', 'hub'), 'shares');
 export const sharesFile = (config) => join(sharesDirectory(config), 'shares.json');
@@ -124,8 +134,11 @@ export function withPromptHook(settings) {
   return { ...settings, hooks: { ...settings.hooks, UserPromptSubmit: [{ hooks: [{ type: 'command', command: PROMPT_HOOK }] }] } };
 }
 
-/** Claude Code settings for a shared window: the OS sandbox confines Bash to the directory. */
-export function shareSettings(directory, { allowDomains = [], allowRead = [] } = {}) {
+/**
+ * Claude Code settings for a shared window: the OS sandbox confines Bash to the directory.
+ * `openNetwork`: common hosts allowed, any other host asks the guest once, this computer's own services refused.
+ */
+export function shareSettings(directory, { allowDomains = [], allowRead = [], openNetwork = false } = {}) {
   return withPromptHook({
     // A suggestion accepted with a key could put a ! command into the prompt.
     promptSuggestionEnabled: false,
@@ -139,7 +152,9 @@ export function shareSettings(directory, { allowDomains = [], allowRead = [] } =
       allowUnsandboxedCommands: false,
       failIfUnavailable: true,
       filesystem: { denyRead: ['~/'], allowRead: [directory, ...allowRead] },
-      network: { strictAllowlist: true, allowedDomains: allowDomains },
+      network: openNetwork
+        ? { strictAllowlist: false, allowedDomains: [...new Set([...OPEN_NETWORK_DOMAINS, ...allowDomains])], deniedDomains: LOOPBACK_DOMAINS }
+        : { strictAllowlist: true, allowedDomains: allowDomains },
     },
   });
 }
@@ -149,14 +164,15 @@ const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
 /**
  * The shell command cmux runs in the new terminal. `exec` leaves no shell behind when Claude exits.
  * `full`: the owner's own Claude with every tool, command and setting, no sandbox and no permission prompts.
+ * `web`: the confined Claude may also fetch web pages without asking (WebFetch never reaches private addresses).
  */
-export function shareCommand(binary, settingsPath, { full = false } = {}) {
+export function shareCommand(binary, settingsPath, { full = false, web = false } = {}) {
   const start = ['exec', '/usr/bin/env', '-u', 'CLAUDECODE', '-u', 'CLAUDE_CODE_ENTRYPOINT', quote(binary)];
   if (full) return [...start, '--dangerously-skip-permissions'].join(' ');
   return [...start,
     '--restricted', '--disable-slash-commands', '--strict-mcp-config',
-    '--tools', quote(SHARE_TOOLS), '--settings', quote(settingsPath),
-    '--permission-mode', 'acceptEdits', '--allowedTools=Bash'].join(' ');
+    '--tools', quote(web ? `${SHARE_TOOLS},WebFetch` : SHARE_TOOLS), '--settings', quote(settingsPath),
+    '--permission-mode', 'acceptEdits', `--allowedTools=${web ? 'Bash,WebFetch' : 'Bash'}`].join(' ');
 }
 
 /**
@@ -193,14 +209,14 @@ async function claudeBinary() {
 }
 
 /** Opens a visible cmux workspace in the directory and starts the shared Claude in it. */
-export async function openShareWindow(config, { name, directory, settingsPath, sourceId, full = false }) {
+export async function openShareWindow(config, { name, directory, settingsPath, sourceId, full = false, web = false }) {
   const registry = new SourceRegistry(config.sources ?? []);
   const session = new HubSession(registry, config, () => {}, () => {}, () => {});
   try {
     const source = sourceId ? registry.get(sourceId) : [...registry.sources.values()].find((s) => s.config.type === 'cmux' && localConversationSource(s.config.url));
     if (!source || source.config.type !== 'cmux' || !localConversationSource(source.config.url)) throw new Error('需要本机的 cmux 来源，请先打开 cmux 并运行 panecast restart');
     const client = session.client(source.config.id);
-    const command = shareCommand(await claudeBinary(), settingsPath, { full });
+    const command = shareCommand(await claudeBinary(), settingsPath, { full, web });
     const created = await client.call('workspace.create', { title: `${full ? '完整权限分享' : '分享'} · ${name}`, cwd: directory, initial_command: command, focus: false });
     const workspaceId = created.workspace_id ?? created.workspace?.id;
     if (!workspaceId) throw new Error('cmux 没有返回新工作区');
@@ -247,20 +263,21 @@ export async function shareCLI(args, configPath) {
     const name = validName(args[1]);
     const shares = await store.read();
     if (shares.some((share) => share.name === name && !share.revoked_at)) throw new Error('已有同名的分享，请换一个名称');
-    const full = args.includes('--full');
+    const full = args.includes('--full'), web = !full && args.includes('--net');
     // Fail before opening a window when the broker cannot issue keys.
     await new BrokerGuests(config.broker).list();
     const directory = await shareDirectory(flag(args, '--dir'), name, homedir(), { full });
     const id = newId();
     const settingsPath = join(sharesDirectory(config), id, 'claude-settings.json');
-    if (!full) await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)) }));
-    const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full });
+    if (!full) await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)), openNetwork: web }));
+    const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web });
     const share = { id, name, directory, source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId,
-      created_at: new Date().toISOString(), revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), guests: [] };
+      created_at: new Date().toISOString(), revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), ...(web ? { network: 'open' } : {}), guests: [] };
     shares.push(share);
     await store.write(shares);
     console.log(`已在 cmux 打开工作区「${full ? '完整权限分享' : '分享'} · ${name}」，目录：${directory}`);
     if (full) console.log('完整权限：没有沙箱，不需要确认权限，按键和文字原样送达。拿到密钥的人等于坐在这台电脑前，能读写所有文件、运行任何命令。');
+    if (web) console.log('联网：文件仍只能读写这个目录；GitHub、PyPI、npm 等常用站点直接可用，其他网站第一次访问时在窗口里确认一次，这台电脑上的本机服务访问不到。');
     console.log('第一次使用时，请在这个窗口里确认「信任这个文件夹」。');
     printKey(await issueKey(config, store, shares, share, flag(args, '--guest') ?? ''), flag(args, '--guest'));
     return;
@@ -279,7 +296,7 @@ export async function shareCLI(args, configPath) {
     const full = share.full === true;
     const settingsPath = join(sharesDirectory(config), share.id, 'claude-settings.json');
     if (!full) await writeJSON(settingsPath, withPromptHook(JSON.parse(await readFile(settingsPath, 'utf8'))));
-    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full });
+    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open' });
     const previous = { sourceId: share.source_id, workspaceId: share.workspace_id };
     Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, prompt_hook: !full });
     await store.write(shares);
@@ -291,7 +308,7 @@ export async function shareCLI(args, configPath) {
     const shares = await store.read();
     if (!shares.length) { console.log('还没有分享的窗口。运行 panecast share create 名称 来创建。'); return; }
     for (const share of shares) {
-      console.log(`${share.id}\t${share.name}\t${share.revoked_at ? '已停止' : '分享中'}${share.full ? '（完整权限）' : ''}\t${share.directory}`);
+      console.log(`${share.id}\t${share.name}\t${share.revoked_at ? '已停止' : '分享中'}${share.full ? '（完整权限）' : share.network === 'open' ? '（联网）' : ''}\t${share.directory}`);
       for (const [index, guest] of share.guests.entries()) {
         console.log(`  ${index + 1}. ${guest.label || '未命名'}\t${guest.revoked_at ? '已撤销' : '有效'}\t${guest.created_at.slice(0, 16).replace('T', ' ')}`);
       }
@@ -319,5 +336,5 @@ export async function shareCLI(args, configPath) {
     if (failed.length) console.log(`有 ${failed.length} 个密钥没能在中转服务器上删除；这台电脑已经拒绝它们，网络恢复后再运行一次 revoke 即可清理。`);
     return;
   }
-  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--full] | key 分享 [--guest 名字] | reopen 分享 | list | revoke 分享 [--guest 名字或序号]');
+  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full] | key 分享 [--guest 名字] | reopen 分享 | list | revoke 分享 [--guest 名字或序号]');
 }

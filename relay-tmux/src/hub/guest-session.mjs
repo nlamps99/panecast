@@ -150,7 +150,7 @@ export class GuestSession extends HubSession {
     const own = this.target(share);
     if (method === 'relay.info') {
       const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id,
-        files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}) } };
+        files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}), ...(share.network === 'open' ? { network: 'open' } : {}) } };
       if (p.source_id !== undefined || p.workspace_id !== undefined || p.surface_id !== undefined) {
         this.check(p, own);
         const limits = await this.client(share.source_id).call('relay.info', {});

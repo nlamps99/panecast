@@ -291,6 +291,21 @@ test('a full-access share runs the owner\'s Claude without sandbox, restrictions
   assert.equal(await shareDirectory(home, 'x', home, { full: true }), home);
 });
 
+test('an open-network share keeps the file sandbox and only widens the network', () => {
+  const settings = shareSettings('/Users/me/Panecast-Shares/x', { allowDomains: ['example.org'], openNetwork: true });
+  assert.deepEqual(settings.sandbox.filesystem, { denyRead: ['~/'], allowRead: ['/Users/me/Panecast-Shares/x'] });
+  assert.equal(settings.sandbox.enabled, true); assert.equal(settings.sandbox.allowUnsandboxedCommands, false);
+  assert.equal(settings.sandbox.network.strictAllowlist, false);
+  assert.ok(settings.sandbox.network.allowedDomains.includes('pypi.org') && settings.sandbox.network.allowedDomains.includes('example.org'));
+  assert.equal(settings.sandbox.network.allowedDomains.includes('*'), false);
+  assert.deepEqual(settings.sandbox.network.deniedDomains, ['localhost', '127.0.0.1', '[::1]', '0.0.0.0']);
+  assert.ok(settings.hooks.UserPromptSubmit, 'the ! hook stays');
+  const command = shareCommand('/bin/claude', '/s.json', { web: true });
+  for (const flag of ['--restricted', '--disable-slash-commands', '--strict-mcp-config', '--allowedTools=Bash,WebFetch']) assert.ok(command.includes(flag), flag);
+  assert.ok(command.includes(",WebFetch'"));
+  assert.ok(!shareCommand('/bin/claude', '/s.json').includes('WebFetch'));
+});
+
 test('the prompt hook refuses exactly the prompts that start with !', async () => {
   const settings = shareSettings('/tmp/x');
   const [{ hooks: [hook] }] = settings.hooks.UserPromptSubmit;

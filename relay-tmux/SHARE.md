@@ -20,6 +20,17 @@ panecast share revoke 论文                   # 停止分享，所有密钥失�
 - 默认不能联网。需要装包或访问网站时加 `--allow-domain pypi.org`（可重复）。
 - 需要网关已配置 broker（`panecast setup`），并且 broker 支持访客密钥。
 
+## 联网分享（`--net`）
+
+```sh
+panecast share create 项目 --net             # 文件只限这个目录，网络放开
+```
+
+- 文件和受限分享一样：只能读写分享目录（和临时目录），读不到主目录下的其他文件，`!`、Ctrl-G 等照旧拦住。
+- 网络：Claude Code 的沙箱不允许把白名单设成 `*`，所以改成不严格的白名单。GitHub、PyPI、npm（含 npmmirror）、清华/阿里镜像、Hugging Face、arXiv 直接可用；其他网站第一次连接时窗口里会问「Do you want to allow this connection?」，访客选 Yes 后这个窗口里不再问（`reopen` 后重新问）。还要常用的站点加 `--allow-domain`。
+- 网页抓取（WebFetch）不再询问；它本身不访问本机和内网地址。沙箱拒绝 `localhost`、`127.0.0.1` 等本机地址，访客批准也连不上这台电脑上的服务。
+- 需要注意：放开网络后，分享目录里的文件可以被传到任何网站。
+
 ## 完整权限分享（`--full`）
 
 ```sh
