@@ -235,37 +235,39 @@
     }
   ],
   "desktop": {
-    "version": "0.2.14",
+    "version": "0.2.15",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.14-mac-arm64.dmg",
-    "size": 4632120,
-    "sha256": "e7d89a7e5f9b5cd36de38e9d57815b8420b3e9c074943c5facd5340e578d70af",
+    "file": "panecast-desktop-0.2.15-mac-arm64.dmg",
+    "size": 4600682,
+    "sha256": "5d473567033767145fe181344dd7d7a86e2a8d1c385f43747de1684b53a9d8be",
     "archive": {
-      "file": "panecast-desktop-0.2.14-mac-arm64.zip",
-      "size": 4365457,
-      "sha256": "d06e136a72212006c65f75be4f74b083e6a91bcfe907852efab3b1d38fb44078"
+      "file": "panecast-desktop-0.2.15-mac-arm64.zip",
+      "size": 4333187,
+      "sha256": "6154dff637dd64503d30142fd4bf391244469177ea032a824d35e2f8703acaf4"
     },
     "installer": {
-      "file": "install-desktop-0.2.14-mac-arm64.sh",
+      "file": "install-desktop-0.2.15-mac-arm64.sh",
       "size": 5632,
-      "sha256": "c7786c215eac4b640d7539c4b96d37c76866fd9e6004ee20fb82685d73ee2d69"
+      "sha256": "c8457beafd3d115cbf59099636800b8a2f39f511dba900da96afea23076fd62e"
     },
     "update": {
-      "file": "panecast-desktop-0.2.14-mac-arm64.app.tar.gz",
-      "size": 4358789,
-      "sha256": "302655aeeb77f3121824f2c9d4b7eff047244a765d5196380cd39e4f5d702869",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ1ZLN05GNTFYVGVpZWY5K3pMV1hsMTdVZkpXNjNQQ0w0RGZmN0tsNGhad2hGVFVyL2ZXWWVZT3RXbk13WFF0S3RXYjlmdlVQUmhhQlV0OFppSE9NandrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTIxMjY1CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTQtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTQKczVEOFVqOHVHNFlUTitOOXBPR2R1TU10MDZZcm5SZmNGbjROb0k3bUYzcmwvUURsVnY4SE1HbVcwRDMrbzJNaDlSTzJpS2o0cXd5WDdQd3ZQU01TQ3c9PQo="
+      "file": "panecast-desktop-0.2.15-mac-arm64.app.tar.gz",
+      "size": 4328277,
+      "sha256": "9601c0bee053d7069a1130ccff7851f25acd691031068aeb55d6dd99e019ca0f",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ2ZqUVdiVUk0ak1HaElDaFcweTkzMWcxUjhhSUNuMVRZS1Y5dXRqYlArMC9Va1FncC83c1RRak9SZGw1RSszN2RwWVhUenJqSzhZZ0pqTG5wYmNWbmdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTIyODAwCWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTUtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTUKbEREVENkN2Y3dGlJby9rR053Ync0YnFXUWJRaHJhWHFQN2wxMnd4enlvOHVVL0VqRFJHdlJuZGxRSUkwY0VoNjZkSS9NczVGclFyRW1KVDJYODNKQ0E9PQo="
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-17",
     "notarized": false,
-    "sourceCommit": "16ee76ff9ff5a56c2c6fcbd147df84df4b8a50aa",
+    "sourceCommit": "b369d452decf312da20ef5794125bab6c1165ac0",
     "notes": [
-      "Claude Code、Codex 窗口往上翻历史改为直接读取会话记录：打开窗口时就预先读好，往上滑立刻有内容，几千行历史一两秒内读完，经服务器远程连接也跟得上手指",
-      "翻历史不再操作电脑上的窗口：电脑上的 Claude 不会被滚动，多人同时查看互不影响，往下滑回最新立刻回到实时画面",
-      "没有会话记录的全屏程序（如 vim）滚轮直接交给程序，和普通终端一样"
+      "会话记录里被截短的工具输出和 diff，点一下「还有 N 行，点按展开」就显示全文",
+      "在 Claude Code、Codex 窗口里搜索时会先读完整段会话，搜得到很早以前的内容",
+      "切到别的窗口再回来，会回到你上次在会话记录里读到的位置",
+      "历史和实时画面接缝处重复的几行只显示一次",
+      "更新更及时：每 30 分钟检查一次，切回 Panecast 窗口时也会检查，不用等好几个小时"
     ]
   },
   "windows": {
