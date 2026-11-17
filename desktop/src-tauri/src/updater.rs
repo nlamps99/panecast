@@ -183,7 +183,7 @@ pub fn on_focus(app: &AppHandle) {
     let due = updates
         .last_check
         .lock()
-        .map(|last| last.map_or(false, |at| at.elapsed() >= FOCUS_CHECK_AFTER))
+        .map(|last| last.is_some_and(|at| at.elapsed() >= FOCUS_CHECK_AFTER))
         .unwrap_or(false);
     if due && !ready(app) {
         let app = app.clone();
