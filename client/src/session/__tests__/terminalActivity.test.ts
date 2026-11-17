@@ -116,3 +116,22 @@ it('in the background reads only running terminals, less often, and checks all o
   await jest.advanceTimersByTimeAsync(20_000);
   expect(new Set(channel.rpc.mock.calls.map(([, params]) => params.surface_id))).toEqual(new Set(['a', 'b']));
 });
+
+it('polls every due terminal through one batched read when a repository offers it', async () => {
+  const { SnapshotCache } = jest.requireActual('../snapshotCache');
+  const { TerminalRepository, parseTerminalHead } = jest.requireActual('../terminalRepository');
+  const data = new Map<string, string>();
+  const cache = new SnapshotCache({ read: async (key: string) => data.get(key) ?? null, write: async (key: string, value: string) => { data.set(key, value); },
+    remove: async (key: string) => { data.delete(key); }, clear: async () => { data.clear(); } }, parseTerminalHead);
+  channel.rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => method === 'terminal.conversation.batch'
+    ? { results: (params.requests as { surface_id: string }[]).map((request) => ({ ok: true, result: snapshot(request.surface_id === 'b', [user(`q-${request.surface_id}`)]) })) }
+    : undefined);
+  const repository = new TerminalRepository(channel, cache);
+  store.dispose();
+  store = new TerminalActivityStore(channel, { repository, targets: () => targets, onActivity, onComplete });
+  await store.refresh();
+  expect(channel.rpc.mock.calls.map(([method]) => method)).toEqual(['terminal.conversation.batch']);
+  expect(store.getState()[activityKey(b)].status).toBe('running');
+  expect(store.getState()[activityKey(a)].status).toBe('idle');
+  repository.dispose();
+});

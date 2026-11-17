@@ -36,6 +36,9 @@ export async function forgetTerminalCaches(computerId: string) {
   const cache = terminalCaches(computerId); caches.delete(computerId);
   await Promise.all([cache.heads.clear(), cache.screens.clear()]);
 }
+const MAX_BATCH = 32;
+const headRequest = (target: SurfaceTarget, previous: TerminalHead | null | undefined) => ({ workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: 80,
+  ...(previous?.revision ? { revision: previous.revision } : {}), ...(previous?.branch ? { branch: previous.branch } : {}) });
 type Job = { foreground: boolean; key?: string; run(): Promise<unknown>; resolve(value: unknown): void; reject(error: unknown): void };
 
 /** Share one head read across the visible conversation and sidebar; never queue a background burst on the relay. */
@@ -48,12 +51,14 @@ export class TerminalRepository {
   private nextBackgroundAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private viewing: string | null = null;
+  /** `terminal.conversation.batch` on this connection; unknown until tried. */
+  private batch: boolean | null = null;
   private generation = 0;
   private stopped = false;
   private unsubscribe: () => void;
   constructor(private channel: RpcChannel, readonly cache: SnapshotCache<TerminalHead>) {
     this.unsubscribe = channel.onStatus(() => {
-      this.generation++; this.checked.clear(); this.pending.clear();
+      this.generation++; this.checked.clear(); this.pending.clear(); this.batch = null;
       for (const job of this.jobs.splice(0)) job.reject(new RpcCallError('closed', '连接已断开'));
     });
   }
@@ -94,21 +99,60 @@ export class TerminalRepository {
     if (previous && Date.now() - (this.checked.get(key) ?? -Infinity) < 1000) return Promise.resolve(previous);
     const generation = this.generation;
     const task = this.enqueue(async () => {
-      const raw = await this.channel.call<TerminalHead>('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: 80,
-        ...(previous?.revision ? { revision: previous.revision } : {}), ...(previous?.branch ? { branch: previous.branch } : {}) }, 15_000);
+      const raw = await this.channel.call<TerminalHead>('terminal.conversation', headRequest(target, previous), 15_000);
       if (this.stopped || generation !== this.generation) throw new RpcCallError('closed', '连接已变化');
-      const head = raw.unchanged && previous ? { ...previous, ...raw, reset: raw.reset === true, items: previous.items } : raw;
-      this.checked.set(key, Date.now());
-      if (head.available === true) {
-        if (!previous || previous.revision !== head.revision || previous.conversation_id !== head.conversation_id || previous.generation !== head.generation) this.cache.set(key, { ...head, reset: false, unchanged: false });
-      } else this.cache.remove(key);
-      for (const listener of this.listeners) listener(target, head);
-      return head;
+      return this.acceptHead(target, raw, previous);
     }, foreground, key).catch(error => {
-      if (error instanceof RpcCallError && (['source_revoked', 'invalid_target', 'read_only', 'not_found'].includes(error.code) || /^conversation_/.test(error.code))) this.cache.remove(key);
+      this.forgetOnError(key, error);
       throw error;
     }).finally(() => { if (this.pending.get(key) === task) this.pending.delete(key); });
     this.pending.set(key, task); return task;
+  }
+  /**
+   * Many heads in one background request (`terminal.conversation.batch`):
+   * the sidebar's running markers cost one round trip, not one per terminal.
+   * Resolves null when the gateway predates the batch read; the caller then
+   * reads one terminal at a time. Each head also reaches `watch` listeners.
+   */
+  readHeads(targets: readonly SurfaceTarget[]): Promise<Map<string, TerminalHead | RpcCallError> | null> {
+    if (this.batch === false) return Promise.resolve(null);
+    const wanted = targets.filter(target => !this.pending.has(terminalKey(target))).slice(0, MAX_BATCH);
+    if (!wanted.length) return Promise.resolve(new Map());
+    const generation = this.generation;
+    return this.enqueue(async () => {
+      const previous = wanted.map(target => this.peek(target));
+      let response: { results?: unknown };
+      try {
+        response = await this.channel.call<{ results?: unknown }>('terminal.conversation.batch', { requests: wanted.map((target, index) => headRequest(target, previous[index])) }, 15_000);
+      } catch (error) {
+        if (this.batch !== true && error instanceof RpcCallError && (error.code === 'method_not_found' || /统一网关不支持这个操作|method[_ ]not[_ ]found/i.test(error.message))) { this.batch = false; return null; }
+        throw error;
+      }
+      if (this.stopped || generation !== this.generation) throw new RpcCallError('closed', '连接已变化');
+      this.batch = true;
+      const results = Array.isArray(response?.results) ? response.results : [];
+      const heads = new Map<string, TerminalHead | RpcCallError>();
+      wanted.forEach((target, index) => {
+        const key = terminalKey(target), entry = results[index] as { ok?: unknown; result?: unknown; error?: { code?: unknown; message?: unknown } } | undefined;
+        if (entry?.ok === true && entry.result && typeof entry.result === 'object') { heads.set(key, this.acceptHead(target, entry.result as TerminalHead, previous[index])); return; }
+        const error = new RpcCallError(typeof entry?.error?.code === 'string' ? entry.error.code : 'bad_response', typeof entry?.error?.message === 'string' ? entry.error.message : '对话状态格式不对');
+        this.forgetOnError(key, error); heads.set(key, error);
+      });
+      return heads;
+    }, false);
+  }
+  private acceptHead(target: SurfaceTarget, raw: TerminalHead, previous: TerminalHead | null | undefined): TerminalHead {
+    const key = terminalKey(target);
+    const head = raw.unchanged && previous ? { ...previous, ...raw, reset: raw.reset === true, items: previous.items } : raw;
+    this.checked.set(key, Date.now());
+    if (head.available === true) {
+      if (!previous || previous.revision !== head.revision || previous.conversation_id !== head.conversation_id || previous.generation !== head.generation) this.cache.set(key, { ...head, reset: false, unchanged: false });
+    } else this.cache.remove(key);
+    for (const listener of this.listeners) listener(target, head);
+    return head;
+  }
+  private forgetOnError(key: string, error: unknown) {
+    if (error instanceof RpcCallError && (['source_revoked', 'invalid_target', 'read_only', 'not_found'].includes(error.code) || /^conversation_/.test(error.code))) this.cache.remove(key);
   }
   dispose() {
     this.stopped = true; this.generation++; this.unsubscribe(); this.listeners.clear();

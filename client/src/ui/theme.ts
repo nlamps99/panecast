@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 /**
  * Tokyo Night Storm, the palette of the native clients
  * (`legacy/ios/CmuxRemote/UI/CmuxTheme.swift`).
@@ -24,10 +26,16 @@ export const colors = {
   terminalText: '#f1f2f8',
 } as const;
 
-export const fonts = {
-  mono: 'GeistMono-Regular',
-  monoBold: 'GeistMono-Bold',
-} as const;
+/**
+ * The browser and desktop app load GeistMono at startup (`platform/fonts`)
+ * and fall back to the system monospace, never to the default serif face; a
+ * proportional fallback broke every column and box on the Mac app.
+ */
+const webMono = (face: string) => `${face}, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`;
+
+export const fonts = Platform.OS === 'web'
+  ? { mono: webMono('GeistMono-Regular'), monoBold: webMono('GeistMono-Bold') }
+  : { mono: 'GeistMono-Regular', monoBold: 'GeistMono-Bold' };
 
 /** Advance width of one GeistMono cell, as a fraction of the font size. */
 export const MONO_ADVANCE_EM = 0.6;

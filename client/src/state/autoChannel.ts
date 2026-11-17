@@ -65,6 +65,13 @@ export type AutoChannelOptions = {
   /** GET `<lan>/v1/health`; resolves true only if the LAN relay answered. Must not throw. */
   probeLan(timeoutMs: number): Promise<boolean>;
   network: NetworkWatcher;
+  /**
+   * The direct path is this computer's own gateway (the desktop app beside
+   * it): reachable over loopback whatever the network, and its credentials
+   * are re-read before every probe, so a rejected token is retried later
+   * instead of disabling the path.
+   */
+  lanLocal?: () => boolean;
   log?: (message: string) => void;
   /** LAN health probe budget. */
   probeTimeoutMs?: number;
@@ -79,7 +86,7 @@ export type AutoChannelOptions = {
   networkReadTimeoutMs?: number;
 };
 
-type Settings = Required<Omit<AutoChannelOptions, 'log'>> & { log: (message: string) => void };
+type Settings = Required<Omit<AutoChannelOptions, 'log' | 'lanLocal'>> & { log: (message: string) => void; lanLocal: () => boolean };
 
 /** One live `PathConnection` and the bookkeeping for it. */
 type Path = {
@@ -146,6 +153,7 @@ export class AutoChannel {
       networkReadTimeoutMs: 1_000,
       ...options,
       log: options.log ?? (() => {}),
+      lanLocal: options.lanLocal ?? (() => false),
     };
     this.lanRetryDelay = this.opts.lanRetryMinMs;
     this.currentTransport = this.opts.preference === 'lan' && this.opts.hasLan ? 'lan' : 'broker';
@@ -254,7 +262,13 @@ export class AutoChannel {
     return this.opts.preference === 'auto' && this.opts.hasLan && !this.lanBlocked;
   }
 
+  /** Whether the direct path is the local gateway rather than a LAN relay. */
+  get directIsLocal(): boolean {
+    return this.opts.lanLocal();
+  }
+
   private lanCapable(kind: NetworkKind = this.kind): boolean {
+    if (this.opts.lanLocal()) return true;
     return kind === 'lan' || kind === 'unknown';
   }
 
@@ -433,6 +447,11 @@ export class AutoChannel {
 
   /** The active LAN path failed under `auto`. */
   private onLanFailed(path: Path, status: ConnectionStatus): void {
+    if (status.state === 'auth_failed' && this.opts.lanLocal()) {
+      // The local gateway restarted with a new token; the next probe re-reads it.
+      this.fallBackToBroker('the local gateway rotated its credential');
+      return;
+    }
     if (status.state === 'auth_failed') {
       // The relay no longer knows this phone's LAN token; retrying cannot fix
       // that, so stay on the broker until the computer is paired again.
@@ -474,7 +493,7 @@ export class AutoChannel {
       return;
     }
     if (status.state === 'connecting') return;
-    if (status.state === 'auth_failed') {
+    if (status.state === 'auth_failed' && !this.opts.lanLocal()) {
       this.lanBlocked = true;
       this.log('auto: the LAN relay rejected this phone; using the broker only');
     } else {

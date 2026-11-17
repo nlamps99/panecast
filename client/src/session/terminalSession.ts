@@ -1,6 +1,6 @@
 import { RpcCallError, type ConnectionStatus } from '../protocol/connection';
 import type { PushFrame } from '../protocol/frames';
-import { encodeKey, type Key } from '../protocol/keys';
+import { encodeKey, Keys, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
@@ -61,11 +61,14 @@ export type TerminalState = {
   readingNotice?: string | null;
   /** Alternate-screen programs own their history and consume mouse-wheel input. */
   applicationScroll?: { columns: number; rows: number; busy: boolean; error: string | null } | null;
+  /** The terminal's real column count on the computer, when the relay reports its grid. */
+  terminalColumns?: number | null;
   fromCache?: boolean;
 };
 
 export type SendReceipt = { status: 'sent' | 'not_sent' | 'unknown'; message: string };
-type InputItem = { kind: 'text'; text: string } | { kind: 'key'; key: Key }
+type KeystrokeItem = { kind: 'text'; text: string } | { kind: 'key'; key: Key };
+type InputItem = KeystrokeItem
   | { kind: 'line'; text: string; target: SurfaceTarget; paste?: boolean; resolve: (result: SendReceipt) => void }
   | { kind: 'promptKeys'; keys: readonly Key[]; screen: ScreenState; target: SurfaceTarget; resolve: (result: SendReceipt) => void };
 
@@ -124,6 +127,8 @@ export class TerminalSession {
   private queue: InputItem[] = [];
   private pumping = false;
   private lastFocus: { surfaceId: string; at: number } | null = null;
+  /** `surface.input` on this connection: unknown until tried, then remembered until it reconnects. */
+  private batchInput: 'unknown' | 'yes' | 'no' = 'unknown';
   private disposed = false;
   private pendingReading: ReadingPosition | null = null;
   private restoringPosition = false;
@@ -229,6 +234,7 @@ export class TerminalSession {
       restoringReading: this.pendingReading !== null,
       readingNotice: null,
       applicationScroll: null,
+      terminalColumns: null,
     });
     if (target && !cached && this.options.screenCache) {
       const selection = this.selectionIntent;
@@ -351,6 +357,8 @@ export class TerminalSession {
     // The relay drops every subscription with the socket.
     this.subscribeToken++;
     this.lastFocus = null;
+    // The next connection may reach a different gateway (local, LAN, server).
+    this.batchInput = 'unknown';
     if (this.state.subscription !== 'none') this.update({ subscription: 'none' });
     const browse = this.state.browse;
     if (browse?.loading) this.update({ browse: { ...browse, loading: false } });
@@ -640,6 +648,8 @@ export class TerminalSession {
     try {
       const raw = await this.channel.call('terminal.replay', { workspace_id: target.workspaceId, surface_id: target.surfaceId, anchor: 'screen', max_scrollback_rows: 0 }, 5_000);
       if (generation !== this.scrollGeneration || this.disposed) return;
+      const columns = gridColumns(raw);
+      if (columns !== (this.state.terminalColumns ?? null)) this.update({ terminalColumns: columns });
       const size = applicationScrollSize(raw);
       if (size) {
         if (!this.state.applicationScroll) this.resumeLive();
@@ -897,7 +907,15 @@ export class TerminalSession {
         break;
       }
       try {
-        await this.execute(target, item);
+        if (item.kind === 'text' || item.kind === 'key') {
+          // Everything typed while the previous request was in flight goes in
+          // one request: a burst of keys costs one round trip, not one each.
+          const burst: KeystrokeItem[] = [item];
+          while (this.queue[0]?.kind === 'text' || this.queue[0]?.kind === 'key') burst.push(this.queue.shift() as KeystrokeItem);
+          await this.sendKeystrokes(target, burst);
+        } else {
+          await this.execute(target, item);
+        }
         if (item.kind === 'line' || item.kind === 'promptKeys') item.resolve({ status: 'sent', message: '已送达终端' });
       } catch (failure) {
         this.discardQueuedInput();
@@ -909,10 +927,41 @@ export class TerminalSession {
     this.update({ input: { busy: false, error } });
   }
 
+  private async sendKeystrokes(target: SurfaceTarget, items: KeystrokeItem[]): Promise<void> {
+    if (await this.sendBatch(target, items.map((item) => item.kind === 'text' ? { text: item.text } : { key: encodeKey(item.key) }))) return;
+    for (const item of items) {
+      if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
+      await this.execute(target, item);
+    }
+  }
+
+  /**
+   * One ordered `surface.input` request; the gateway sends each item to the
+   * named terminal, so no focus change is needed. Returns false when the
+   * gateway predates it (nothing was sent), and the caller uses the
+   * one-request-per-item path.
+   */
+  private async sendBatch(target: SurfaceTarget, items: ({ text: string } | { key: string })[]): Promise<boolean> {
+    if (!items.length) return true;
+    if (this.batchInput === 'no') return false;
+    try {
+      await this.channel.call('surface.input', { workspace_id: target.workspaceId, surface_id: target.surfaceId, items });
+      this.batchInput = 'yes';
+      return true;
+    } catch (error) {
+      if (this.batchInput !== 'yes' && batchUnsupported(error)) {
+        this.batchInput = 'no';
+        return false;
+      }
+      throw error;
+    }
+  }
+
   private async execute(target: SurfaceTarget, item: InputItem, expectedScreen?: ScreenState): Promise<void> {
     const ids = { workspace_id: target.workspaceId, surface_id: target.surfaceId };
     if (item.kind === 'promptKeys') {
       if (!sameVisibleRows(this.state.screen.rows, item.screen.rows) || !sameTarget(target, item.target)) throw new RpcCallError('target_changed', '提问已变化，请查看最新内容');
+      if (await this.sendBatch(target, item.keys.map((key) => ({ key: encodeKey(key) })))) return;
       for (let index = 0; index < item.keys.length; index++) {
         if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
         await this.execute(target, { kind: 'key', key: item.keys[index] }, index === 0 ? item.screen : undefined);
@@ -925,6 +974,7 @@ export class TerminalSession {
         await this.channel.call('terminal.paste', { ...ids, text: item.text, submit_key: 'return' });
         return;
       }
+      if (await this.sendBatch(target, [...(item.text ? [{ text: item.text }] : []), { key: encodeKey(Keys.enter) }])) return;
       if (item.text) await this.channel.call('surface.send_text', { ...ids, text: item.text });
       if (this.disposed || !sameTarget(this.state.target, target)) throw new RpcCallError('target_changed', '终端已切换');
       await this.execute(target, { kind: 'key', key: { name: 'enter' } });
@@ -954,6 +1004,14 @@ export class TerminalSession {
 }
 
 export type HistoryPage = { rows: string[]; anchorRows: string[] | null; nextCursor: string | null };
+
+function gridColumns(value: unknown): number | null {
+  if (!value || typeof value !== 'object' || !('render_grid' in value)) return null;
+  const grid = value.render_grid;
+  if (!grid || typeof grid !== 'object' || !('columns' in grid) || !Number.isSafeInteger(grid.columns)) return null;
+  const columns = Number(grid.columns);
+  return columns >= 1 && columns <= 2000 ? columns : null;
+}
 
 function applicationScrollSize(value: unknown): { columns: number; rows: number } | null {
   if (!value || typeof value !== 'object' || !('render_grid' in value)) return null;
@@ -1020,4 +1078,11 @@ export function describeError(error: unknown): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A gateway from before `surface.input`: the method is unknown, so nothing was sent. */
+export function batchUnsupported(error: unknown): boolean {
+  if (!(error instanceof RpcCallError)) return false;
+  if (error.code === 'method_not_found' || error.code === '-32601') return true;
+  return /method[_ ]not[_ ]found|unknown method|统一网关不支持这个操作/i.test(error.message);
 }

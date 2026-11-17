@@ -1,9 +1,11 @@
 // Release builds on Windows are GUI apps without a console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod local_gateway;
 mod security;
 mod transport;
 mod vault;
+mod window_state;
 #[cfg(windows)]
 mod windows_dialog;
 
@@ -205,6 +207,22 @@ fn notification_settings(window: WebviewWindow, app: tauri::AppHandle) -> Result
         .map_err(|_| "无法打开通知设置".into())
 }
 
+/// The gateway on this computer, for a direct loopback connection.
+#[tauri::command]
+async fn local_gateway(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    require_app(&window)?;
+    let home = app.path().home_dir().map_err(|_| "无法找到用户目录")?;
+    let config = std::env::var_os("PANECAST_CONFIG_DIR").map(std::path::PathBuf::from);
+    tauri::async_runtime::spawn_blocking(move || {
+        local_gateway::read(&local_gateway::file(&home, config))
+    })
+    .await
+    .map_err(|_| "无法读取本机网关".into())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DialogOptions {
@@ -288,42 +306,121 @@ fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     let navigation_app = app.clone();
     let popup_app = app.clone();
     let transport = app.state::<Transport>().inner().clone();
-    let window =
+    let state_path = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("window-state.json"));
+    let saved = state_path.as_deref().and_then(window_state::load);
+    let displays: Vec<window_state::Area> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|monitor| {
+            let scale = monitor.scale_factor();
+            let position = monitor.position().to_logical::<f64>(scale);
+            let size = monitor.size().to_logical::<f64>(scale);
+            window_state::Area {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect();
+    let (position, (width, height)) = window_state::placement(saved, &displays);
+    let mut builder =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
             .title("Panecast")
-            .inner_size(1280.0, 860.0)
-            .min_inner_size(760.0, 600.0)
-            .background_color(tauri::window::Color(26, 27, 38, 255))
-            // Let WebKit deliver OS-selected files to the shared HTML drop zone.
-            .disable_drag_drop_handler()
-            .on_navigation(move |url| {
-                if security::app_url(url) {
-                    return true;
-                }
-                if url.scheme() == "https" {
-                    let _ = navigation_app.opener().open_url(url.as_str(), None::<&str>);
-                }
-                false
-            })
-            .on_new_window(move |url, _| {
-                if url.scheme() == "https" {
-                    let _ = popup_app.opener().open_url(url.as_str(), None::<&str>);
-                }
-                tauri::webview::NewWindowResponse::Deny
-            })
-            .on_page_load(move |_, event| {
-                if matches!(event.event(), tauri::webview::PageLoadEvent::Started) {
-                    transport.disconnect();
-                }
-            })
-            .build()?;
+            .inner_size(width, height)
+            .min_inner_size(window_state::MIN_SIZE.0, window_state::MIN_SIZE.1)
+            .maximized(saved.is_some_and(|saved| saved.maximized));
+    builder = match position {
+        Some((x, y)) => builder.position(x, y),
+        None => builder.center(),
+    };
+    let window = builder
+        .background_color(tauri::window::Color(26, 27, 38, 255))
+        // Let WebKit deliver OS-selected files to the shared HTML drop zone.
+        .disable_drag_drop_handler()
+        .on_navigation(move |url| {
+            if security::app_url(url) {
+                return true;
+            }
+            if url.scheme() == "https" {
+                let _ = navigation_app.opener().open_url(url.as_str(), None::<&str>);
+            }
+            false
+        })
+        .on_new_window(move |url, _| {
+            if url.scheme() == "https" {
+                let _ = popup_app.opener().open_url(url.as_str(), None::<&str>);
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
+        .on_page_load(move |_, event| {
+            if matches!(event.event(), tauri::webview::PageLoadEvent::Started) {
+                transport.disconnect();
+            }
+        })
+        .build()?;
     let transport = app.state::<Transport>().inner().clone();
-    window.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            transport.disconnect();
+    let handle = window.clone();
+    window.on_window_event(move |event| match event {
+        // ⌘W on the Mac hides the window: the connection, the terminal state
+        // and completion notifications stay alive, and the Dock brings it
+        // back at once. Windows has no Dock, so closing there quits.
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            save_window(&handle, state_path.as_deref());
+            api.prevent_close();
+            let _ = handle.hide();
         }
+        #[cfg(not(target_os = "macos"))]
+        tauri::WindowEvent::CloseRequested { .. } => save_window(&handle, state_path.as_deref()),
+        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+            save_window(&handle, state_path.as_deref())
+        }
+        tauri::WindowEvent::Destroyed => transport.disconnect(),
+        _ => {}
     });
     Ok(())
+}
+
+fn save_window(window: &WebviewWindow, path: Option<&std::path::Path>) {
+    let Some(path) = path else { return };
+    // Minimized or hidden windows report sizes that are not worth keeping.
+    if window.is_minimized().unwrap_or(true) || !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let maximized = window.is_maximized().unwrap_or(false);
+    let (Ok(scale), Ok(position), Ok(size)) = (
+        window.scale_factor(),
+        window.outer_position(),
+        window.inner_size(),
+    ) else {
+        return;
+    };
+    let previous = window_state::load(path);
+    // A maximized window keeps the frame it returns to.
+    let (position, size) = match (maximized, previous) {
+        (true, Some(previous)) => ((previous.x, previous.y), (previous.width, previous.height)),
+        _ => {
+            let position = position.to_logical::<f64>(scale);
+            let size = size.to_logical::<f64>(scale);
+            ((position.x, position.y), (size.width, size.height))
+        }
+    };
+    window_state::store(
+        path,
+        &window_state::Saved {
+            x: position.0,
+            y: position.1,
+            width: size.0,
+            height: size.1,
+            maximized,
+        },
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -374,6 +471,7 @@ fn main() {
             clipboard_write,
             desktop_notify,
             notification_settings,
+            local_gateway,
             dialog
         ])
         .setup(|app| {

@@ -27,9 +27,8 @@ afterEach(() => { store.dispose(); terminal.dispose(); });
 
 it('sends exact Chinese text and Enter through the selected terminal, then reconciles its real transcript echo', async () => {
   expect((await store.send('请检查这个项目，保留中文')).status).toBe('sent');
-  const sends = channel.calls.filter(call => ['surface.send_text', 'surface.send_key'].includes(call.method));
-  expect(sends).toEqual([{ method: 'surface.send_text', params: { workspace_id: 'workspace', surface_id: 'surface', text: '请检查这个项目，保留中文' } },
-    { method: 'surface.send_key', params: { workspace_id: 'workspace', surface_id: 'surface', key: 'enter' } }]);
+  const sends = channel.calls.filter(call => ['surface.input', 'surface.send_text', 'surface.send_key'].includes(call.method));
+  expect(sends).toEqual([{ method: 'surface.input', params: { workspace_id: 'workspace', surface_id: 'surface', items: [{ text: '请检查这个项目，保留中文' }, { key: 'enter' }] } }]);
   expect(channel.calls.some(call => call.method.startsWith('agent.'))).toBe(false);
   await store.refresh();
   channel.snapshot = { ...channel.snapshot, revision: 'r2', items: [message('echo', 101, '请检查这个项目，保留中文')] };
@@ -73,12 +72,14 @@ it('discards late reads from another terminal even when both share a workspace',
 
 it('keeps an unconfirmed send visible and never retries it automatically', async () => {
   const original = channel.call.bind(channel);
+  let attempts = 0;
   channel.call = async <T,>(method: string, params?: Record<string, unknown>) => {
-    if (method === 'surface.send_key') throw new RpcCallError('timeout', 'no acknowledgement');
+    if (method === 'surface.input') { attempts++; throw new RpcCallError('timeout', 'no acknowledgement'); }
     return await original<T>(method, params);
   };
   expect((await store.send('only once')).status).toBe('unknown'); await store.refresh(); await store.refresh();
-  expect(store.getState().submissions[0].status).toBe('unknown'); expect(channel.calls.filter(call => call.method === 'surface.send_text')).toHaveLength(1);
+  expect(store.getState().submissions[0].status).toBe('unknown');
+  expect(attempts).toBe(1); expect(channel.calls.filter(call => call.method.startsWith('surface.send'))).toHaveLength(0);
 });
 
 it('shows ordinary terminal output on an older relay and clears inaccessible transcript data', async () => {

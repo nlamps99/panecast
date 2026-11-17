@@ -103,3 +103,29 @@ it('does not overwrite a fresh snapshot with a late disk read and enforces whole
   expect(await restarted.get('a')).toBeNull(); expect((await restarted.get('c'))?.conversation_id).toBe('c');
   await reader.clear(); await restarted.clear();
 });
+
+describe('batched head reads', () => {
+  it('reads many terminals in one request, caches each head and reports per-terminal failures', async () => {
+    channel.read.mockImplementation(async (method: string, params: Record<string, unknown>) => method === 'terminal.conversation.batch'
+      ? { results: (params.requests as { surface_id: string }[]).map((request) => request.surface_id === 'c'
+        ? { ok: false, error: { code: 'invalid_target', message: 'gone' } } : { ok: true, result: snapshot(request.surface_id) }) }
+      : {});
+    const seen: string[] = []; repository.watch((target) => seen.push(target.surfaceId));
+    const heads = await repository.readHeads([a, b, c]);
+    expect(channel.read.mock.calls.map(([method]) => method)).toEqual(['terminal.conversation.batch']);
+    expect(channel.read.mock.calls[0][1]).toEqual({ requests: [a, b, c].map((t) => ({ workspace_id: t.workspaceId, surface_id: t.surfaceId, limit: 80 })) });
+    expect(heads?.get(terminalKey(a))).toMatchObject({ conversation_id: 'a' });
+    expect(heads?.get(terminalKey(c))).toMatchObject({ code: 'invalid_target' });
+    expect(seen).toEqual(['a', 'b']);
+    expect(repository.peek(b)).toMatchObject({ conversation_id: 'b' });
+  });
+
+  it('gives up on the batch for this connection when the gateway predates it', async () => {
+    const { RpcCallError } = jest.requireActual('../../protocol/connection');
+    channel.read.mockImplementation(async (method: string) => { if (method === 'terminal.conversation.batch') throw new RpcCallError('method_not_found', '统一网关不支持这个操作'); return {}; });
+    expect(await repository.readHeads([a, b])).toBeNull();
+    jest.advanceTimersByTime(2_000);
+    expect(await repository.readHeads([a, b])).toBeNull();
+    expect(channel.read.mock.calls.filter(([method]) => method === 'terminal.conversation.batch')).toHaveLength(1);
+  });
+});

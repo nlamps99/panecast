@@ -76,6 +76,9 @@ Panecast 让你在手机上查看和操作电脑上的终端。它由 cmux Remot
 - 请求：`{"id","method","params"}`。响应：`{"id","ok","result"}` 或 `{"id","ok","error"}`。
 - relay 自己处理的方法：`surface.subscribe`（参数 `workspace_id`、`surface_id`、`lines`）、`surface.unsubscribe`、`surface.history`、`host.battery`、`file.upload`。
 - 其余方法原样转发给 cmux，比如 `workspace.list`、`surface.list`、`surface.send_text`、`surface.send_key`。
+- `surface.input`（`items: [{text} | {key}]`）由 relay / hub 按顺序逐项发到指定终端：客户端把一次往返期间的输入合并成一个请求，旧网关返回 method_not_found 时退回逐项发送。hub 另有 `terminal.conversation.batch`。
+- hub 的写操作按到达顺序执行，只读请求并行，慢读取不阻塞按键。
+- 本机直连：hub 在状态目录写 `local-gateway.json`（0600，loopback 设备凭据，每次启动轮换），同机的桌面版读取后直连 `127.0.0.1`，不绕 broker。
 
 **推送帧**：没有 id，按 `type` 区分，键是 snake_case。
 - `screen.full`
@@ -94,7 +97,8 @@ Panecast 让你在手机上查看和操作电脑上的终端。它由 cmux Remot
   - 按词折行。
   - 只含横线字符的行（`─━═╌╍┄┅┈┉-=`）截断到屏幕宽度，不要折成好几行。
   - 列数 = 可用宽度 ÷ 字符宽度。GeistMono 的字符宽度是 0.6em。
-- **没有颜色**：目前 cmux 的 `surface.read_text` 只返回纯文本，不带颜色转义序列。ANSI 解析照样要做，但现在显示不出颜色不是 bug。
+- **颜色和光标**：cmux 的 `surface.read_text` 只有纯文本。Swift relay 改为读取 `terminal.replay` 的渲染网格，转换成带 SGR 的行和真实光标（隐藏光标放在最后一行之后），失败时退回 `read_text`。旧 relay 的光标固定是 (0, 0)，客户端不画它。
+- **Web / 桌面字体**：expo-font 插件只把 GeistMono 打进原生包。Web 导出靠 `platform/fonts.web.ts` 运行时加载，字体栈兜底到系统等宽字体；不能退回默认衬线字体。
 - **输入法**：只支持中文输入法，不做韩文等其它语言的特殊处理。中文输入法组字时，RN 的受控 TextInput 容易把字拆散，而且 JS 层分不清哪些是还在组字的拼音字母，所以输入框用的是 `client/modules/terminal-input` 原生组件，它只把输入法确认过的文字交给 JS。逐字输入模式要等组字结束后再发送。
 - **不依赖 GMS**：Android 版刻意不依赖 Google Play 服务，因为很多国内机型没有 GMS。扫码等功能选型时要保持这一点。没有 GMS 的手机收不到 FCM 推送，这是已知限制。
 

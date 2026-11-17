@@ -670,3 +670,36 @@ describe('networkKindOf', () => {
     expect(networkKindOf({})).toBe('unknown');
   });
 });
+
+describe('AutoChannel with the local gateway', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('uses loopback even when the network reports none, and reports the path as local', async () => {
+    const h = setup({ kind: 'none', lanLocal: () => true });
+    const lan = await onLan(h);
+    expect(lan.url).toBe(URLS.lan);
+    expect(h.channel.transport).toBe('lan');
+    expect(h.channel.directIsLocal).toBe(true);
+    expect(h.of('broker')).toHaveLength(0);
+    h.channel.stop();
+  });
+
+  it('a rotated credential falls back to the server and returns once the next probe re-reads it', async () => {
+    const h = setup({ lanLocal: () => true, lanRetryMinMs: 3_000 });
+    h.channel.start();
+    await flush();
+    // The gateway restarted: the token this channel read earlier is gone.
+    h.latest('lan').serverClose(1006, 'Received bad response code from server: 401.');
+    await flush();
+    expect(h.channel.transport).toBe('broker');
+    expect(h.logs.some((m) => m.includes('rejected'))).toBe(false);
+    h.latest('broker').open();
+    await advance(3_500);
+    expect(h.of('lan').length).toBeGreaterThan(1);
+    h.latest('lan').open();
+    await flush();
+    expect(h.channel.transport).toBe('lan');
+    h.channel.stop();
+  });
+});

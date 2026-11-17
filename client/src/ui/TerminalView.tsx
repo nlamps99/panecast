@@ -17,7 +17,11 @@ import { GestureDetector, useNativeGesture, usePinchGesture } from 'react-native
 
 import type { TerminalSession, TerminalState } from '../session/terminalSession';
 import { DEFAULT_ATTR } from '../terminal/ansi';
-import { LayoutCache, terminalRowColumns, type VisualLine } from '../terminal/layout';
+import { LayoutCache, terminalRowColumns, type Span, type VisualLine } from '../terminal/layout';
+import { cellRuns } from '../terminal/cellRuns';
+import { codePointWidth } from '../terminal/cellWidth';
+import { desktopBridge } from '../platform/desktop';
+import { TERMINAL_LINE_DATA, useTerminalCopy } from '../input/terminalCopy';
 import { makeReadingPosition, positionedLines, restoredLineIndex, type PositionedLine, type ReadingPosition } from '../session/readingPosition';
 import { DEFAULT_FG, styleForAttr } from '../terminal/palette';
 import { clampFontSize, setPrefs, usePrefs } from '../state/prefs';
@@ -67,7 +71,11 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const [width, setWidth] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
-  const { terminalWrap } = usePrefs();
+  const prefs = usePrefs();
+  // The desktop shows the computer's grid as is by default; phones wrap.
+  const desktop = desktopBridge() !== null;
+  const terminalWrap = desktop ? prefs.desktopTerminalWrap : prefs.terminalWrap;
+  const setTerminalWrap = (wrap: boolean) => setPrefs(desktop ? { desktopTerminalWrap: wrap } : { terminalWrap: wrap });
   const wasLiveBeforeTools = useRef(false);
   const [cache] = useState(() => new LayoutCache());
   const [pinchSize, setPinchSize] = useState<number | null>(null);
@@ -85,7 +93,10 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const scrollRange = useRef(0);
   const historyRunway = useRef(0);
   const lastScrollSample = useRef({ at: 0, offset: 0 });
-  const size = pinchSize ?? fontSize;
+  // Unwrapped on the desktop, a terminal wider than the window shrinks its
+  // font (down to a readable floor) instead of hiding its right edge.
+  const fitColumns = desktop && !terminalWrap ? state.terminalColumns ?? 0 : 0;
+  const size = pinchSize ?? (fitColumns > 0 && width > 0 ? fitFontSize(width, fitColumns, fontSize) : fontSize);
   const lineHeight = Math.round(size * 1.3);
   const columns = width > 0 ? terminalColumns(width, size) : 0;
   const browse = state.browse;
@@ -111,6 +122,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     if (columns === 0) return [];
     return positionedLines(allRows, columns, cache, terminalWrap);
   }, [allRows, columns, cache, terminalWrap]);
+  const cursor = liveCursor(state, rows, (row) => cache.get(row, columns, terminalWrap).length === 1);
 
   const restoreOffset = useCallback(() => {
     if (!list.current || viewportHeight <= 0 || !lines.length) return;
@@ -299,6 +311,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     void session.loadOlder();
   };
 
+  useTerminalCopy(list, active);
   useTerminalWheel(list, {
     enabled: active && !toolsOpen && !state.restoringReading,
     lineHeight, pageHeight: viewportHeight,
@@ -372,7 +385,9 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       inverted
       data={lines}
       keyExtractor={keyForIndex}
-      renderItem={({ item }) => <TerminalLine line={item} style={lineStyle} onPress={onTap} />}
+      renderItem={({ item }) => <TerminalLine line={item} style={lineStyle} size={size} onPress={onTap}
+        cursor={cursor && item.rowFromBottom === cursor.rowFromBottom && item.segmentFromBottom === 0 ? cursor.column : undefined} />}
+      extraData={cursor ? `${cursor.rowFromBottom}:${cursor.column}` : ''}
       getItemLayout={(_, index) => ({ length: lineHeight, offset: lineHeight * index, index })}
       initialNumToRender={60}
       maxToRenderPerBatch={60}
@@ -401,7 +416,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   return (
     <View testID="terminal-output" style={styles.container} onLayout={onLayout}>
       {!compact ? <View style={styles.toolRow}>
-        <Pressable style={styles.tools} onPress={() => setPrefs({ terminalWrap: !terminalWrap })} accessibilityRole="button" accessibilityLabel={terminalWrap ? '切换为原始列宽' : '切换为自动折行'}><Text style={styles.toolsText}>{terminalWrap ? '自动折行' : '原始列宽 ↔'}</Text></Pressable>
+        <Pressable style={styles.tools} onPress={() => setTerminalWrap(!terminalWrap)} accessibilityRole="button" accessibilityLabel={terminalWrap ? '切换为原始列宽' : '切换为自动折行'}><Text style={styles.toolsText}>{terminalWrap ? '自动折行' : '原始列宽 ↔'}</Text></Pressable>
         <Pressable style={styles.tools} onPress={openTools} accessibilityRole="button" accessibilityLabel="搜索和复制终端输出">
           <Text style={styles.toolsText}>搜索 · 复制输出</Text>
         </Pressable>
@@ -445,27 +460,102 @@ function keyForIndex(_: VisualLine, index: number): string {
   return String(index);
 }
 
-const TerminalLine = memo(function TerminalLine({ line, style, onPress }: { line: VisualLine; style: TextStyle; onPress: () => void }) {
-  if (line.spans.length === 0) {
-    return <Text style={style} onPress={onPress} selectable={Platform.OS === 'web'} allowFontScaling={false}> </Text>;
-  }
-  if (line.spans.length === 1 && line.spans[0].attr === DEFAULT_ATTR) {
+type LineProps = { line: VisualLine; style: TextStyle; size: number; onPress: () => void; cursor?: number };
+
+const TerminalLine = memo(function TerminalLine({ line, style, size, onPress, cursor }: LineProps) {
+  const text = { style, onPress, selectable: Platform.OS === 'web', allowFontScaling: false, ...TERMINAL_LINE_DATA };
+  if (cursor !== undefined) {
+    const { before, at, after } = splitAtCursor(line.spans, cursor);
     return (
-      <Text style={style} onPress={onPress} selectable={Platform.OS === 'web'} numberOfLines={1} ellipsizeMode="clip" allowFontScaling={false}>
-        {line.spans[0].text}
+      <Text {...text} numberOfLines={1} ellipsizeMode="clip">
+        {before.map((span, index) => <SpanText key={`b${index}`} span={span} size={size} />)}
+        <SpanText span={at} size={size} cursor />
+        {after.map((span, index) => <SpanText key={`a${index}`} span={span} size={size} />)}
       </Text>
     );
   }
+  if (line.spans.length === 0) return <Text {...text}> </Text>;
+  if (line.spans.length === 1 && line.spans[0].attr === DEFAULT_ATTR && Platform.OS !== 'web') {
+    return <Text {...text} numberOfLines={1} ellipsizeMode="clip">{line.spans[0].text}</Text>;
+  }
   return (
-    <Text style={style} onPress={onPress} selectable={Platform.OS === 'web'} numberOfLines={1} ellipsizeMode="clip" allowFontScaling={false}>
-      {line.spans.map((span, index) => (
-        <Text key={index} style={styleForAttr(span.attr)}>
-          {span.text}
-        </Text>
-      ))}
+    <Text {...text} numberOfLines={1} ellipsizeMode="clip">
+      {line.spans.map((span, index) => <SpanText key={index} span={span} size={size} />)}
     </Text>
   );
 });
+
+const CURSOR_STYLE: TextStyle = { backgroundColor: colors.ink, color: colors.terminal };
+
+/** One styled run; on the web every non-GeistMono glyph gets a box of its terminal width. */
+function SpanText({ span, size, cursor = false }: { span: Span; size: number; cursor?: boolean }) {
+  const attr = span.attr === DEFAULT_ATTR ? null : styleForAttr(span.attr);
+  const style = cursor ? [attr, CURSOR_STYLE] : attr;
+  if (Platform.OS !== 'web') return <Text style={style}>{span.text}</Text>;
+  const runs = cellRuns(span.text);
+  if (runs.length === 1 && runs[0].kind === 'text') return <Text style={style}>{span.text}</Text>;
+  const cell = size * MONO_ADVANCE_EM;
+  return (
+    <Text style={style}>
+      {runs.map((run, index) => run.kind === 'text' ? run.text : (
+        <Text key={index} style={(run.kind === 'wide'
+          // CJK glyphs advance 1 em; spacing makes each exactly two cells.
+          ? { display: 'inline-block', width: run.cells * cell, letterSpacing: 2 * cell - size }
+          : { display: 'inline-block', width: run.cells * cell, textAlign: 'center' }) as unknown as TextStyle}>{run.text}</Text>
+      ))}
+    </Text>
+  );
+}
+
+/**
+ * The computer's cursor on the live screen: the line it is on and its cell.
+ * Hidden while reading history, past the last row (the relay's "hidden"), on
+ * a row that wraps into several lines, and for the (0, 0) placeholder older
+ * relays send.
+ */
+export function liveCursor(state: TerminalState, rows: readonly string[], singleLine: (row: string) => boolean): { rowFromBottom: number; column: number } | null {
+  const { x, y } = state.screen.cursor;
+  if (state.browse || state.subscription !== 'live' || !Number.isInteger(x) || !Number.isInteger(y) || y < 0 || y >= rows.length || x < 0) return null;
+  if (x === 0 && y === 0 && rows.length > 1) return null;
+  if (!singleLine(rows[y])) return null;
+  return { rowFromBottom: rows.length - 1 - y, column: x };
+}
+
+/** Splits a line at terminal cell `column`, padding with spaces when the cursor sits past the text. */
+export function splitAtCursor(spans: readonly Span[], column: number): { before: Span[]; at: Span; after: Span[] } {
+  const before: Span[] = [], after: Span[] = [];
+  let at: Span | null = null;
+  let used = 0;
+  for (const span of spans) {
+    if (at) { after.push(span); continue; }
+    const chars = Array.from(span.text);
+    let index = 0, prefix = '';
+    for (; index < chars.length; index++) {
+      const width = codePointWidth(chars[index].codePointAt(0)!);
+      if (width > 0 && used + width > column) break;
+      prefix += chars[index]; used += width;
+    }
+    if (index === chars.length) { before.push(span); continue; }
+    if (prefix) before.push({ text: prefix, attr: span.attr });
+    let next = index + 1, covered = chars[index];
+    while (next < chars.length && codePointWidth(chars[next].codePointAt(0)!) === 0) covered += chars[next++];
+    at = { text: covered, attr: span.attr };
+    const rest = chars.slice(next).join('');
+    if (rest) after.push({ text: rest, attr: span.attr });
+  }
+  if (!at) {
+    if (column > used) before.push({ text: ' '.repeat(column - used), attr: DEFAULT_ATTR });
+    at = { text: ' ', attr: DEFAULT_ATTR };
+  }
+  return { before, at, after };
+}
+
+/** The largest size, at most the chosen one, that fits `columns` cells in `width`. */
+export function fitFontSize(width: number, columns: number, preferred: number): number {
+  const fits = (width - SIDE_PADDING * 2 - 1) / (columns * MONO_ADVANCE_EM);
+  return Math.max(MIN_FIT_FONT, Math.min(preferred, Math.floor(fits * 2) / 2));
+}
+const MIN_FIT_FONT = 9;
 
 /** Shown above the oldest loaded line while browsing history. */
 function HistoryEdge({ state, session }: { state: TerminalState; session: TerminalSession }) {

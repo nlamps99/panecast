@@ -9,6 +9,7 @@ import { useNotificationRouting } from '../notifications/useNotificationRouting'
 import { appStore } from '../state/appStore';
 import { useAppState } from '../state/hooks';
 import { loadPrefs } from '../state/prefs';
+import { loadTerminalFonts } from '../platform/fonts';
 import { InboxToast } from '../ui/InboxToast';
 import { colors } from '../ui/theme';
 
@@ -28,6 +29,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     void loadPrefs();
+    void loadTerminalFonts();
     void appStore.load().then(async () => {
       if (__DEV__ && process.env.EXPO_PUBLIC_STORE_CAPTURE === '1') {
         const { prepareStoreCapture } = await import('../demo/storeCapture');

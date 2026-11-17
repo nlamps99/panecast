@@ -49,7 +49,19 @@ const MONO_SYMBOLS = [
   0x2776, 0x277e,
 ];
 
-function monoCovers(cp: number): boolean {
+/**
+ * The browser and desktop renderer draws every cell at its terminal width
+ * (`terminal/cellRuns`), so there the layout counts the computer's own cells.
+ */
+// A DOM means the browser or desktop renderer; native and tests have none.
+// (No react-native import: the broker's Node integration tests load this module.)
+let exactCells = typeof document !== 'undefined';
+/** Tests switch between the phone's estimate and the exact web grid. */
+export function setExactCells(value: boolean): void {
+  exactCells = value;
+}
+
+export function monoCovers(cp: number): boolean {
   for (let i = 0; i < MONO_SYMBOLS.length; i += 2) {
     if (cp < MONO_SYMBOLS[i]) return false;
     if (cp <= MONO_SYMBOLS[i + 1]) return true;
@@ -63,7 +75,7 @@ function monoCovers(cp: number): boolean {
  * two cells; counting it as one pushed the end of its line out of view.
  */
 export function layoutWidth(cell: Cell): number {
-  if (cell.width !== 1) return cell.width;
+  if (cell.width !== 1 || exactCells) return cell.width;
   const cp = (SUBSTITUTIONS[cell.text] ?? cell.text).codePointAt(0)!;
   if (cp < 0x2000 || cp > 0x2bff) return 1;
   return monoCovers(cp) ? 1 : 2;

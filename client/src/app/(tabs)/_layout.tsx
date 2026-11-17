@@ -1,6 +1,10 @@
 import { Tabs, router, usePathname } from 'expo-router';
 import { useEffect } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { appStore } from '../../state/appStore';
+import { DesktopSidebar } from '../../ui/DesktopSidebar';
+import { useDesktopShell } from '../../ui/desktopShell';
+import { useDesktopShortcuts } from '../../ui/useDesktopShortcuts';
 
 import { useMachine, useStore } from '../../state/hooks';
 import { useLiveLinesPref } from '../../state/useLiveLinesPref';
@@ -16,22 +20,27 @@ import { colors } from '../../ui/theme';
  * ROUTE_NAMES_CHANGED warning. The tab bar sets the order on screen.
  */
 export default function TabsLayout() {
-  const { inbox, session, computer } = useMachine();
+  const machine = useMachine();
+  const { inbox, session, computer } = machine;
   const pathname = usePathname();
+  const desktop = useDesktopShell();
   useEffect(() => {
     const restore = appStore.takeRestoredRoute(computer?.id ?? null);
     if (restore && pathname === '/') router.replace(restore);
-  }, [computer?.id, pathname]);
+    // The desktop sidebar already lists the workspaces; the window shows a terminal.
+    else if (desktop && pathname === '/') router.replace('/terminal');
+  }, [computer?.id, pathname, desktop]);
   const { unread } = useStore(inbox);
   // The layout lives as long as the connection, so the history-lines pref follows changes here.
   useLiveLinesPref(session);
+  useDesktopShortcuts(machine, desktop);
 
-  return (
+  const tabs = (
     <Tabs
       backBehavior="firstRoute"
       screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: colors.canvas } }}
       tabBar={(props) => (
-        <TabBar {...props} order={['index', 'sources', 'terminal', 'inbox', 'settings']} hiddenOn={['terminal']} badges={{ inbox: unread }} />
+        desktop ? null : <TabBar {...props} order={['index', 'sources', 'terminal', 'inbox', 'settings']} hiddenOn={['terminal']} badges={{ inbox: unread }} />
       )}
     >
       <Tabs.Screen name="index" options={{ title: '工作区' }} />
@@ -41,4 +50,11 @@ export default function TabsLayout() {
       <Tabs.Screen name="terminal" options={{ title: '终端' }} />
     </Tabs>
   );
+  if (!desktop) return tabs;
+  return <View style={styles.desktop}><DesktopSidebar /><View style={styles.content}>{tabs}</View></View>;
 }
+
+const styles = StyleSheet.create({
+  desktop: { flex: 1, flexDirection: 'row', backgroundColor: colors.canvas },
+  content: { flex: 1, minWidth: 0 },
+});

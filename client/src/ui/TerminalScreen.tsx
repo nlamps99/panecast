@@ -29,6 +29,7 @@ import { TerminalChatView } from './TerminalChatView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
+import { onDesktopCommand, useDesktopShell } from './desktopShell';
 import { CloseButton } from './CloseButton';
 import { activityKey } from '../session/terminalActivity';
 import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBadge';
@@ -49,10 +50,12 @@ export function TerminalScreen() {
   const { width, height } = useWindowDimensions();
   const { tabletSidebar } = usePrefs();
   const insets = useSafeAreaInsets();
-  const split = tabletSidebar && width >= 850 && Math.min(width, height) >= 600;
+  // The desktop window draws its sidebar around every page; tablets get one here.
+  const desktopShell = useDesktopShell();
+  const split = !desktopShell && tabletSidebar && width >= 850 && Math.min(width, height) >= 600;
   return <View style={styles.layout}>
     {split ? <View style={{ paddingTop: insets.top, paddingBottom: insets.bottom, backgroundColor: colors.surfaceSunken }}><WorkspaceSidebar /></View> : null}
-    <TerminalPane sidebar={split} />
+    <TerminalPane sidebar={split || desktopShell} />
   </View>;
 }
 
@@ -72,6 +75,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const chat = terminalPresentation === 'chat';
   const conversation = useMemo(() => new TerminalConversationStore(channel, session, machine.terminalRepository), [channel, session, machine.terminalRepository]);
   const inputRef = useRef<TerminalInputHandle>(null);
+  const desktopShell = useDesktopShell();
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
@@ -137,6 +141,32 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   // The list may show another cmux window; the open terminal keeps its own titles.
   const workspace = workspaces.find((w) => w.id === target?.workspaceId) ?? (target ? known.workspaces[target.workspaceId] : undefined);
   const readOnly = workspace?.access === 'read';
+  // Desktop: whatever selected a terminal (sidebar, tab, shortcut), typing goes
+  // to it next, and coming back to the window resumes typing where it was.
+  const focusInput = useCallback(() => {
+    if (!desktop || readOnly) return;
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    // Never take the keys from a field the user is typing in (sidebar filter, dialogs).
+    if (active && active !== document.body && (active.tagName === 'INPUT' || (active.tagName === 'TEXTAREA' && !active.closest('#panecast-terminal')))) return;
+    if (typeof window !== 'undefined' && window.getSelection()?.isCollapsed === false) return;
+    void inputRef.current?.focus();
+  }, [desktop, readOnly]);
+  useEffect(() => {
+    if (!desktop || !terminalActive) return;
+    const timer = setTimeout(focusInput, 0);
+    return () => clearTimeout(timer);
+  }, [desktop, terminalActive, target?.workspaceId, target?.surfaceId, terminalPresentation, focusInput]);
+  useEffect(() => {
+    if (!desktop || typeof window === 'undefined') return;
+    const regained = () => { if (terminalActive) setTimeout(focusInput, 0); };
+    window.addEventListener('focus', regained);
+    return () => window.removeEventListener('focus', regained);
+  }, [desktop, terminalActive, focusInput]);
+  useEffect(() => onDesktopCommand((command) => {
+    if (command.kind === 'find' && !chat) terminalView.current?.openTools();
+    if (command.kind === 'focus') setTimeout(() => { if (!readOnly) void inputRef.current?.focus(); }, 0);
+  }), [chat, readOnly]);
+
   const siblings = target ? (surfaces[target.workspaceId] ?? known.surfaces[target.workspaceId] ?? []) : [];
   const surface = siblings.find((s) => s.id === target?.surfaceId);
   const banner = statusBanner(status) ?? state.subscriptionError ?? targetError;
@@ -156,8 +186,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
     // Android too: edge-to-edge (forced from API 35) stops adjustResize from shrinking the window.
     <KeyboardAvoidingView nativeID="panecast-terminal" style={styles.screen} behavior="padding">
       <View style={[styles.header, compact && styles.compactHeader, side, { paddingTop: insets.top }]}>
-        <View style={styles.titleRow}>
-          <Pressable
+        <View style={[styles.titleRow, desktopShell && styles.desktopTitleRow]}>
+          {desktopShell ? null : <Pressable
             onPress={backToWorkspaces}
             style={({ pressed }) => [styles.back, pressed && styles.pressed]}
             hitSlop={6}
@@ -165,7 +195,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
             accessibilityLabel="返回工作区"
           >
             <Icon name="back" size={17} color={colors.ink} />
-          </Pressable>
+          </Pressable>}
           <View style={styles.titleText}>
             <Text style={styles.title} numberOfLines={1}>
               {workspace?.title ?? '终端'}
@@ -343,6 +373,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 6, paddingTop: 4 },
+  desktopTitleRow: { paddingLeft: 14 },
   back: { width: 36, height: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   pressed: { backgroundColor: colors.surface },
   titleText: { flex: 1, gap: 2 },

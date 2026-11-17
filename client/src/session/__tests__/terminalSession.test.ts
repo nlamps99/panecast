@@ -14,8 +14,12 @@ class FakeChannel implements RpcChannel {
   private pushListeners = new Set<(frame: PushFrame) => void>();
   private statusListeners = new Set<(status: ConnectionStatus) => void>();
 
+  /** A gateway with `surface.input`; without it the session falls back to one request per item. */
+  batch = false;
+
   call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (!this.isOpen) return Promise.reject(new RpcCallError('not_connected', 'offline'));
+    if (method === 'surface.input' && !this.batch) return Promise.reject(new RpcCallError('method_not_found', '统一网关不支持这个操作'));
     return new Promise<T>((resolve, reject) => {
       const call: Call = { method, params, resolve: resolve as (v: unknown) => void, reject };
       this.calls.push(call);
@@ -594,12 +598,81 @@ describe('TerminalSession live lines', () => {
   });
 });
 
+describe('TerminalSession batched input', () => {
+  const batched = () => { const channel = new FakeChannel(); channel.batch = true; return channel; };
+  const inputs = (channel: FakeChannel) => channel.calls.filter((c) => c.method === 'surface.input');
+
+  it('sends everything typed during one round trip as a single ordered request without moving focus', async () => {
+    const channel = batched();
+    const session = new TerminalSession(channel); session.setTarget(target); await flush();
+    session.sendText('l');
+    expect(inputs(channel).map((c) => c.params.items)).toEqual([[{ text: 'l' }]]);
+    session.sendText('s');
+    session.sendText(' -la');
+    session.sendKey({ name: 'enter' });
+    session.sendKey({ name: 'c', modifiers: ['ctrl'] });
+    expect(inputs(channel)).toHaveLength(1);
+    inputs(channel)[0].resolve({ sent: 1 });
+    await flush();
+    expect(inputs(channel)[1].params).toEqual({ workspace_id: 'w1', surface_id: 's1', items: [{ text: 's -la' }, { key: 'enter' }, { key: 'ctrl-c' }] });
+    inputs(channel)[1].resolve({ sent: 3 });
+    await flush();
+    expect(channel.methods().filter((m) => m === 'surface.focus' || m.startsWith('surface.send'))).toEqual([]);
+    expect(session.getState().input).toEqual({ busy: false, error: null });
+  });
+
+  it('submits a command line and prompt answers in one request each', async () => {
+    const channel = batched();
+    const session = new TerminalSession(channel); session.setTarget(target); await flush();
+    const receipt = session.submitLine('git status');
+    await flush();
+    expect(inputs(channel)[0].params.items).toEqual([{ text: 'git status' }, { key: 'enter' }]);
+    inputs(channel)[0].resolve({ sent: 2 });
+    await expect(receipt).resolves.toMatchObject({ status: 'sent' });
+    const empty = session.submitLine('');
+    await flush();
+    expect(inputs(channel)[1].params.items).toEqual([{ key: 'enter' }]);
+    inputs(channel)[1].resolve({ sent: 1 });
+    await expect(empty).resolves.toMatchObject({ status: 'sent' });
+  });
+
+  it('reports a failed batch without falling back to resending it', async () => {
+    const channel = batched();
+    const session = new TerminalSession(channel); session.setTarget(target); await flush();
+    session.sendText('a');
+    inputs(channel)[0].resolve({ sent: 1 });
+    await flush();
+    session.sendText('rm -rf build');
+    session.sendKey({ name: 'enter' });
+    inputs(channel)[1].reject(new RpcCallError('process_exited', 'gone', { sent: 0 }));
+    await flush();
+    expect(channel.methods().filter((m) => m.startsWith('surface.send'))).toEqual([]);
+    expect(session.getState().input.error).not.toBeNull();
+  });
+
+  it('asks again after reconnecting, since the new path may reach another gateway', async () => {
+    const channel = new FakeChannel();
+    const session = new TerminalSession(channel); session.setTarget(target); await flush();
+    session.sendText('x');
+    await flush();
+    expect(channel.methods()).toContain('surface.send_text');
+    channel.status({ state: 'connecting', attempt: 1 });
+    channel.batch = true;
+    channel.status({ state: 'open' });
+    await flush();
+    session.sendText('y');
+    await flush();
+    expect(inputs(channel).at(-1)?.params.items).toEqual([{ text: 'y' }]);
+  });
+});
+
 describe('TerminalSession input', () => {
   it('does not send a key when focusing its target fails', async () => {
     const channel = new FakeChannel();
     channel.autoReply.delete('surface.focus');
     const session = new TerminalSession(channel); session.setTarget(target); await flush();
     session.sendKey({ name: 'up', modifiers: ['ctrl'] });
+    await flush(); // a legacy gateway rejects surface.input first
     channel.calls.find((c) => c.method === 'surface.focus')!.reject(new RpcCallError('not_found', 'closed pane'));
     await flush();
     expect(channel.calls.some((c) => c.method === 'surface.send_key')).toBe(false);
@@ -625,6 +698,7 @@ describe('TerminalSession input', () => {
     channel.autoReply.delete('surface.send_text');
     const receipt = session.submitLine('deploy');
     session.setTarget({ workspaceId: 'w2', surfaceId: 's2' });
+    await flush(); // a legacy gateway rejects surface.input first
     channel.calls.find((c) => c.method === 'surface.send_text')!.resolve({});
     await expect(receipt).resolves.toMatchObject({ status: 'unknown' });
     expect(channel.calls.some((c) => c.method === 'surface.send_key')).toBe(false);
@@ -639,6 +713,7 @@ describe('TerminalSession input', () => {
     session.sendText('b');
     session.sendText('c');
     session.sendKey({ name: 'enter' });
+    await flush(); // a legacy gateway rejects surface.input first
     const sends = () => channel.calls.filter((c) => c.method.startsWith('surface.send') || c.method === 'surface.focus');
     expect(sends().map((c) => [c.method, c.params.text ?? c.params.key])).toEqual([['surface.send_text', 'a']]);
     sends()[0].resolve({});
@@ -706,6 +781,7 @@ describe('TerminalSession input', () => {
     await flush();
     session.sendText('a');
     session.sendKey({ name: 'enter' });
+    await flush(); // a legacy gateway rejects surface.input first
     channel.calls.find((c) => c.method === 'surface.send_text')!.reject(new RpcCallError('closed', 'gone'));
     await flush();
     expect(channel.methods()).not.toContain('surface.send_key');

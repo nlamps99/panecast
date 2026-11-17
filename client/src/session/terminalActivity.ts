@@ -82,9 +82,19 @@ export class TerminalActivityStore {
       && (!this.inBackground || this.state[activityKey(target)]?.status === 'running'))
       .sort((a, b) => (this.retryAfter.get(activityKey(a)) ?? 0) - (this.retryAfter.get(activityKey(b)) ?? 0) || Number(this.state[activityKey(b)]?.status === 'running') - Number(this.state[activityKey(a)]?.status === 'running'));
     // Automatic polling has a fixed request budget, independent of how many
-    // recent conversations exist. Foreground reads supply their own status.
-    const queue = force ? due : due.slice(0, 1);
+    // recent conversations exist: one batched read when the gateway offers
+    // it, otherwise one terminal per pass. Foreground reads supply their own status.
     const worker = async () => {
+      const repository = this.options.repository;
+      if (repository && !force && due.length) {
+        const heads = await repository.readHeads(due).catch(() => undefined);
+        if (generation !== this.generation || this.disposed) return;
+        if (heads !== null) {
+          for (const target of due) { const result = heads?.get(activityKey(target)); if (result instanceof RpcCallError) this.fail(target, result); }
+          return;
+        }
+      }
+      const queue = force ? due : due.slice(0, 1);
       while (queue.length && generation === this.generation && !this.disposed && !this.unsupported) {
         await this.read(queue.shift()!, generation);
       }
@@ -107,11 +117,15 @@ export class TerminalActivityStore {
       this.accept(target, raw);
     } catch (error) {
       if (this.disposed || generation !== this.generation) return;
-      this.snapshots.delete(key);
-      this.set(key, { status: 'unknown', at: this.state[key]?.at ?? 0, windowId: target.windowId });
-      this.retryAfter.set(key, Date.now() + 30_000);
-      if (error instanceof RpcCallError && ['method_not_found', 'unknown_method', '-32601'].includes(error.code)) this.unsupported = true;
+      this.fail(target, error);
     }
+  }
+  private fail(target: ActivityTarget, error: unknown) {
+    const key = activityKey(target);
+    this.snapshots.delete(key);
+    this.set(key, { status: 'unknown', at: this.state[key]?.at ?? 0, windowId: target.windowId });
+    this.retryAfter.set(key, Date.now() + 30_000);
+    if (error instanceof RpcCallError && ['method_not_found', 'unknown_method', '-32601'].includes(error.code)) this.unsupported = true;
   }
   private accept(target: ActivityTarget, raw: Record<string, unknown>) {
       const key = activityKey(target), previous = this.snapshots.get(key);

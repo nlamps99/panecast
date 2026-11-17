@@ -19,6 +19,8 @@ export type DesktopBridge = {
   notify?(options: DesktopNotification): Promise<boolean>;
   onNotification?(listener: (notification: DesktopNotification) => void): () => void;
   openNotificationSettings?(): Promise<void>;
+  /** The gateway running on this computer, read from its owner-only credential file; null when absent. */
+  localGateway?(): Promise<unknown>;
 };
 declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {

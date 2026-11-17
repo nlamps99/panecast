@@ -58,6 +58,9 @@ class Channel implements RpcChannel {
   onStatus() { return () => {}; }
   push(frame: PushFrame) { for (const listener of this.listeners) listener(frame); }
 }
+/** Keys that reached the terminal, through batched `surface.input` or single `surface.send_key`. */
+const sentKeys = (channel: Channel) => channel.rpc.mock.calls.flatMap(([method, params]) => method === 'surface.send_key' ? [params?.key]
+  : method === 'surface.input' ? ((params?.items ?? []) as { key?: string }[]).filter((item) => item.key).map((item) => item.key) : []);
 
 let container: HTMLDivElement;
 type TestRoot = { render(node: ReactNode): void; unmount(): void };
@@ -165,7 +168,7 @@ it.each([false, true])('shows Ctrl + Up after browsing history and sends it once
     callback('发送 Ctrl 上箭头', 'onPressOut', undefined);
     callback('发送 Ctrl 上箭头', 'onPress', undefined);
   });
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'surface.send_key').map(([, params]) => params?.key)).toEqual(['ctrl-up']);
+  expect(sentKeys(channel)).toEqual(['ctrl-up']);
   expect(session.getState().browse).toBeNull();
   expect(mockScrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: false });
   // The previous offset can be delivered before native applies the jump.
@@ -185,7 +188,7 @@ it('reveals the prompt when Ctrl + Up is tapped from the top of a live applicati
   mockScrollToOffset.mockClear();
   await act(async () => callback('发送 Ctrl 上箭头', 'onPress', undefined));
   expect(mockScrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: false });
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'surface.send_key').map(([, params]) => params?.key)).toEqual(['ctrl-up']);
+  expect(sentKeys(channel)).toEqual(['ctrl-up']);
 });
 it('loads scrollback for a short visible cmux screen even before a positive scroll offset is possible', async () => {
   await mount(['short screen', '$']);
@@ -345,7 +348,7 @@ it('drops application prefetch and restores its viewport when an explicit key is
   await act(async () => session.sendKey({ name: 'up' }));
   expect(session.getState().browse).toBeNull();
   expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, params]) => params?.delta_lines)).toEqual([1, -1]);
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'surface.send_key')).toHaveLength(1);
+  expect(sentKeys(channel)).toHaveLength(1);
 });
 
 it('does not prefetch or send application scroll input for a read-only source', async () => {

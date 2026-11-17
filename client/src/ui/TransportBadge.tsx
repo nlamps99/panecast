@@ -25,6 +25,8 @@ export function useActiveTransport(channel: unknown): ActiveTransport | null {
 
 export const LAN_HINT = '局域网链路不加密，只在可信网络下使用。';
 
+const LOCAL_LABEL = { text: '本机', a11y: '已直接连接本机网关，不经过服务器' };
+
 const LABELS: Record<ActiveTransport, { text: string; a11y: string }> = {
   lan: { text: '局域网', a11y: '已通过局域网连接，链路未加密' },
   broker: { text: '服务器', a11y: '已通过服务器连接，链路已加密' },
@@ -40,8 +42,10 @@ export function TransportBadge({ channel, showHint = false }: { channel: StatusS
   const transport = useActiveTransport(channel);
   const status = useConnectionStatus(channel);
   if (!transport || status.state !== 'open') return null;
-  const lan = transport === 'lan';
-  const label = LABELS[transport];
+  // The desktop app beside its own gateway: loopback, nothing leaves the computer.
+  const local = transport === 'lan' && (channel as { directIsLocal?: boolean }).directIsLocal === true;
+  const lan = transport === 'lan' && !local;
+  const label = local ? LOCAL_LABEL : LABELS[transport];
   return (
     <View style={styles.wrap}>
       <View

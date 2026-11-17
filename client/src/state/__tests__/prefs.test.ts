@@ -41,6 +41,7 @@ describe('sanitizePrefs', () => {
       keyHaptics: true,
       extraKeyRow: false,
       terminalWrap: true,
+      desktopTerminalWrap: false,
       terminalPresentation: 'terminal',
       tabletSidebar: true,
     });

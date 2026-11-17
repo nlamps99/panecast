@@ -134,26 +134,69 @@ export function createComputerChannel(
   const broker = brokerEndpoint(computer.broker.serverUrl, computer.broker.relayId);
   if (!broker.ok) return null;
   const brokerUrl = webSocketUrl(broker.endpoint);
-  const lan = storedLan(computer);
+  const stored = storedLan(computer);
+  // The desktop app on the computer it controls talks to that computer's
+  // gateway over loopback instead of a round trip through the server.
+  const desktop = desktopBridge()?.localGateway !== undefined;
+  const local = () => (desktop ? localGatewayFor(computer) : null);
+  const direct = () => local() ?? stored;
   return new AutoChannel({
     preference,
-    hasLan: lan !== null,
+    hasLan: stored !== null || desktop,
+    lanLocal: () => desktop && local() !== null,
+    ...(desktop ? { lanRetryMinMs: 3_000, lanRetryMaxMs: 30_000, probeTimeoutMs: 800 } : {}),
     connect: (transport) => {
-      const target =
-        transport === 'lan' && lan
-          ? { url: lan.webSocketUrl, token: lan.token, deviceId: lan.deviceId }
-          : { url: brokerUrl, token: computer.broker.token, deviceId: computer.broker.deviceId };
+      const path = transport === 'lan' ? direct() : null;
+      const target = path
+        ? { url: path.webSocketUrl, token: path.token, deviceId: path.deviceId }
+        : { url: brokerUrl, token: computer.broker.token, deviceId: computer.broker.deviceId };
       return new RelayConnection({
         ...target,
         appVersion: APP_VERSION,
         createSocket,
-        log: (message) => log(`[${transport}] ${message}`),
+        log: (message) => log(`[${path === null ? 'broker' : local() ? 'local' : transport}] ${message}`),
       });
     },
-    probeLan: (timeoutMs) => (lan ? probeHealth(lan.healthUrl, timeoutMs) : Promise.resolve(false)),
+    probeLan: async (timeoutMs) => {
+      if (desktop) await refreshLocalGateway();
+      const path = direct();
+      return path ? probeHealth(path.healthUrl, timeoutMs) : false;
+    },
     network: expoNetworkWatcher,
     log,
   });
+}
+
+/** The credential file the gateway on this computer leaves for the desktop app. */
+export type LocalGateway = { webSocketUrl: string; healthUrl: string; token: string; deviceId: string; relayId: string | null; brokerUrl: string | null };
+let localGateway: LocalGateway | null = null;
+
+export function parseLocalGateway(value: unknown): LocalGateway | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const text = (key: string) => (typeof raw[key] === 'string' && (raw[key] as string).length > 0 ? (raw[key] as string) : null);
+  const url = text('url'), health = text('health_url') ?? text('healthUrl'), token = text('token'), deviceId = text('device_id') ?? text('deviceId');
+  if (!url || !health || !token || !deviceId) return null;
+  try {
+    const socket = new URL(url), probe = new URL(health);
+    if (socket.protocol !== 'ws:' || probe.protocol !== 'http:' || socket.host !== probe.host || socket.pathname !== '/v1/ws' || probe.pathname !== '/v1/health') return null;
+  } catch { return null; }
+  return { webSocketUrl: url, healthUrl: health, token, deviceId, relayId: text('relay_id') ?? text('relayId'), brokerUrl: text('broker_url') ?? text('brokerUrl') };
+}
+
+/** Re-reads the local credential; the gateway rotates it on every start. */
+export async function refreshLocalGateway(): Promise<LocalGateway | null> {
+  const bridge = desktopBridge();
+  if (!bridge?.localGateway) return (localGateway = null);
+  try { localGateway = parseLocalGateway(await bridge.localGateway()); } catch { localGateway = null; }
+  return localGateway;
+}
+
+/** The local gateway, if it is the one this stored computer was paired with. */
+export function localGatewayFor(computer: Pick<StoredComputer, 'broker'>, gateway: LocalGateway | null = localGateway): LocalGateway | null {
+  if (!gateway?.relayId || !gateway.brokerUrl || gateway.relayId !== computer.broker.relayId) return null;
+  const same = (a: string, b: string) => a.replace(/\/+$/, '').toLowerCase() === b.replace(/\/+$/, '').toLowerCase();
+  return same(gateway.brokerUrl, computer.broker.serverUrl) ? gateway : null;
 }
 
 /** The stored LAN half, if it is complete and still names a private-LAN relay. */

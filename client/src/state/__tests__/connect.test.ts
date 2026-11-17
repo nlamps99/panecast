@@ -417,3 +417,26 @@ describe('expoNetworkWatcher', () => {
     expect(() => stop()).not.toThrow();
   });
 });
+
+describe('the local gateway credential', () => {
+  const { parseLocalGateway, localGatewayFor } = jest.requireActual('../connect') as typeof import('../connect');
+  const file = { version: 1, url: 'ws://127.0.0.1:4400/v1/ws', health_url: 'http://127.0.0.1:4400/v1/health', device_id: 'd', token: 't',
+    relay_id: 'note-mac', broker_url: 'https://broker.example/cmux-remote', backend: 'hub' };
+
+  it('accepts only a loopback-style websocket and health pair on the same host', () => {
+    expect(parseLocalGateway(file)).toEqual({ webSocketUrl: file.url, healthUrl: file.health_url, token: 't', deviceId: 'd', relayId: 'note-mac', brokerUrl: file.broker_url });
+    expect(parseLocalGateway({ ...file, url: 'wss://evil.example/v1/ws' })).toBeNull();
+    expect(parseLocalGateway({ ...file, health_url: 'http://127.0.0.1:9/v1/health' })).toBeNull();
+    expect(parseLocalGateway({ ...file, token: '' })).toBeNull();
+    expect(parseLocalGateway(null)).toBeNull();
+  });
+
+  it('matches the stored computer by relay and server, ignoring a trailing slash', () => {
+    const gateway = parseLocalGateway(file)!;
+    const computer = { broker: { serverUrl: 'https://broker.example/cmux-remote/', relayId: 'note-mac', token: 'x', deviceId: 'y' } };
+    expect(localGatewayFor(computer, gateway)).toBe(gateway);
+    expect(localGatewayFor({ broker: { ...computer.broker, relayId: 'other-mac' } }, gateway)).toBeNull();
+    expect(localGatewayFor({ broker: { ...computer.broker, serverUrl: 'https://elsewhere.example' } }, gateway)).toBeNull();
+    expect(localGatewayFor(computer, { ...gateway, relayId: null })).toBeNull();
+  });
+});

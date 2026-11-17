@@ -60,6 +60,7 @@
     writeClipboard: text => invoke('clipboard_write', { text }),
     notify: options => invoke('desktop_notify', { options }),
     openNotificationSettings: () => invoke('notification_settings'),
+    localGateway: () => invoke('local_gateway'),
     onNotification: listener => {
       let disposed = false, unsubscribe;
       void window.__TAURI__.event.listen('panecast-notification', event => {
