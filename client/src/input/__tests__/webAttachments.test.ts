@@ -42,6 +42,7 @@ it('receives OS file drops over the conversation and preserves original binary b
   expect(files.map((file: { name: string }) => file.name)).toEqual(['截图.png', '文档.txt']);
   expect(await files[0].readBase64()).toBe('iVBORwD/');
   expect(await files[1].readBase64()).toBe('aGVsbG8=');
+  expect(await files[1].readChunk?.(1, 4)).toBe('ZWxs'); // only the slice's own bytes
 });
 
 it('pastes a screenshot once in either composer and leaves ordinary text paste untouched', () => {

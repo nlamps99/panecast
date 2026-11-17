@@ -112,6 +112,8 @@ export class HubSession extends RelaySession {
         info.max_message_bytes = Math.min(32 * 1024 * 1024, limits.max_message_bytes);
         info.max_upload_bytes = limits.max_upload_bytes;
       }
+      // Chunked uploads have no total size limit; only sources that take them say so.
+      if (Number.isSafeInteger(limits.upload_chunk_bytes) && limits.upload_chunk_bytes > 0) info.upload_chunk_bytes = Math.min(limits.upload_chunk_bytes, 16 * 1024 * 1024);
       return info;
     }
     if (method === 'relay.snippets') return { snippets: this.config.snippets ?? [] };

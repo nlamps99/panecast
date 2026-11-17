@@ -7,19 +7,26 @@ import type { AttachmentEvents } from './webAttachments';
 const scope = '#panecast-terminal, #panecast-expanded-composer';
 const inside = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest(scope));
 
+/** A blob as base64, read without loading more than the blob itself. */
+function readAsBase64(blob: Blob, name: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new AttachmentError(`无法读取“${name}”`));
+    reader.onload = () => {
+      const data = typeof reader.result === 'string' ? reader.result : '';
+      const separator = data.indexOf(',');
+      if (separator < 0) reject(new AttachmentError(`无法读取“${name}”`));
+      else resolve(data.slice(separator + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
 export function browserFile(file: File): AttachmentFile {
   return { name: file.name || 'clipboard-image.png', mimeType: file.type, size: file.size,
-    readBase64: () => new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new AttachmentError(`无法读取“${file.name}”`));
-      reader.onload = () => {
-        const data = typeof reader.result === 'string' ? reader.result : '';
-        const separator = data.indexOf(',');
-        if (separator < 0) reject(new AttachmentError(`无法读取“${file.name}”`));
-        else resolve(data.slice(separator + 1));
-      };
-      reader.readAsDataURL(file);
-    }),
+    readBase64: () => readAsBase64(file, file.name),
+    // A slice reads only its own bytes, so a file of any size never sits in memory whole.
+    readChunk: (start: number, end: number) => readAsBase64(file.slice(start, end), file.name),
     ...(file.type.startsWith('image/') ? { compressImage: async (budget: number) => {
       const url = URL.createObjectURL(file);
       try { return await encodeImage(url, budget); } finally { URL.revokeObjectURL(url); }

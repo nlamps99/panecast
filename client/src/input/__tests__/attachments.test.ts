@@ -9,6 +9,7 @@ import {
   encodeWithinBudget,
   fitWithin,
   formatBytes,
+  chunkBytesFor,
   parseRelayLimits,
   parseUploadResult,
   pathInsertion,
@@ -54,6 +55,16 @@ describe('size budget', () => {
     expect(parseRelayLimits(null)).toBeNull();
     expect(parseRelayLimits({ max_message_bytes: 'x' })).toBeNull();
     expect(base64Budget('broker', null)).toBe(BROKER_BASE64_BUDGET);
+  });
+
+  it('reads the chunk size of relays without a total upload limit, and keeps a chunk inside one message', () => {
+    const MiB = 1024 * 1024;
+    const limits = parseRelayLimits({ max_message_bytes: 24 * MiB, max_upload_bytes: 12 * MiB, upload_chunk_bytes: 4 * MiB });
+    expect(limits).toEqual({ maxMessageBytes: 24 * MiB, maxUploadBytes: 12 * MiB, chunkBytes: 4 * MiB });
+    expect(chunkBytesFor(limits!)).toBe(4 * MiB);
+    expect(chunkBytesFor({ maxMessageBytes: 2 * MiB, maxUploadBytes: 12 * MiB, chunkBytes: 4 * MiB })! * 4 / 3).toBeLessThan(2 * MiB);
+    expect(chunkBytesFor({ maxMessageBytes: 24 * MiB, maxUploadBytes: 12 * MiB })).toBeNull();
+    expect(parseRelayLimits({ max_message_bytes: 1, max_upload_bytes: 1, upload_chunk_bytes: -1 })).toEqual({ maxMessageBytes: 1, maxUploadBytes: 1 });
   });
 
   it('treats anything that is not a LAN channel as the broker', () => {

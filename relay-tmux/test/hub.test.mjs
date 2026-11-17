@@ -94,6 +94,9 @@ test('attachment limits come from the selected source and respect the hub transp
   assert.equal((await peer.call('relay.info')).backend, 'hub');
   const info = await peer.call('relay.info', target);
   assert.equal(info.max_upload_bytes, 12 * 1024 * 1024); assert.equal(info.max_message_bytes, 24 * 1024 * 1024);
+  assert.equal(info.upload_chunk_bytes, undefined, 'a source without chunked uploads keeps the single-message limit');
+  cmux.limits.upload_chunk_bytes = 4 * 1024 * 1024;
+  assert.equal((await peer.call('relay.info', target)).upload_chunk_bytes, 4 * 1024 * 1024);
   cmux.limits.max_message_bytes = 64 * 1024 * 1024;
   assert.equal((await peer.call('relay.info', target)).max_message_bytes, 32 * 1024 * 1024);
   await assert.rejects(peer.call('relay.info', { ...target, surface_id: scoped('other', '%0') }), { code: 'invalid_target' });

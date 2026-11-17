@@ -154,6 +154,8 @@ public actor WSProtocolMachine {
         .object([
             "max_message_bytes": .int(Int64(HTTPServer.maxWebSocketFrameBytes)),
             "max_upload_bytes": .int(Int64(RelayFileUploadService.maxBytes)),
+            // Chunked `file.upload` calls have no total size limit.
+            "upload_chunk_bytes": .int(Int64(RelayFileUploadService.chunkBytes)),
         ])
     }
 
@@ -165,8 +167,8 @@ public actor WSProtocolMachine {
             return encode(RPCResponse(id: req.id, ok: true, result: HostBatteryService.snapshot().json, error: nil))
         case "file.upload":
             do {
-                let uploaded = try RelayFileUploadService.save(params: req.params)
-                return encode(RPCResponse(id: req.id, ok: true, result: uploaded.json, error: nil))
+                let uploaded = try RelayFileUploadService.receive(params: req.params)
+                return encode(RPCResponse(id: req.id, ok: true, result: uploaded, error: nil))
             } catch {
                 return encode(errorResponse(id: req.id, code: "upload_failed", message: String(describing: error)))
             }

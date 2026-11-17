@@ -78,6 +78,7 @@ Panecast 让你在手机上查看和操作电脑上的终端。它由 cmux Remot
 - 其余方法原样转发给 cmux，比如 `workspace.list`、`surface.list`、`surface.send_text`、`surface.send_key`。
 - `surface.input`（`items: [{text} | {key}]`）由 relay / hub 按顺序逐项发到指定终端：客户端把一次往返期间的输入合并成一个请求，旧网关返回 method_not_found 时退回逐项发送。hub 另有 `terminal.conversation.batch`。
 - hub 的写操作按到达顺序执行，只读请求并行，慢读取不阻塞按键。
+- `file.upload` 分块：`relay.info` 返回 `upload_chunk_bytes` 时，客户端按块发送 `{upload_id, offset, data_base64, done}`，最后一块带 filename / mime_type；relay / hub 追加到 `~/Downloads/cmux-remote/.panecast-upload-<id>.part`，offset 不符就拒绝，最后一块改名为正式文件，没有总大小限制。没有 `upload_id` 的旧式单条上传仍限 12 MB。
 - 本机直连：hub 在状态目录写 `local-gateway.json`（0600，loopback 设备凭据，每次启动轮换），同机的桌面版读取后直连 `127.0.0.1`，不绕 broker。
 
 **推送帧**：没有 id，按 `type` 区分，键是 snake_case。

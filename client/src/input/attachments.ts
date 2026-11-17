@@ -13,6 +13,10 @@
  *   `receive()` and drops the whole tunnel, so for them the RPC frame must
  *   stay under 1 MiB.
  *
+ * Relays that report `upload_chunk_bytes` take a file of any size as a series
+ * of chunked `file.upload` calls instead (`fileAttachments.ts`); the limits
+ * above then only bound one chunk.
+ *
  * Pure helpers only; the Expo picker and encoder glue is in `attachImage.ts`.
  */
 
@@ -50,8 +54,12 @@ export const ENCODE_LADDER: readonly EncodeStep[] = [
   { maxDimension: 1024, quality: 0.4 },
 ];
 
-/** What the relay reports through `relay.info`; null for relays that predate it. */
-export type RelayLimits = { maxMessageBytes: number; maxUploadBytes: number };
+/**
+ * What the relay reports through `relay.info`; null for relays that predate
+ * it. `chunkBytes` is set when the relay takes chunked uploads (no total size
+ * limit).
+ */
+export type RelayLimits = { maxMessageBytes: number; maxUploadBytes: number; chunkBytes?: number };
 
 /** Room left in a frame for the RPC and broker envelope JSON around the base64. */
 const FRAME_OVERHEAD = 64 * 1024;
@@ -78,7 +86,17 @@ export function parseRelayLimits(value: unknown): RelayLimits | null {
   const message = record.max_message_bytes;
   const upload = record.max_upload_bytes;
   if (typeof message !== 'number' || typeof upload !== 'number' || message <= 0 || upload <= 0) return null;
-  return { maxMessageBytes: message, maxUploadBytes: upload };
+  const chunk = record.upload_chunk_bytes;
+  if (typeof chunk !== 'number' || !Number.isSafeInteger(chunk) || chunk <= 0) return { maxMessageBytes: message, maxUploadBytes: upload };
+  return { maxMessageBytes: message, maxUploadBytes: upload, chunkBytes: chunk };
+}
+
+/** Decoded bytes per chunk: the relay's size, kept inside one message with room for the RPC around it. */
+export function chunkBytesFor(limits: RelayLimits): number | null {
+  if (!limits.chunkBytes) return null;
+  const fits = Math.floor((limits.maxMessageBytes - FRAME_OVERHEAD) / 4) * 3;
+  const bytes = Math.min(limits.chunkBytes, fits);
+  return bytes >= 64 * 1024 ? bytes : null;
 }
 
 /** The transport a channel reports (`ComputerChannel.transport`); anything else counts as the broker, the tighter one. */

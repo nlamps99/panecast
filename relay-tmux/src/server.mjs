@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
-import { readFile, mkdir, writeFile, chmod, unlink } from 'node:fs/promises';
+import { readFile, mkdir, chmod, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import http from 'node:http';
@@ -10,6 +10,7 @@ import { PushService, writeJSON } from './push.mjs';
 import { InboxJournal } from './inbox.mjs';
 import { notificationSignal } from './notification-signal.mjs';
 import { isNamedPipe, notifySocketPath } from './platform.mjs';
+import { saveUpload, UPLOAD_CHUNK_BYTES } from './upload.mjs';
 
 const MAX_MESSAGE = 32 * 1024 * 1024;
 const hash = (value) => createHash('sha256').update(String(value)).digest();
@@ -121,7 +122,7 @@ export class RelaySession {
     }
   }
   async dispatch(method, p) {
-    if (method === 'relay.info') return { backend: 'tmux', max_message_bytes: MAX_MESSAGE, max_upload_bytes: 12 * 1024 * 1024 };
+    if (method === 'relay.info') return { backend: 'tmux', max_message_bytes: MAX_MESSAGE, max_upload_bytes: 12 * 1024 * 1024, upload_chunk_bytes: UPLOAD_CHUNK_BYTES };
     if (method === 'relay.snippets') return { snippets: this.config.snippets ?? [] };
     if (method === 'surface.subscribe') {
       await this.backend.surface(p);
@@ -140,14 +141,7 @@ export class RelaySession {
       const notification = { ...p, id: randomUUID(), title: String(p.title ?? '终端通知').slice(0, 300), body: String(p.body ?? '').slice(0, 2000), ts: Date.now() / 1000 };
       await this.notify(notification); return notification;
     }
-    if (method === 'file.upload') {
-      if (typeof p.data_base64 !== 'string' || p.data_base64.length > 16 * 1024 * 1024 || !/^[\w+/]*={0,2}$/.test(p.data_base64)) throw new RpcError('upload_failed', '图片过大或格式无效');
-      const data = Buffer.from(p.data_base64, 'base64');
-      const name = `${Date.now()}-${randomBytes(4).toString('hex')}-${String(p.filename ?? 'image.png').replace(/[^\p{L}\p{N}._-]/gu, '_').slice(-120)}`;
-      const directory = this.config.upload_directory ?? join(homedir(), 'Downloads', 'cmux-remote');
-      await mkdir(directory, { recursive: true }); const path = join(directory, name); await writeFile(path, data, { mode: 0o600 });
-      return { path, filename: name, size: data.length, mime_type: p.mime_type ?? 'image/png' };
-    }
+    if (method === 'file.upload') return saveUpload(this.config.upload_directory ?? join(homedir(), 'Downloads', 'cmux-remote'), p);
     const result = await this.backend.dispatch(method, p);
     if (/^(workspace|surface)\.(create|close|rename)$/.test(method)) this.notify({ category: method.split('.')[0], name: `${method}d`, workspace_id: p.workspace_id });
     return result;
