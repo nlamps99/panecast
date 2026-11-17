@@ -77,7 +77,8 @@ async function loadReleases() {
   const files = data.downloadBase ?? '.';
   byId('android-version').textContent = `v${data.android.version} · build ${data.android.versionCode}`;
   byId('android-size').textContent = `${(data.android.size / 1000000).toFixed(1)} MB`;
-  byId('android-download').href = `${files}/${data.android.file}`;
+  // COS refuses APK downloads from its default domain (403), so the APK stays on this server.
+  byId('android-download').href = `./${data.android.file}`;
   byId('android-checksum').href = `./${data.android.file}.sha256`;
   byId('mac-version').textContent = `v${data.mac.version} CLI`;
   if (data.desktop) {
@@ -108,7 +109,7 @@ async function loadReleases() {
     npm: { command: `npm install -g ${data.downloadBase ?? base}/${data.mac.file}`, note: '需要 Node.js 22+。这是直接安装官方发布包，无需配置 npm 仓库。' },
   };
   selectMethod(activeMethod);
-  const list = byId('release-list'); list.replaceChildren(releaseRow(data.mac, 'Mac CLI', files), releaseRow(data.android, 'Android', files));
+  const list = byId('release-list'); list.replaceChildren(releaseRow(data.mac, 'Mac CLI', files), releaseRow(data.android, 'Android', '.'));
   if (data.desktop) list.prepend(releaseRow(data.desktop, 'Mac 桌面版', files));
   if (data.windows) list.prepend(releaseRow(data.windows, 'Windows 桌面版', files));
   for (const release of data.history ?? []) list.append(releaseRow(release, release.platform));
