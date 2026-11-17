@@ -2,6 +2,7 @@ import { copyFile, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from '
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,8 +15,17 @@ const arch = process.env.PANECAST_DESKTOP_ARCH ?? process.arch;
 if (!['arm64', 'x64'].includes(arch)) throw new Error('Unsupported architecture');
 const target = arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
 const cross = arch !== process.arch;
-execFileSync(process.execPath, [join(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--bundles', 'app', ...(cross ? ['--target', target] : []), '--', '--locked'], { cwd: root, stdio: 'inherit' });
-const application = join(root, 'src-tauri/target', ...(cross ? [target] : []), 'release/bundle/macos/Panecast.app');
+// The self-update package is signed with the key whose public half is built
+// into every release (tauri.macos.conf.json). Losing it strands installed apps.
+const keys = process.env.PANECAST_UPDATER_KEY_DIR ?? join(homedir(), '.cmuxremote/desktop-release');
+const signing = {
+  TAURI_SIGNING_PRIVATE_KEY: (await readFile(join(keys, 'updater.key'), 'utf8')).trim(),
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: (await readFile(join(keys, 'updater.password'), 'utf8')).trim(),
+};
+execFileSync(process.execPath, [join(root, 'node_modules/@tauri-apps/cli/tauri.js'), 'build', '--bundles', 'app', ...(cross ? ['--target', target] : []),
+  '--config', JSON.stringify({ bundle: { createUpdaterArtifacts: true } }), '--', '--locked'], { cwd: root, stdio: 'inherit', env: { ...process.env, ...signing } });
+const bundles = join(root, 'src-tauri/target', ...(cross ? [target] : []), 'release/bundle/macos');
+const application = join(bundles, 'Panecast.app');
 execFileSync('codesign', ['--verify', '--deep', '--strict', application]);
 const directory = join(output, `Panecast-tauri-${arch}`);
 await mkdir(directory, { recursive: true });
@@ -54,6 +64,11 @@ try {
 } finally {
   await rm(dmgStage, { recursive: true, force: true });
 }
-const metadata = { version: pkg.version, platform: 'macOS', architecture: arch, framework: 'Tauri 2', ...await artifactMetadata(dmgFile), archive, installer: await artifactMetadata(installerFile) };
+const updateFile = `panecast-desktop-${pkg.version}-mac-${arch}.app.tar.gz`;
+await copyFile(join(bundles, 'Panecast.app.tar.gz'), join(output, updateFile));
+const signature = (await readFile(join(bundles, 'Panecast.app.tar.gz.sig'), 'utf8')).trim();
+if (!/^[A-Za-z0-9+/]+=*$/.test(signature)) throw new Error('Missing update signature');
+const update = { ...await artifactMetadata(updateFile), signature };
+const metadata = { version: pkg.version, platform: 'macOS', architecture: arch, framework: 'Tauri 2', ...await artifactMetadata(dmgFile), archive, installer: await artifactMetadata(installerFile), update };
 await writeFile(join(output, `desktop-${arch}.json`), `${JSON.stringify(metadata, null, 2)}\n`);
 console.log(JSON.stringify(metadata, null, 2));

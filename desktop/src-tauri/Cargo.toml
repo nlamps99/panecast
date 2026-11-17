@@ -1,6 +1,6 @@
 [package]
 name = "panecast-desktop"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 rust-version = "1.90"
 
@@ -30,6 +30,7 @@ tauri-plugin-notification = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+tauri-plugin-updater = "2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAlert", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSString"] }

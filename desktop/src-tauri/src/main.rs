@@ -4,6 +4,8 @@
 mod local_gateway;
 mod security;
 mod transport;
+#[cfg(target_os = "macos")]
+mod updater;
 mod vault;
 mod window_state;
 #[cfg(windows)]
@@ -207,6 +209,78 @@ fn notification_settings(window: WebviewWindow, app: tauri::AppHandle) -> Result
         .map_err(|_| "无法打开通知设置".into())
 }
 
+/// Self-update: the current version and what the updater is doing.
+#[tauri::command]
+async fn update_status(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    require_app(&window)?;
+    #[cfg(target_os = "macos")]
+    return serde_json::to_value(updater::status(&app)).map_err(|e| e.to_string());
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("这个系统暂不支持自动更新".into())
+    }
+}
+
+/// Checks for an update now and installs it; resolves with the new status.
+#[tauri::command]
+async fn update_check(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    require_app(&window)?;
+    #[cfg(target_os = "macos")]
+    return serde_json::to_value(updater::check(&app).await).map_err(|e| e.to_string());
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("这个系统暂不支持自动更新".into())
+    }
+}
+
+/// Restarts into the installed update.
+#[tauri::command]
+async fn update_restart(window: WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+    require_app(&window)?;
+    app.state::<Transport>().disconnect();
+    app.restart()
+}
+
+/// The app menu's "检查更新…": checks, then says what it found.
+#[cfg(target_os = "macos")]
+fn check_from_menu(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let status = updater::check(&app).await;
+        let (title, message, buttons) = match &status.state {
+            updater::UpdateState::Ready { version, notes } => (
+                format!("Panecast {version} 已下载"),
+                notes.clone().unwrap_or_else(|| "重启 Panecast 后使用新版本。".into()),
+                vec!["立即重启".to_string(), "稍后".to_string()],
+            ),
+            updater::UpdateState::Failed { message } => {
+                ("检查更新失败".to_string(), message.clone(), vec!["好".to_string()])
+            }
+            _ => (
+                "已是最新版本".to_string(),
+                format!("Panecast {} 是最新版本。", status.current),
+                vec!["好".to_string()],
+            ),
+        };
+        let restart = matches!(status.state, updater::UpdateState::Ready { .. });
+        let cancel = buttons.len() - 1;
+        if let Ok(0) = native_dialog(&app, 0, title, message, buttons, cancel).await {
+            if restart {
+                app.state::<Transport>().disconnect();
+                app.restart();
+            }
+        }
+    });
+}
+
 /// The gateway on this computer, for a direct loopback connection.
 #[tauri::command]
 async fn local_gateway(
@@ -256,9 +330,24 @@ async fn dialog(
         .iter()
         .map(|title| title.chars().take(100).collect())
         .collect();
-    let cancel_id = options.cancel_id;
     #[cfg(windows)]
     let parent = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
+    #[cfg(not(windows))]
+    let parent = 0;
+    native_dialog(&app, parent, title, message, buttons, options.cancel_id).await
+}
+
+/// A modal alert on the main thread; returns the chosen button index.
+async fn native_dialog(
+    app: &tauri::AppHandle,
+    parent: isize,
+    title: String,
+    message: String,
+    buttons: Vec<String>,
+    cancel_id: usize,
+) -> Result<usize, String> {
+    #[cfg(not(windows))]
+    let _ = parent;
     let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         #[cfg(target_os = "macos")]
@@ -425,8 +514,13 @@ fn save_window(window: &WebviewWindow, path: Option<&std::path::Path>) {
 
 #[cfg(target_os = "macos")]
 fn mac_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItemKind, PredefinedMenuItem, Submenu};
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
     let menu = Menu::default(app)?;
+    // The app menu (About, …, Quit) comes first; checking for updates sits under About.
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
+        let check = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
+        app_menu.insert(&check, 1)?;
+    }
     // Keep the native close action and its standard Command-W shortcut, while
     // making the entry discoverable in the same language as the app.
     let file = Submenu::with_items(
@@ -451,7 +545,11 @@ fn mac_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
 }
 
 fn main() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Windows still updates from the download page.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(
@@ -472,7 +570,10 @@ fn main() {
             desktop_notify,
             notification_settings,
             local_gateway,
-            dialog
+            dialog,
+            update_status,
+            update_check,
+            update_restart
         ])
         .setup(|app| {
             // macOS preserves the installed Electron app's credential directory.
@@ -507,7 +608,16 @@ fn main() {
             // WKWebView needs the Edit menu for ⌘C/⌘V. On Windows a menu bar's
             // accelerators would take Ctrl+C and Ctrl+V from the terminal.
             #[cfg(target_os = "macos")]
-            app.set_menu(mac_menu(app.handle())?)?;
+            {
+                app.set_menu(mac_menu(app.handle())?)?;
+                app.on_menu_event(|app, event| {
+                    if event.id() == "check-update" {
+                        check_from_menu(app);
+                    }
+                });
+                app.manage(updater::Updates::default());
+                updater::start(app.handle());
+            }
             open_window(app.handle())?;
             Ok(())
         })

@@ -1,6 +1,7 @@
 import { router, usePathname } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { restartToUpdate, useDesktopUpdate } from '../platform/desktopUpdate';
 import { useMachine, useStore } from '../state/hooks';
 import { Icon, type IconName } from './Icon';
 import { colors } from './theme';
@@ -22,8 +23,14 @@ export function DesktopSidebar() {
   const pathname = usePathname();
   const { inbox } = useMachine();
   const { unread } = useStore(inbox);
+  const update = useDesktopUpdate();
   return <View style={styles.column}>
     <WorkspaceSidebar />
+    {update?.state === 'ready' ? <Pressable onPress={() => { void restartToUpdate(); }} style={({ pressed }) => [styles.update, pressed && styles.itemPressed]}
+      accessibilityRole="button" accessibilityLabel={`新版本 ${update.version} 已安装，重启后使用`}>
+      <Text style={styles.updateText} numberOfLines={1}>新版本 {update.version} 已就绪</Text>
+      <Text style={styles.updateAction}>重启</Text>
+    </Pressable> : null}
     <View style={styles.nav} accessibilityRole="tablist">
       {PAGES.map((page) => {
         const active = pathname === page.path;
@@ -47,5 +54,8 @@ const styles = StyleSheet.create({
   itemPressed: { opacity: 0.7 },
   label: { color: colors.inkDim, fontSize: 13 },
   labelActive: { color: colors.green, fontWeight: '600' },
+  update: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 8, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.surfaceRaised },
+  updateText: { flex: 1, color: colors.ink, fontSize: 13 },
+  updateAction: { color: colors.green, fontSize: 13, fontWeight: '600' },
   badge: { color: colors.canvas, backgroundColor: colors.red, borderRadius: 8, overflow: 'hidden', paddingHorizontal: 5, fontSize: 11, fontWeight: '700' },
 });

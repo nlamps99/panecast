@@ -9,7 +9,7 @@
 - `release.json`：已验证的 Android 版本、文件大小、SHA-256、运行时版本和历史版本清单。
 - `install.sh.in`：独立安装器模板，支持 ARM64 / Intel，安装私有 Node 运行时并校验 SHA-256。
 - `../desktop/install/install.sh.in`：桌面客户端安装器；固定 ZIP 的 SHA-256，校验应用完整性并保留升级备份。与电脑网关的 `install.sh` 分开发布。
-- `desktop-artifacts.mjs`：完整发布和桌面单独发布共用的 DMG、ZIP、安装脚本校验与暂存。
+- `desktop-artifacts.mjs`：完整发布和桌面单独发布共用的 DMG、ZIP、安装脚本、自动更新包校验与暂存；生成已安装 Mac 桌面版轮询的 `desktop-update.json`（签名私钥在 `~/.cmuxremote/desktop-release/`，丢失后已安装的应用无法再自动更新）。
 - `build.mjs`：打包 `relay-tmux/` 的 CLI，包含运行依赖；生成 Homebrew Formula 和静态 Git tap。
 - `publish.py`：上传并校验产物，拒绝修改已发布的版本化文件，原子替换元数据和页面。
 

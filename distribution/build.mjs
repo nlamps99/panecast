@@ -45,7 +45,7 @@ const apkPath = join(root, 'client/build/android', androidFile);
 if (await digest(apkPath) !== settings.android.sha256) throw new Error('Android APK checksum mismatch');
 await copyFile(apkPath, join(output, androidFile));
 await copyFile(apkPath, join(output, 'panecast-latest.apk'));
-const desktopArtifacts = await stageDesktopArtifacts(root, output, settings.desktop, settings.windows);
+const desktopArtifacts = await stageDesktopArtifacts(root, output, settings.desktop, settings.windows, settings.downloadBase ?? settings.baseUrl);
 for (const artifact of [mac, settings.android]) await writeFile(join(output, artifact.file + '.sha256'), `${artifact.sha256}  ${artifact.file}\n`);
 const template = await readFile(join(root, 'distribution/install.sh.in'), 'utf8');
 const values = { CLI_VERSION: mac.version, CLI_FILE: mac.file, CLI_SHA: mac.sha256, NODE_VERSION: settings.node.version,

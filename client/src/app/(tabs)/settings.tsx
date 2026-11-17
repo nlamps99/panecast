@@ -2,6 +2,7 @@ import { ScrollView, StyleSheet, Text } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AboutSection } from '../../ui/settings/AboutSection';
+import { UpdateSection } from '../../ui/settings/UpdateSection';
 import { useAppState } from '../../state/hooks';
 import { ComputerSection } from '../../ui/settings/ComputerSection';
 import { NotificationSection } from '../../ui/settings/NotificationSection';
@@ -31,6 +32,7 @@ export default function SettingsScreen() {
       <KeyboardProfileSection />
       <NotificationSection />
       <DiagnosticSection key={computer?.id ?? 'demo'} />
+      <UpdateSection />
       <AboutSection />
     </ScrollView>
   );

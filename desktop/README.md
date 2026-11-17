@@ -14,6 +14,10 @@ Windows 10 / 11 x64 安装程序。目标电脑继续运行已有 relay / hub。
 
 也可以直接粘贴已有配对链接，不使用账号。已有手机配对不受影响。
 
+附件（拖入、粘贴或选择文件）没有大小限制：电脑上的网关支持分块上传时（`relay.info`
+返回 `upload_chunk_bytes`），按 4 MiB 一块依次发送原始文件，进度显示在输入栏；旧网关仍是
+单条消息的 12 MB 上限。
+
 0.2.6 起，终端标签和侧栏的终端、工作区旁都有 **×** 关闭按钮，工作区列表也可直接
 点击 **×**。关闭前会显示系统确认框；关闭最后一个终端时，会明确提示同时关闭所属
 工作区。确认期间新增的终端不会被旧的确认一起关闭。
@@ -151,8 +155,14 @@ nonce 的 AES-256-GCM 加密；密钥只保存在 macOS 钥匙串，读写串行
 Windows 上凭据文件位于 `%LOCALAPPDATA%\com.nzx.panecast.desktop\credentials-v2.enc`，格式相同；
 密钥保存在当前用户的 Windows 凭据管理器（普通凭据，仅限本机，不随漫游配置同步）。
 
-发布见 [下载页维护说明](../distribution/README.md)。Mac 预览版不具备自动更新功能，
-升级时下载新版本并替换应用，登录信息保留。
+发布见 [下载页维护说明](../distribution/README.md)。
+
+**自动更新（Mac，0.2.10 起）**：启动后几秒和之后每 4 小时读取
+`https://ningzx.cn/panecast/desktop-update.json`，发现新版本就在后台下载、用内置公钥
+校验签名、原地替换应用；左侧栏出现「新版本已就绪 · 重启」，也可以在「设置 → 应用更新」
+或菜单「Panecast → 检查更新…」手动检查。签名私钥和口令在 `~/.cmuxremote/desktop-release/`
+（0600），`npm run build` 读取它们生成 `.app.tar.gz` 和签名；私钥丢失后已安装的应用无法再
+自动更新，不能重建或删除。Windows 仍从下载页升级。登录信息在升级后保留。
 
 测试覆盖本机 HTTP/WS 实际连接、认证头、100ms hello、长消息、ping/pong、请求与握手
 取消、会话撤销、凭据迁移和加密文件损坏。`cargo test --manifest-path src-tauri/Cargo.toml

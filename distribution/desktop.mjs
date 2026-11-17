@@ -18,7 +18,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(join(root, 'distribution/site'), output, { recursive: true });
 await copyFile(join(root, 'client/assets/images/icon.png'), join(output, 'icon.png'));
-const artifacts = await stageDesktopArtifacts(root, output, desktop, windows);
+const artifacts = await stageDesktopArtifacts(root, output, desktop, windows, settings.downloadBase ?? settings.baseUrl);
 await writeFile(join(output, 'SHA256SUMS'), artifacts.map(({ file, sha256 }) => `${sha256}  ${file}\n`).join(''));
 await writeFile(join(output, 'releases.json'), `${JSON.stringify({ ...current, desktop, ...(windows ? { windows } : {}) }, null, 2)}\n`);
 console.log(`Prepared desktop release at ${output}`);

@@ -18,7 +18,7 @@ args = parser.parse_args()
 public = ROOT / ('build/distribution/desktop-public' if args.desktop_only else 'build/distribution/public')
 manifest = json.loads((public / 'releases.json').read_text())
 desktop = manifest.get('desktop', {})
-desktop_artifacts = [item for item in [desktop, desktop.get('archive'), desktop.get('installer'), manifest.get('windows')] if item]
+desktop_artifacts = [item for item in [desktop, desktop.get('archive'), desktop.get('installer'), desktop.get('update'), manifest.get('windows')] if item]
 for item in (desktop_artifacts if args.desktop_only else [manifest['android'], manifest['mac'], *desktop_artifacts]):
     actual = hashlib.sha256((public / item['file']).read_bytes()).hexdigest()
     if actual != item['sha256']:

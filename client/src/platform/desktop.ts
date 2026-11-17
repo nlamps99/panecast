@@ -21,6 +21,12 @@ export type DesktopBridge = {
   openNotificationSettings?(): Promise<void>;
   /** The gateway running on this computer, read from its owner-only credential file; null when absent. */
   localGateway?(): Promise<unknown>;
+  /** Self-update (Mac): rejects on systems that update from the download page. */
+  updateStatus?(): Promise<unknown>;
+  /** Checks now and installs what it finds; resolves with the new status. */
+  checkForUpdate?(): Promise<unknown>;
+  restartToUpdate?(): Promise<void>;
+  onUpdate?(listener: (status: unknown) => void): () => void;
 };
 declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {

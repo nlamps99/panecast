@@ -61,6 +61,16 @@
     notify: options => invoke('desktop_notify', { options }),
     openNotificationSettings: () => invoke('notification_settings'),
     localGateway: () => invoke('local_gateway'),
+    updateStatus: () => invoke('update_status'),
+    checkForUpdate: () => invoke('update_check'),
+    restartToUpdate: () => invoke('update_restart'),
+    onUpdate: listener => {
+      let disposed = false, unsubscribe;
+      void window.__TAURI__.event.listen('panecast-update', event => {
+        if (!disposed) listener(event.payload);
+      }).then(stop => { if (disposed) stop(); else unsubscribe = stop; }).catch(() => {});
+      return () => { disposed = true; unsubscribe?.(); };
+    },
     onNotification: listener => {
       let disposed = false, unsubscribe;
       void window.__TAURI__.event.listen('panecast-notification', event => {
