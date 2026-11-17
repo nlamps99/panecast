@@ -9,6 +9,12 @@ import { WebSocketServer } from 'ws';
 import { createHub } from '../src/hub/server.mjs';
 import { createTmuxRelay } from '../src/server.mjs';
 import { scoped } from '../src/hub/ids.mjs';
+import * as relayServer from '../src/server.mjs';
+import { HubSession } from '../src/hub/session.mjs';
+
+// The same tests run on gateways with and without batched input and transcripts.
+const batchedInput = typeof relayServer.inputItems === 'function';
+const conversationBatch = typeof HubSession.prototype.conversationBatch === 'function';
 import { guestText, guestKey, guestPaste } from '../src/hub/guest-session.mjs';
 import { decodeShareKey, encodeShareKey, shareCommand, shareDirectory, shareSettings, ShareStore, BrokerGuests, validName } from '../src/hub/share.mjs';
 
@@ -80,7 +86,7 @@ async function setup(t, shares = [SHARE]) {
   const store = new ShareStore(join(directory, 'state', 'shares', 'shares.json'));
   if (shares) await store.write(structuredClone(shares));
   const hub = await createHub({ state_directory: join(directory, 'state'), port: 0, broker: { url: relay.url, relay_id: 'home', relay_token: 'relay-secret' },
-    sources: [{ id: 'cmux', type: 'cmux', name: 'cmux', url: upstream.url, token: 'upstream-secret', device_id: 'hub' }] });
+    sources: [{ id: 'cmux', type: 'cmux', name: 'cmux', enabled: true, access: 'control', url: upstream.url, token: 'upstream-secret', device_id: 'hub' }] });
   await hub.start(); t.after(() => hub.close());
   await relay.ready();
   return { directory, upstream, relay, store, hub };
@@ -108,8 +114,11 @@ test('a guest sees one source, one workspace and one terminal', async (t) => {
   const { surfaces } = await relay.call('g', 'surface.list', { workspace_id: own.workspace_id });
   assert.deepEqual(surfaces.map((s) => s.id), [own.surface_id]);
   assert.deepEqual((await relay.call('g', 'relay.snippets')).snippets, []);
-  const batch = await relay.call('g', 'terminal.conversation.batch', { requests: [own, { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') }] });
-  assert.deepEqual(batch.results.map((r) => r.ok ? 'ok' : r.error.code), ['ok', 'forbidden']);
+  const requests = [own, { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') }];
+  if (conversationBatch) {
+    const batch = await relay.call('g', 'terminal.conversation.batch', { requests });
+    assert.deepEqual(batch.results.map((r) => r.ok ? 'ok' : r.error.code), ['ok', 'forbidden']);
+  } else await assert.rejects(relay.call('g', 'terminal.conversation.batch', { requests }), { code: 'method_not_found' });
   await relay.call('g', 'surface.subscribe', own);
   assert.ok(relay.texts('g').some((m) => m.type === 'screen.full' && m.surface_id === own.surface_id));
 });
@@ -142,12 +151,19 @@ test('guest input is limited to plain lines and safe keys', async (t) => {
   for (const key of ['backspace', 'delete', 'tab', 'shift-tab', 'home', 'ctrl-u', 'ctrl-r', 'ctrl-z', 'alt-b', 'cmd-v']) {
     await assert.rejects(relay.call('g', 'surface.send_key', { ...own, key }), { code: 'guest_key' }, key);
   }
-  await relay.call('g', 'surface.input', { ...own, items: [{ text: '再改一下结论' }, { key: 'enter' }] });
-  for (const items of [[{ text: 'ok' }, { text: '!ls' }], [{ text: '/login' }], [{ text: 'a' }, { key: 'backspace' }], [{ text: 'x\n' }]]) {
-    await assert.rejects(relay.call('g', 'surface.input', { ...own, items }), (error) => /guest_/.test(error.code), JSON.stringify(items));
-  }
+  if (batchedInput) {
+    await relay.call('g', 'surface.input', { ...own, items: [{ text: '再改一下结论' }, { key: 'enter' }] });
+    for (const items of [[{ text: 'ok' }, { text: '!ls' }], [{ text: '/login' }], [{ text: 'a' }, { key: 'backspace' }], [{ text: 'x\n' }]]) {
+      await assert.rejects(relay.call('g', 'surface.input', { ...own, items }), (error) => /guest_/.test(error.code), JSON.stringify(items));
+    }
+  } else await assert.rejects(relay.call('g', 'surface.input', { ...own, items: [{ text: 'hi' }] }), { code: 'method_not_found' });
   await assert.rejects(relay.call('g', 'surface.input', { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0'), items: [{ text: 'hi' }] }), { code: 'forbidden' });
-  assert.deepEqual(upstream.sent().map((c) => c.params.text ?? c.params.key), ['把第三章改得简洁一些，引用 src/paper.tex', '谢谢！', 'enter', 'ctrl-c', '再改一下结论', 'enter']);
+  // A pasted message: checked here on every gateway, sent where the gateway supports it.
+  for (const text of ['第一段!', '/login', 'a\u001b[201~']) await assert.rejects(relay.call('g', 'terminal.paste', { ...own, text, submit_key: 'return' }), (error) => /guest_/.test(error.code), text);
+  await assert.rejects(relay.call('g', 'terminal.paste', { ...own, text: 'ok', submit_key: 'tab' }), { code: 'invalid_params' });
+  const pasted = await relay.call('g', 'terminal.paste', { ...own, text: '第一段\n第二段', submit_key: 'return' }).then(() => true, (error) => { assert.equal(error.code, 'method_not_found'); return false; });
+  if (pasted) assert.deepEqual(upstream.calls.filter((c) => c.method === 'terminal.paste').map((c) => [c.params.surface_id, c.params.text]), [['%1', '第一段\n第二段']]);
+  assert.deepEqual(upstream.sent().map((c) => c.params.text ?? c.params.key), ['把第三章改得简洁一些，引用 src/paper.tex', '谢谢！', 'enter', 'ctrl-c', ...(batchedInput ? ['再改一下结论', 'enter'] : [])]);
   assert.ok(upstream.sent().every((c) => c.params.workspace_id === '$1' && c.params.surface_id === '%1'));
 });
 
