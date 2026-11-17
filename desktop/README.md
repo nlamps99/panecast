@@ -164,6 +164,14 @@ Windows 上凭据文件位于 `%LOCALAPPDATA%\com.nzx.panecast.desktop\credentia
 （0600），`npm run build` 读取它们生成 `.app.tar.gz` 和签名；私钥丢失后已安装的应用无法再
 自动更新，不能重建或删除。Windows 仍从下载页升级。登录信息在升级后保留。
 
+**固定签名（0.2.11 起）**：发布版用自签名证书「Panecast Code Signing」签名，证书和私钥在同一目录
+的独立钥匙串 `signing.keychain-db`（口令 `signing.keychain-password`，另有 `signing.p12` 备份），
+不进用户的钥匙串搜索列表。每个版本的指定要求都是
+`identifier "com.nzx.panecast.desktop" and certificate root = H"1150bf…"`，钥匙串把更新后的应用
+当成同一个应用，不再每次询问；`build.mjs` 在签名不是这张证书时直接失败。证书丢失后改用新证书，
+用户会在下一次更新时再被询问一次。证书不是 Apple 签发的，从浏览器下载的 DMG 仍需在「隐私与安全性」
+里允许打开。
+
 测试覆盖本机 HTTP/WS 实际连接、认证头、100ms hello、长消息、ping/pong、请求与握手
 取消、会话撤销、凭据迁移和加密文件损坏。`cargo test --manifest-path src-tauri/Cargo.toml
 system_keychain_roundtrip -- --ignored` 可单独验证系统钥匙串，测试后删除独立测试条目。
