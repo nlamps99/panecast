@@ -3,6 +3,13 @@ import SharedKit
 
 public protocol SurfaceReader: Sendable {
     func read(workspaceId: String, surfaceId: String, lines: Int) async throws -> Screen
+    /// The user typed into this surface; readers that sample expensive state
+    /// (colors, cursor) refresh it on the next read.
+    func noteInput(surfaceId: String)
+}
+
+extension SurfaceReader {
+    public func noteInput(surfaceId: String) {}
 }
 
 /// Per-surface diff polling state.
@@ -58,6 +65,7 @@ public actor DiffEngine {
     public func noteUserInput() {
         lastInput = clock.now
         currentFps = activeFps
+        reader.noteInput(surfaceId: surfaceId)
     }
 
     /// Run one polling tick. In production wired to a NIO TimerTask at 1/currentFps.

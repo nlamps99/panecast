@@ -64,6 +64,24 @@ final class DiffEngineBehaviorTests: XCTestCase {
         XCTAssertEqual(fpsAfterInput, 30)
     }
 
+    private final class InputRecordingReader: SurfaceReader, @unchecked Sendable {
+        private let lock = NSLock()
+        private var inputs: [String] = []
+        func read(workspaceId: String, surfaceId: String, lines: Int) async throws -> Screen {
+            Screen(rev: 0, rows: [], cols: 0, cursor: .init(x: 0, y: 0))
+        }
+        func noteInput(surfaceId: String) { lock.withLock { inputs.append(surfaceId) } }
+        var recorded: [String] { lock.withLock { inputs } }
+    }
+
+    /// Typing tells the reader, so it refreshes the cursor even when no text changed.
+    func testUserInputReachesTheReader() async {
+        let reader = InputRecordingReader()
+        let engine = DiffEngine(reader: reader, fps: 30, idleFps: 5, workspaceId: "w", surfaceId: "s", lines: 1, clock: FakeClock())
+        await engine.noteUserInput()
+        XCTAssertEqual(reader.recorded, ["s"])
+    }
+
     /// An agent writing for minutes without any input keeps the active rate.
     func testStreamingOutputKeepsActiveRateWithoutInput() async throws {
         let reader = StaticReader((0..<5).map { Screen(rev: $0, rows: ["line \($0)"], cols: 6, cursor: .init(x: 0, y: 0)) }

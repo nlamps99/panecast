@@ -97,7 +97,7 @@ Panecast 让你在手机上查看和操作电脑上的终端。它由 cmux Remot
   - 按词折行。
   - 只含横线字符的行（`─━═╌╍┄┅┈┉-=`）截断到屏幕宽度，不要折成好几行。
   - 列数 = 可用宽度 ÷ 字符宽度。GeistMono 的字符宽度是 0.6em。
-- **颜色和光标**：cmux 的 `surface.read_text` 只有纯文本。Swift relay 改为读取 `terminal.replay` 的渲染网格，转换成带 SGR 的行和真实光标（隐藏光标放在最后一行之后），失败时退回 `read_text`。旧 relay 的光标固定是 (0, 0)，客户端不画它。
+- **颜色和光标**：cmux 的 `surface.read_text` 只有纯文本。Swift relay 每帧仍读 `read_text`（便宜，带滚动历史，用来判断是否变化），只在文字变化或有输入后、且距上次至少 150ms 时才读 `terminal.replay` 渲染网格（约贵 10 倍），把网格可见行按内容对齐到文字末尾上色、给出真实光标（隐藏光标放在最后一行之后）；两次网格之间，移动过的行按内容保留颜色。从未拿到网格时就是旧的纯文本加 (0, 0) 占位光标，客户端不画它。这个 cmux 上 `max_scrollback_rows` 不返回历史，所以历史只能来自 `read_text`。`JSONValue.decode` 会做 snake_case 转换，解码网格要用 `CMUXRenderGrid.fromReplay`。
 - **Web / 桌面字体**：expo-font 插件只把 GeistMono 打进原生包。Web 导出靠 `platform/fonts.web.ts` 运行时加载，字体栈兜底到系统等宽字体；不能退回默认衬线字体。
 - **输入法**：只支持中文输入法，不做韩文等其它语言的特殊处理。中文输入法组字时，RN 的受控 TextInput 容易把字拆散，而且 JS 层分不清哪些是还在组字的拼音字母，所以输入框用的是 `client/modules/terminal-input` 原生组件，它只把输入法确认过的文字交给 JS。逐字输入模式要等组字结束后再发送。
 - **不依赖 GMS**：Android 版刻意不依赖 Google Play 服务，因为很多国内机型没有 GMS。扫码等功能选型时要保持这一点。没有 GMS 的手机收不到 FCM 推送，这是已知限制。
