@@ -1,5 +1,6 @@
 import { RpcError } from '../tmux.mjs';
-import { inputItems } from '../server.mjs';
+// A namespace import: gateways older than batched input have no inputItems.
+import * as relayServer from '../server.mjs';
 import { HubSession } from './session.mjs';
 import { scoped, scopeResult } from './ids.mjs';
 
@@ -12,10 +13,12 @@ import { scoped, scopeResult } from './ids.mjs';
 export const GUEST_KEYS = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'pgup', 'pgdn', 'ctrl-c']);
 /** Methods a guest may call, always for the shared terminal only. */
 const TARGETED = new Set(['surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text',
-  'terminal.replay', 'terminal.scroll', 'terminal.conversation', 'surface.focus', 'surface.send_text', 'surface.send_key', 'surface.input']);
+  'terminal.replay', 'terminal.scroll', 'terminal.conversation', 'surface.focus', 'surface.send_text', 'surface.send_key', 'surface.input', 'terminal.paste']);
 // C0 and C1 controls except tab. A newline or escape sequence typed into the
 // terminal could submit, or end a paste, outside the hub's checks.
 const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
+// A paste keeps newlines literal; an escape could still end it early.
+const PASTE_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 // A prompt that starts with ! runs a shell command outside Claude's sandbox.
 // The ! is refused anywhere, not only first: an open menu can swallow the
 // characters before it and leave it at the start of the prompt.
@@ -30,6 +33,15 @@ const forbidden = () => new RpcError('forbidden', '分享窗口只能操作被�
 export function guestText(text) {
   if (typeof text !== 'string' || text.length === 0 || text.length > 32_000) throw new RpcError('invalid_params', '请输入要发送的文字');
   if (CONTROL.test(text)) throw new RpcError('guest_input', '分享窗口一次只能发送一行文字，不能包含换行或控制字符');
+  if (SHELL.test(text)) throw new RpcError('guest_shell', '分享窗口不能输入半角感叹号 !，可以改用全角 ！');
+  if (COMMAND.test(text)) throw new RpcError('guest_command', '分享窗口不能使用 / 开头的命令，请换一种说法');
+  return text;
+}
+
+/** A pasted message: lines stay in one prompt, so newlines are allowed; the rest is checked like typed text. */
+export function guestPaste(text) {
+  if (typeof text !== 'string' || !text.trim() || text.length > 32_000) throw new RpcError('invalid_params', '请输入要发送的文字');
+  if (PASTE_CONTROL.test(text)) throw new RpcError('guest_input', '消息里不能包含控制字符');
   if (SHELL.test(text)) throw new RpcError('guest_shell', '分享窗口不能输入半角感叹号 !，可以改用全角 ！');
   if (COMMAND.test(text)) throw new RpcError('guest_command', '分享窗口不能使用 / 开头的命令，请换一种说法');
   return text;
@@ -126,7 +138,10 @@ export class GuestSession extends HubSession {
       return { surfaces: surfaces.filter((surface) => surface.id === share.surface_id).map((surface) => scopeResult(share.source_id, surface, true)) };
     }
     // Each entry goes back through this dispatch, so each is checked on its own.
-    if (method === 'terminal.conversation.batch') return this.conversationBatch(p);
+    if (method === 'terminal.conversation.batch') {
+      if (typeof this.conversationBatch !== 'function') throw new RpcError('method_not_found', '统一网关不支持这个操作');
+      return this.conversationBatch(p);
+    }
     if (!TARGETED.has(method)) throw forbidden();
     this.check(p, own);
     if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
@@ -134,8 +149,13 @@ export class GuestSession extends HubSession {
     if (method === 'surface.send_key') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, key: guestKey(p.key) });
     if (method === 'surface.input') {
       // The hub sends these straight to the terminal, so every item is checked before any is sent.
-      const items = inputItems(p).map((item) => item.text !== undefined ? { text: guestText(item.text) } : { key: guestKey(item.key) });
+      if (typeof relayServer.inputItems !== 'function') throw new RpcError('method_not_found', '统一网关不支持这个操作');
+      const items = relayServer.inputItems(p).map((item) => item.text !== undefined ? { text: guestText(item.text) } : { key: guestKey(item.key) });
       return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, items });
+    }
+    if (method === 'terminal.paste') {
+      if (p.submit_key !== 'return') throw new RpcError('invalid_params', '消息或目标无效');
+      return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestPaste(p.text), submit_key: 'return' });
     }
     return super.dispatch(method, p);
   }

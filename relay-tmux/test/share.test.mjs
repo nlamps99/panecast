@@ -9,7 +9,7 @@ import { WebSocketServer } from 'ws';
 import { createHub } from '../src/hub/server.mjs';
 import { createTmuxRelay } from '../src/server.mjs';
 import { scoped } from '../src/hub/ids.mjs';
-import { guestText, guestKey } from '../src/hub/guest-session.mjs';
+import { guestText, guestKey, guestPaste } from '../src/hub/guest-session.mjs';
 import { decodeShareKey, encodeShareKey, shareCommand, shareDirectory, shareSettings, ShareStore, BrokerGuests, validName } from '../src/hub/share.mjs';
 
 /** A cmux relay with two workspaces of two terminals each. */
@@ -237,6 +237,11 @@ test('guest credentials need an HTTPS broker', () => {
   assert.throws(() => new BrokerGuests({ url: 'http://broker.example', relay_id: 'a', relay_token: 'b' }), /HTTPS/);
   assert.throws(() => new BrokerGuests(undefined), /broker/);
   new BrokerGuests({ url: 'http://127.0.0.1:1', relay_id: 'a', relay_token: 'b' });
+});
+
+test('a pasted message may span lines but nothing else changes', () => {
+  assert.equal(guestPaste('第一段\n\n第二段\t缩进'), '第一段\n\n第二段\t缩进');
+  for (const text of ['hi!', '/login', ' \n', 'a\u001b[201~b', 'a\rb', '']) assert.throws(() => guestPaste(text), /./, JSON.stringify(text));
 });
 
 test('input checks stand alone', () => {
