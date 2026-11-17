@@ -30,6 +30,28 @@ final class CMUXRenderGridTests: XCTestCase {
         XCTAssertEqual(screen.cols, 20)
     }
 
+    /// The relay receives the grid as a `JSONValue` inside the RPC result, as
+    /// cmux sends it. Decoding that with the shared snake_case decoder found no
+    /// `render_grid`, so every read fell back to plain text.
+    func testReplayResultFromCmuxDecodesThroughTheRPCPath() throws {
+        let raw = """
+        {"workspace_id":"w","surface_id":"s","seq":3,"columns":20,"rows":2,
+         "render_grid":{"format":"cmux.render-grid.v1","columns":20,"rows":2,"full":true,
+           "cursor":{"row":1,"column":2,"visible":true,"style":"block","blinking":true},
+           "styles":[{"id":0,"foreground_source":"default","foreground":"#FFFFFF","background_source":"default","background":"#1E1E1E","bold":false},
+                     {"id":1,"foreground_source":"palette","foreground_palette_index":1,"bold":false}],
+           "row_spans":[{"row":0,"column":0,"style_id":1,"text":"red","cell_width":3},{"row":1,"column":0,"style_id":0,"text":"$ ","cell_width":2}],
+           "scrollback_rows":0,"scrollback_spans":[],"history_rows":0,"modes":[{"code":25,"ansi":false,"on":true}]}}
+        """
+        let result = try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
+        let grid = try XCTUnwrap(CMUXRenderGrid.fromReplay(result))
+        XCTAssertEqual(grid.rowSpans.count, 2)
+        let screen = grid.toScreen(rev: 0, maxRows: 40)
+        XCTAssertEqual(screen.rows.first, "\u{1B}[31mred\u{1B}[0m")
+        XCTAssertEqual(screen.cursor, CursorPos(x: 2, y: 1))
+        XCTAssertNil(try CMUXRenderGrid.fromReplay(.object(["rows": .int(2)])))
+    }
+
     func testHiddenCursorSitsPastTheLastRowAndTrimmingKeepsTheScreen() throws {
         let grid = CMUXRenderGrid(columns: 10, rows: 2, cursor: .init(row: 0, column: 3, visible: false), styles: [],
                                   rowSpans: [.init(row: 0, column: 0, text: "a"), .init(row: 1, column: 0, text: "b")],

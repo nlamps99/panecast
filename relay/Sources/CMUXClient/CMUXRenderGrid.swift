@@ -237,11 +237,22 @@ extension CMUXClient {
                                       "anchor": .string("screen"),
                                       "max_scrollback_rows": .int(Int64(max(0, scrollback))),
                                   ]))
-        struct Wrapper: Decodable { let render_grid: CMUXRenderGrid? }
-        guard let grid = try resp.unwrapResult().decode(Wrapper.self).render_grid else {
+        guard let grid = try CMUXRenderGrid.fromReplay(resp.unwrapResult()) else {
             throw CMUXRenderGridUnavailable()
         }
         return grid
+    }
+}
+
+extension CMUXRenderGrid {
+    /// The grid in a `terminal.replay` result, or nil when cmux sent none.
+    /// The coding keys spell cmux's snake_case names, so this decodes without
+    /// `JSONValue.decode`'s snake_case conversion, which would look for
+    /// `renderGrid` and `rowSpans` and find nothing.
+    public static func fromReplay(_ result: JSONValue) throws -> CMUXRenderGrid? {
+        struct Wrapper: Decodable { let render_grid: CMUXRenderGrid? }
+        let data = try SharedKitJSON.deterministicEncoder.encode(result)
+        return try JSONDecoder().decode(Wrapper.self, from: data).render_grid
     }
 }
 
