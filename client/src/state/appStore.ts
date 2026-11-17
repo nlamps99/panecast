@@ -27,6 +27,7 @@ import { RpcCallError } from '../protocol/connection';
 import { AccountError, accountRequest, accountServer, type AccountComputer, type AccountSession } from '../account/api';
 import { loadAccount, saveAccount, signIn } from '../account/store';
 import { desktopBridge } from '../platform/desktop';
+import { moveComputers, movedBroker } from './brokerMove';
 import { TerminalActivityStore } from '../session/terminalActivity';
 import { TerminalRepository, terminalCaches, forgetTerminalCaches } from '../session/terminalRepository';
 
@@ -107,6 +108,30 @@ export class AppStore {
     }
     this.connect(computers);
     if (this.state.account) void this.refreshAccount().catch(() => {});
+    void this.followBrokerMoves().catch(() => {});
+  }
+
+  /** Moves stored computers (and the account) to the address their broker now reports. */
+  private async followBrokerMoves(): Promise<void> {
+    const servers = [...new Set(this.state.computers.computers.map((c) => c.broker.serverUrl))];
+    for (const from of servers) {
+      const to = await movedBroker(from);
+      if (!to) continue;
+      const computers = moveComputers(this.state.computers, from, to);
+      if (computers === this.state.computers) continue;
+      log(`broker moved: ${from} -> ${to}`);
+      await this.persistComputers(computers);
+      const account = this.state.account;
+      if (account && account.serverUrl.replace(/\/+$/, '') === from.replace(/\/+$/, '')) {
+        const moved = { ...account, serverUrl: to };
+        await saveAccount(moved);
+        this.setState({ ...this.state, account: moved });
+      }
+      // The old address still forwards, so only the open connection is redone, once.
+      const selected = this.state.machine?.computer;
+      if (selected && selected.broker.serverUrl === from) this.connect(computers);
+      else this.setState({ ...this.state, computers });
+    }
   }
 
   /** Pairs with the computer described by a scanned `cmux://pair?...` URL, or opens a shared-window key, and switches to it. */

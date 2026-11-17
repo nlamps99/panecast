@@ -345,7 +345,13 @@ POST /v1/relay/files?relay_id=…   {name, type, size, sha256} → 201 {upload_u
 - 中转服务是 `src/files-server.mjs`，只用 Node 内置模块，和 broker 共用同一个签名密钥（`PANECAST_FILES_SECRET_FILE`）。它只认签名：上传票据 10 分钟有效且只能用一次，内容必须和票据里的大小、sha256 一致；下载链接 1 小时有效，文件保存 2 小时后删除。
 - 下载时 PDF、图片、纯文本和 Office 文件内联显示，其他类型（包括 HTML、SVG）一律当作附件下载；除 PDF 外都带 `Content-Security-Policy: sandbox`。所有下载合计限速（`PANECAST_FILES_RATE`，默认 2 MiB/s），给同机的其他服务留带宽。
 - 单个文件最大 50 MB（`CMUX_FILES_MAX_BYTES` / `PANECAST_FILES_MAX_BYTES`），每台电脑每 10 分钟最多 120 个链接。
-- 当前部署：中转服务在 nzx2 的 `/srv/panecast-files`（容器 `panecast-files`），由 Caddy 把 `https://nzx2.drinklake.com/panecast-files/` 转过去。
+- 当前部署：中转服务在 nzx2 的 `/srv/panecast-files`（容器 `panecast-files`），由 Caddy 把 `https://panecast.drinklake.com/panecast-files/` 转过去。
+
+### 当前部署（2026-11-17 起）
+
+- broker 在 nzx2 的 `/srv/panecast-broker`（compose，容器 `panecast-broker` 和 `panecast-broker-air`），地址 `https://panecast.drinklake.com/cmux-remote` 和 `/cmux-remote-air`。设置 `CMUX_PUBLIC_URL` 后 `/v1/health` 返回 `server_url`，新版客户端据此自动改用新地址。
+- 旧地址 `https://ningzx.cn/cmux-remote`（及 `-air`）由那台 VPS 的 nginx 转发到新地址，旧设备和旧分享密钥不用改设置。broker 用 `CMUX_TRUSTED_PROXIES` 跳过转发服务器这一跳，按真实客户端地址限流。
+- 迁移时设备、账号和访客记录原样复制，relay 令牌和配对码不变；电脑上的网关只需把 `broker.url` 改成新地址（不改也能经转发连上，但会慢）。
 
 ## 排查
 

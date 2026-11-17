@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 
-const DEFAULT_BROKER = 'https://ningzx.cn/cmux-remote';
+const DEFAULT_BROKER = 'https://panecast.drinklake.com/cmux-remote';
 const accountErrors = {
   invalid_login: '用户名或密码不正确。',
   invalid_username: '用户名需为 3–64 位字母、数字、点、下划线或短横线，以字母或数字开头。',

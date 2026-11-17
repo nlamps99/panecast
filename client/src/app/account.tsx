@@ -12,7 +12,7 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const canGoBack = useCanGoBack();
   const { account, accountError, computers } = useAppState();
-  const [server, setServer] = useState(computers.computers[0]?.broker.serverUrl ?? process.env.EXPO_PUBLIC_ACCOUNT_SERVER ?? 'https://ningzx.cn/cmux-remote');
+  const [server, setServer] = useState(computers.computers[0]?.broker.serverUrl ?? process.env.EXPO_PUBLIC_ACCOUNT_SERVER ?? 'https://panecast.drinklake.com/cmux-remote');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
