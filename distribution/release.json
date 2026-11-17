@@ -2,11 +2,13 @@
   "baseUrl": "https://ningzx.cn/panecast",
   "downloadBase": "https://drink-1304262565.cos.ap-guangzhou.myqcloud.com/panecast",
   "mac": {
-    "date": "2026-11-11",
+    "date": "2026-11-17",
     "notes": [
-      "同一台电脑上的官方 cmux 与 cmux DR2 等版本分别作为独立来源接入，可同时查看和操作",
-      "官方 cmux 退出后留下的失效连接不再挡住正在运行的其他版本",
-      "cmux DR2 r2 起无需额外授权即可接入"
+      "cmux 终端带颜色和真实光标，画面变化时才读取完整画面",
+      "附件不再限制大小，按 4 MiB 分块上传",
+      "按键合并发送，读取不再挡住输入；Mac 桌面版在本机直接连接网关",
+      "新增 panecast share：用一把密钥把一个受限的 Claude 窗口交给别人，对方看不到其他终端",
+      "新安装默认连接新服务器 panecast.drinklake.com；经旧地址转发的连接不再被断开"
     ]
   },
   "android": {
@@ -30,6 +32,18 @@
     "darwin-x64": "efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819"
   },
   "history": [
+    {
+      "platform": "macOS CLI",
+      "version": "0.1.7",
+      "file": "panecast-cli-0.1.7.tgz",
+      "sha256": "5912d760f044a69c8fc2ec23de3b54bc3575d6427d48b1568680f4f763050e33",
+      "date": "2026-11-11",
+      "notes": [
+        "同一台电脑上的官方 cmux 与 cmux DR2 等版本分别作为独立来源接入，可同时查看和操作",
+        "官方 cmux 退出后留下的失效连接不再挡住正在运行的其他版本",
+        "cmux DR2 r2 起无需额外授权即可接入"
+      ]
+    },
     {
       "platform": "macOS CLI",
       "version": "0.1.6",

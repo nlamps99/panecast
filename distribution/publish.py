@@ -107,7 +107,8 @@ if not desktop_only:
 # Metadata and page files are small atomic replacements.
 for source in unpacked.iterdir():
     if source.is_file() and source.name != 'panecast-latest.apk' and source.name not in versioned:
-        if desktop_only and source.name == 'SHA256SUMS':
+        # Keep checksums of older versions that stay downloadable.
+        if source.name == 'SHA256SUMS' and (destination / 'SHA256SUMS').exists():
             existing = dict(line.split('  ', 1)[::-1] for line in (destination / 'SHA256SUMS').read_text().splitlines())
             existing.update(dict(line.split('  ', 1)[::-1] for line in source.read_text().splitlines()))
             source.write_text(''.join(value + '  ' + name + '\n' for name, value in sorted(existing.items())))
