@@ -105,6 +105,9 @@ export class RelaySession {
       if (request.protocolVersion !== 1 || typeof request.deviceId !== 'string') { this.close(); return; }
       this.hello = true; clearTimeout(this.timer); return;
     }
+    // A read that arrived before the hello was processed still must not hold
+    // up the ordered lane behind it.
+    if (CONCURRENT_READS.has(request?.method)) { void this.concurrently(() => this.handle(request)).catch(() => this.close()); return; }
     return this.handle(request);
   }
   async handle(request) {
