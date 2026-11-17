@@ -6,13 +6,13 @@ final class TerminalKeys: XCTestCase {
     let app = XCUIApplication(bundleIdentifier: "com.nzx.panecast")
     app.launch()
     if app.buttons["以后再说"].exists { app.buttons["以后再说"].tap() }
-    let pair = app.buttons["没法扫码？粘贴配对链接"]
+    let pair = app.buttons["没法扫码，或者有分享密钥？点这里粘贴"]
     if pair.waitForExistence(timeout: 5) {
       pair.tap()
       let input = app.secureTextFields.firstMatch
       XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4499&relay=qa-keys&code=qa-pair-only")
-      app.buttons["配对"].tap()
+      app.buttons["连接"].tap()
     }
     let key = app.buttons["发送 Ctrl 上箭头"]
     if !key.waitForExistence(timeout: 2) {

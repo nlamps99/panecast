@@ -1,5 +1,5 @@
 import { createBrokerServer } from '../../../broker/src/server.mjs';
-import { createTmuxRelay, RelaySession } from '../../../relay-tmux/src/server.mjs';
+import { createTmuxRelay, RelaySession, inputItems, sendInputItems } from '../../../relay-tmux/src/server.mjs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,8 @@ class Session extends RelaySession {
       cols: 80, rowsCount: this.rows.length, cursor: { x: 0, y: this.rows.length - 1 } });
   }
   async dispatch(method, params) {
+    // The client batches typing into surface.input; split it as the gateway does.
+    if (method === 'surface.input') return sendInputItems(inputItems(params), { workspace_id: params.workspace_id, surface_id: params.surface_id }, (name, values) => this.dispatch(name, values));
     if (method === 'window.list') return { windows: [{ id: 'qa-window', ref: 'window:1', key: true }] };
     if (method === 'workspace.list') return { workspaces: [{ id: workspace, title: '快捷键回归测试', selected: true }] };
     if (method === 'surface.list') return { surfaces: [{ id: surface, title: '快捷键终端', type: 'terminal', focused: true }] };

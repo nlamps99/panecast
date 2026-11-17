@@ -58,13 +58,13 @@ final class TerminalScroll: XCTestCase {
     let app = XCUIApplication(bundleIdentifier: "com.nzx.panecast")
     app.launch()
     if app.buttons["以后再说"].exists { app.buttons["以后再说"].tap() }
-    let pair = app.buttons["没法扫码？粘贴配对链接"]
+    let pair = app.buttons["没法扫码，或者有分享密钥？点这里粘贴"]
     if pair.waitForExistence(timeout: 5) {
       pair.tap()
       let input = app.secureTextFields.firstMatch
       XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4495&relay=qa-scroll&code=qa-pair-only")
-      app.buttons["配对"].tap()
+      app.buttons["连接"].tap()
     }
     let workspace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "cmux 连续滚动测试，")).firstMatch
     if workspace.waitForExistence(timeout: 10) { workspace.tap() }

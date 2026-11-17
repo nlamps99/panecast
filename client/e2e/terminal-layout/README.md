@@ -3,7 +3,8 @@
 Run `node client/e2e/terminal-layout/fixture.mjs` (loopback broker on 4491). It
 shows one 150-column Claude Code screen: a welcome box, tool output with `⎿`,
 a diff, Chinese text and the status line padded between `? for shortcuts` and
-`◯ IDE disconnected`. Nothing reaches a real computer or model.
+`◯ IDE disconnected`. Rows carry SGR colors and the cursor sits on the prompt,
+as the relay sends them from cmux's render grid. Nothing reaches a real computer or model.
 
 Generate this XcodeGen project under a canonical `/private/tmp/` path and run
 `PanecastLayoutUITests` on a dedicated iPhone 15 Pro (393×852) simulator with

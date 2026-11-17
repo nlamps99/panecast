@@ -2,7 +2,7 @@
 // One terminal is idle, the other is in the middle of a Codex turn until GET /finish.
 // GET /offline stops the relay so the broker reports the computer as offline.
 import { createBrokerServer } from '../../../broker/src/server.mjs';
-import { createTmuxRelay, RelaySession } from '../../../relay-tmux/src/server.mjs';
+import { createTmuxRelay, RelaySession, inputItems, sendInputItems } from '../../../relay-tmux/src/server.mjs';
 import { TerminalConversationReader } from '../../../relay-tmux/src/hub/terminal-conversation.mjs';
 import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,6 +31,8 @@ for (let index = 0; index < 2; index++) {
 const reads = [];
 class Session extends RelaySession {
   async dispatch(method, p) {
+    // The client batches typing into surface.input; split it as the gateway does.
+    if (method === 'surface.input') return sendInputItems(inputItems(p), { workspace_id: p.workspace_id, surface_id: p.surface_id }, (name, values) => this.dispatch(name, values));
     if (method === 'window.list') return { windows: [{ id: 'qa-window', key: true }] };
     if (method === 'workspace.list') return { workspaces: [{ id: workspace, title: '运行状态测试', selected: true }] };
     if (method === 'surface.list') return { surfaces: surfaces.map((id, i) => ({ id, title: titles[i], type: 'terminal', focused: i === 0 })) };
@@ -41,6 +43,13 @@ class Session extends RelaySession {
     }
     if (['surface.unsubscribe', 'surface.focus', 'workspace.select', 'terminal.replay'].includes(method)) return {};
     if (method === 'surface.history') return { rows: [], next_cursor: null };
+    // The phone reads every terminal's activity in one batch, as the new gateway answers it.
+    if (method === 'terminal.conversation.batch') {
+      return { results: await Promise.all((p.requests ?? []).map(async (request) => {
+        try { return { ok: true, result: await this.dispatch('terminal.conversation', request) }; }
+        catch (error) { return { ok: false, error: { code: error.code ?? 'internal_error', message: error.message } }; }
+      })) };
+    }
     if (method === 'terminal.conversation') {
       const index = surfaces.indexOf(p.surface_id); if (p.workspace_id !== workspace || index < 0) throw new Error('wrong target');
       reads.push({ surface: p.surface_id, at: Date.now() });

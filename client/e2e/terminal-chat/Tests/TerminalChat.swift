@@ -7,12 +7,12 @@ final class TerminalChat: XCTestCase {
     let control: (String) -> XCUIElement = { app.descendants(matching: .any).matching(identifier: $0).firstMatch }
     app.launch()
     if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }
-    let pair = app.buttons["没法扫码？粘贴配对链接"]
+    let pair = app.buttons["没法扫码，或者有分享密钥？点这里粘贴"]
     if pair.waitForExistence(timeout: 3) {
       pair.tap(); let input = app.secureTextFields.firstMatch
       XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4493&relay=qa-chat&code=qa-pair-only")
-      app.buttons["配对"].tap()
+      app.buttons["连接"].tap()
     }
     if app.buttons["返回工作区"].exists { app.buttons["返回工作区"].tap() }
     let workspace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "终端对话测试，")).firstMatch
@@ -47,12 +47,12 @@ final class TerminalChat: XCTestCase {
     let control: (String) -> XCUIElement = { app.descendants(matching: .any).matching(identifier: $0).firstMatch }
     app.launch()
     if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }
-    let pair = app.buttons["没法扫码？粘贴配对链接"]
+    let pair = app.buttons["没法扫码，或者有分享密钥？点这里粘贴"]
     if pair.waitForExistence(timeout: 3) {
       pair.tap(); let input = app.secureTextFields.firstMatch
       XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4493&relay=qa-chat&code=qa-pair-only")
-      app.buttons["配对"].tap()
+      app.buttons["连接"].tap()
     }
     if app.buttons["返回工作区"].exists { app.buttons["返回工作区"].tap() }
     let workspace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "终端对话测试，")).firstMatch

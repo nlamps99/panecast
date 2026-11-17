@@ -27,12 +27,12 @@ final class ActivityCache: XCTestCase {
     let control: (String) -> XCUIElement = { app.descendants(matching: .any).matching(identifier: $0).firstMatch }
     app.launch()
     dismissOffer(app)
-    let pair = app.buttons["没法扫码？粘贴配对链接"]
+    let pair = app.buttons["没法扫码，或者有分享密钥？点这里粘贴"]
     XCTAssertTrue(pair.waitForExistence(timeout: 10), "start without a saved pairing")
     pair.tap(); let input = app.secureTextFields.firstMatch
     XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
     input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4497&relay=qa-activity&code=qa-pair-only")
-    app.buttons["配对"].tap()
+    app.buttons["连接"].tap()
     if app.buttons["返回工作区"].waitForExistence(timeout: 5) { app.buttons["返回工作区"].tap() }
     dismissOffer(app)
 
@@ -43,8 +43,9 @@ final class ActivityCache: XCTestCase {
     let runningRow = app.buttons["打开终端 运行中终端"]
     waitForValue(runningRow, "正在运行")
     XCTAssertTrue(((app.buttons["打开终端 空闲终端"].value as? String) ?? "").isEmpty)
-    // One spinner on the card, one on the terminal's row.
-    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "terminal-running-indicator").count, 2)
+    // One spinner on the card, one on the terminal's row and one in 最近访问, where running work moves first.
+    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "terminal-running-indicator").count, 3)
+    XCTAssertTrue(app.buttons["继续 运行状态测试 的 运行中终端"].exists)
     shot(app, "Workspace list with a running terminal")
 
     // Inside the workspace the tab says the same, and the finished turn raises an alert.

@@ -8,12 +8,12 @@ final class Smoke: XCTestCase {
     let openAlert = springboard.alerts.matching(NSPredicate(format: "label CONTAINS %@", "Panecast")).firstMatch
     if openAlert.waitForExistence(timeout: 1), openAlert.buttons["Open"].exists { openAlert.buttons["Open"].tap() }
     if app.buttons["以后再说"].exists { app.buttons["以后再说"].tap() }
-    if app.buttons["没法扫码？粘贴配对链接"].waitForExistence(timeout: 3) {
-      app.buttons["没法扫码？粘贴配对链接"].tap()
+    if app.buttons["没法扫码，或者有分享密钥？点这里粘贴"].waitForExistence(timeout: 3) {
+      app.buttons["没法扫码，或者有分享密钥？点这里粘贴"].tap()
       let input = app.secureTextFields.firstMatch
       XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4498&relay=qa-mac&code=qa-pair-only")
-      app.buttons["配对"].tap()
+      app.buttons["连接"].tap()
     }
     let tab = app.otherElements["来源"].firstMatch
     XCTAssertTrue(tab.waitForExistence(timeout: 15)); tab.tap()
