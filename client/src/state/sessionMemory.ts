@@ -56,8 +56,13 @@ export class SessionMemory {
     if (previous.windowId !== windowId) this.update(id, { ...previous, windowId });
   }
   pin(id: string, workspaceId: string): void {
+    this.setPinned(id, workspaceId, !this.computer(id).pinned.includes(workspaceId));
+  }
+  /** Idempotent, so a control that reports one press twice cannot undo itself. */
+  setPinned(id: string, workspaceId: string, pinned: boolean): void {
     const previous = this.computer(id);
-    this.update(id, { ...previous, pinned: previous.pinned.includes(workspaceId) ? previous.pinned.filter((w) => w !== workspaceId) : [...previous.pinned, workspaceId] });
+    if (previous.pinned.includes(workspaceId) === pinned) return;
+    this.update(id, { ...previous, pinned: pinned ? [...previous.pinned, workspaceId] : previous.pinned.filter((w) => w !== workspaceId) });
   }
   rememberReading(id: string, target: SurfaceTarget, position: ReadingPosition | null): void {
     const previous = this.computer(id), key = surfaceMemoryKey(target), reading = { ...previous.reading };
@@ -130,6 +135,9 @@ function storage(): Storage {
 }
 export const sessionMemory = new SessionMemory({ getItem: (key) => storage().getItem(key), setItem: (key, value) => storage().setItem(key, value) });
 export function useSessionMemory(id: string): ComputerMemory {
-  useSyncExternalStore(sessionMemory.subscribe, sessionMemory.getState, sessionMemory.getState);
-  return sessionMemory.computer(id);
+  // Read from the snapshot. React Compiler memoizes this hook's result on its
+  // inputs, so returning sessionMemory.computer(id) beside a discarded
+  // snapshot kept the first value: pins and recents never redrew.
+  const state = useSyncExternalStore(sessionMemory.subscribe, sessionMemory.getState, sessionMemory.getState);
+  return state.computers[id] ?? EMPTY;
 }

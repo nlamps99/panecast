@@ -53,3 +53,14 @@ it('moves background activity to recent without changing the selected terminal, 
   expect(restored.computer('a')).toMatchObject({ lastTarget: target, windowId: 'one', lastView: 'source' });
   expect(restored.computer('a').recent[0].surfaceId).toBe('task');
 });
+
+it('sets a pin idempotently, so a doubled press cannot undo it', async () => {
+  const memory = new SessionMemory({ getItem: async () => null, setItem: async () => {} });
+  await memory.load();
+  memory.setPinned('a', 'w', true); memory.setPinned('a', 'w', true);
+  expect(memory.computer('a').pinned).toEqual(['w']);
+  memory.pin('a', 'w');
+  expect(memory.computer('a').pinned).toEqual([]);
+  memory.setPinned('a', 'w', false);
+  expect(memory.computer('a').pinned).toEqual([]);
+});
