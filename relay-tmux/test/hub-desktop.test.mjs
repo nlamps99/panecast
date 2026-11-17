@@ -178,3 +178,24 @@ test('tmux cursors are placed in the same row space as the rows sent', async () 
   assert.deepEqual(screenCursor(['a'], { cursor: { x: 1, y: 2 }, height: 3 }), { x: 0, y: 1 }, 'fewer rows than the pane: hidden');
   assert.deepEqual(screenCursor(rows, { cursor: { x: 2, y: 0 } }), { x: 2, y: 0 });
 });
+
+test('a read that arrives together with the hello still runs beside the ordered lane', async () => {
+  const { RelaySession } = await import('../src/server.mjs');
+  const sent = [], order = [];
+  const session = new RelaySession(null, {}, (frame) => sent.push(frame), () => order.push('closed'), () => {});
+  let releaseRead;
+  session.dispatch = async (method) => {
+    if (method === 'surface.list') { await new Promise((resolve) => { releaseRead = resolve; }); order.push('read'); return {}; }
+    order.push(method); return {};
+  };
+  // All three frames arrive before any of them is processed.
+  session.receive(JSON.stringify({ protocolVersion: 1, deviceId: 'phone' }));
+  session.receive(JSON.stringify({ id: '1', method: 'surface.list', params: {} }));
+  session.receive(JSON.stringify({ id: '2', method: 'surface.send_text', params: { text: 'x' } }));
+  for (let i = 0; i < 20 && !order.includes('surface.send_text'); i++) await delay(5);
+  assert.deepEqual(order, ['surface.send_text'], 'the keystroke is not stuck behind the read');
+  releaseRead();
+  for (let i = 0; i < 20 && sent.length < 2; i++) await delay(5);
+  assert.deepEqual(sent.map((frame) => frame.id).sort(), ['1', '2']);
+  session.dispose();
+});
