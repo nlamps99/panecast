@@ -235,39 +235,36 @@
     }
   ],
   "desktop": {
-    "version": "0.2.11",
+    "version": "0.2.12",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.11-mac-arm64.dmg",
-    "size": 4607692,
-    "sha256": "629cec63ff422b6a0fdbe62c544fc22c38af34db68e04f609ad285bd6785e8c9",
+    "file": "panecast-desktop-0.2.12-mac-arm64.dmg",
+    "size": 4631489,
+    "sha256": "e98ad6d6043ab6a421ad1196d96959254946b2bf9beedcb7d935d2e4f08f1ea2",
     "archive": {
-      "file": "panecast-desktop-0.2.11-mac-arm64.zip",
-      "size": 4341745,
-      "sha256": "17696fa886f5f4ebda699c254786bd5a54a72a333506f8e6e742372834781541"
+      "file": "panecast-desktop-0.2.12-mac-arm64.zip",
+      "size": 4364967,
+      "sha256": "1028296c03324f41e2e27f3431a98138a8d9121fd0e45fa5864776fff0ff1efb"
     },
     "installer": {
-      "file": "install-desktop-0.2.11-mac-arm64.sh",
+      "file": "install-desktop-0.2.12-mac-arm64.sh",
       "size": 5632,
-      "sha256": "ae1120db25123ca30357023f5c5cde3677e8f0a3617195a06232d4c5be327132"
+      "sha256": "25c39e877965e368d6fe0e5e082981fd896666b0baca4effa464e0bf86f957d8"
     },
     "update": {
-      "file": "panecast-desktop-0.2.11-mac-arm64.app.tar.gz",
-      "size": 4337353,
-      "sha256": "d2e933c777f9d990541fe3a2cd6248b344a74809cbab7c4b181c7db113ad172a",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ2JQRzBkU3F0K0liN3hQbGk4eXo3STdYUExBeDI4c0NpVGp6aHpLeTQ1SjgvZG8rdERrOGFqZGt6eXJVS0N0VXVmdC8xOUY2SjhxcDRQdWNXZkhITlFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0ODk0NjE3CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTEtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTEKU204eDZhcVI0QXBzd09HT1ZQYVQ0VmtlQjZjOUhpN0ZISHZOS09EcjlnWHFHcGxsQTBPNVYxN0UxYXNJV0xNZlQvelVNUjgvR3JjMlFJWUlBQ2ZjRGc9PQo="
+      "file": "panecast-desktop-0.2.12-mac-arm64.app.tar.gz",
+      "size": 4358514,
+      "sha256": "e1145bf81f8e427b575a6ed448f21b3247f4645b49915e52bc72ea1928ccfbbb",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ1VUZ04wZEJ0R3laVjVLOThGaVMyMGZvOVZGRUFMSEpkWUxVQURuSUcwcnFWcUVkRStDNXZXcnBwYU84YlIvbkhIVElnMlg4dWpURldBQ2crODM4dXdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTEzMzM0CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTItbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTIKYk5kYnp1MDNkekxOSFVSaWI4c2VUd3J0d0JZdGsvOXkxdkJHaGF5ZnZkMWlzRGRWUzhyVmxLMlh4YUhrUFBwSmhSZmtqVUNHeWtmdTd5bHZUd1NJQnc9PQo="
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-17",
     "notarized": false,
-    "sourceCommit": "ca19b010811a24642f129141cd18d649ac083ce2",
+    "sourceCommit": "9d2274f6334d812b3a7f10a8c2c507277efd7f3a",
     "notes": [
-      "自动更新：以后的新版本在后台自动下载安装，左侧栏提示后重启即可；也可以在「设置 → 应用更新」或菜单「Panecast → 检查更新…」手动检查",
-      "使用 Panecast 固定签名：自动更新后不再反复弹出钥匙串授权（从旧版升级到这一版时可能还会询问一次，选「始终允许」）",
-      "附件不再有大小限制：拖入、粘贴或选择的文件按原始内容分块上传并显示进度（需更新电脑上的网关；旧网关仍为 12 MB）",
-      "用分享密钥连接的窗口会在输入栏上方列出共享文件夹，点按文件用本机应用打开；拖入的文件保存到共享文件夹",
-      "上传的文档保留原文件名，不再被改成 .jpg"
+      "滚动不再卡住：在 Claude Code 等全屏程序里用触控板或滚轮往上翻，历史跟得上手指（加载速度约为原来的 8 倍），远处的历史仍保留颜色",
+      "翻历史时出现「历史暂时无法衔接」后，再滑一下就会自动重试"
     ]
   },
   "windows": {
