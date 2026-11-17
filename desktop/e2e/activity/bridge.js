@@ -10,8 +10,9 @@
   if (window.__fixtureChat) localStorage.setItem('panecast.prefs.v1', JSON.stringify({ terminalPresentation: 'chat' }));
   const computer = { id: 'fixture', name: '测试电脑', pairedAt: new Date().toISOString(), broker: { serverUrl: 'https://qa.invalid', relayId: 'fixture', deviceId: 'fixture', token: 'fixture-only' } };
   const secrets = new Map([['panecast.computers.v2', JSON.stringify({ version: 2, selectedId: 'fixture', computers: [computer], transport: { fixture: 'broker' } })]]);
-  let revision = 0, socket, applicationPosition = 1000, latency = window.__fixtureLatency ?? 0, queue = Promise.resolve();
-  const applicationRows = () => ['PROGRAM HEADER', ...Array.from({ length: 43 }, (_, i) => `APP_HISTORY_${String(applicationPosition + i).padStart(4, '0')}`), '› fixture prompt'];
+  let revision = 0, socket, applicationPosition = window.__fixtureApplicationStart ?? 1000, latency = window.__fixtureLatency ?? 0, queue = Promise.resolve();
+  let rendered = window.__fixtureApplicationStart ?? 1000;
+  const applicationRows = (at = applicationPosition) => ['PROGRAM HEADER', ...Array.from({ length: 43 }, (_, i) => `APP_HISTORY_${String(at + i).padStart(4, '0')}`), '› fixture prompt'];
   const emit = event => { for (const listener of listeners) listener(event); };
   const frame = data => emit({ id: socket, type: 'message', data: JSON.stringify(data) });
   const screen = surface => frame({ type: 'screen.full', surface_id: surface, rev: ++revision,
@@ -27,22 +28,32 @@
     if (method === 'surface.list') { const id = params.workspace_id.slice(2); return { surfaces: [{ id, title: `终端 ${id.toUpperCase()}`, type: 'terminal', focused: true }] }; }
     if (method === 'surface.subscribe') { setTimeout(() => screen(params.surface_id), 50); return {}; }
     if (method === 'terminal.replay') return { render_grid: { active_screen: params.surface_id === 'b' ? 'alternate' : 'primary', columns: 90, rows: params.surface_id === 'b' ? 45 : 12, modes: [{ ansi: false, code: 1000, on: params.surface_id === 'b' }] } };
-    if (method === 'terminal.scroll') { applicationPosition = Math.max(1, applicationPosition - params.delta_lines * 9); setTimeout(() => screen('b'), 20); return {}; }
-    if (method === 'surface.read_text') return { text: applicationRows().join('\n') };
+    if (method === 'terminal.scroll') {
+      // The program redraws within ~15 ms; the relay pushes that screen on its next poll.
+      applicationPosition = Math.max(1, applicationPosition - params.delta_lines * 9);
+      const at = applicationPosition;
+      setTimeout(() => { rendered = at; }, 15); setTimeout(() => screen('b'), window.__fixtureFrameDelay ?? 20);
+      return {};
+    }
+    if (method === 'surface.read_text') return { text: applicationRows(rendered).join('\n') };
     if (method === 'surface.history') {
       const end = params.cursor ? Number(params.cursor) : history.length - (params.tail_lines ?? 12);
       const start = Math.max(0, end - Math.min(160, params.limit));
       return { rows: history.slice(start, end), next_cursor: start ? String(start) : null, ...(!params.cursor ? { anchor_rows: history.slice(end) } : {}) };
     }
-    if (method === 'terminal.conversation') {
+    if (method === 'terminal.conversation.batch') return { results: params.requests.map(request => ({ ok: true, result: conversation(request) })) };
+    if (method === 'terminal.conversation') return conversation(params);
+    if (method === 'inbox.sync') return { events: [], cursor: '0', head: '0', more: false };
+    if (method === 'source.list') return { sources: [] };
+    return {};
+  }
+  function conversation(params) {
+    {
       const run = runs.get(params.surface_id), id = params.surface_id;
       const items = [{ id: `user-${run.turn}`, type: 'userMessage', sequence: run.turn * 10, content: [{ type: 'text', text: '请运行测试' }] }];
       if (!run.active) items.push({ id: `reply-${run.turn}`, type: 'agentMessage', sequence: run.turn * 10 + 1, phase: 'final', text: `会话 ${id} 已完成 ${run.turn}` });
       return { available: true, provider: 'codex', conversation_id: `chat-${id}`, generation: 'fixture', revision: `${run.turn}:${run.active}`, active: run.active, items, head_sequence: run.turn * 10 + 2 };
     }
-    if (method === 'inbox.sync') return { events: [], cursor: '0', head: '0', more: false };
-    if (method === 'source.list') return { sources: [] };
-    return {};
   }
   window.panecastDesktop = {
     version: 1,

@@ -33,7 +33,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByTestId('terminal-output-list').waitFor();
   await page.waitForFunction(() => document.body.innerText.includes('HISTORY_ROW_2399'));
-  await page.waitForFunction(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.conversation').length >= 2);
+  await page.waitForFunction(() => window.panecastFixture.calls.filter(call => call.method.startsWith('terminal.conversation')).length >= 2);
   await page.evaluate(() => window.panecastFixture.run('b'));
   const a = page.getByRole('button', { name: '终端 A', exact: true }).first();
   const b = page.getByRole('button', { name: '终端 B', exact: true }).first();
