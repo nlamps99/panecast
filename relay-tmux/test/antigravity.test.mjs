@@ -68,7 +68,12 @@ test('the reader finds a conversation by its folder and pages it', async (t) => 
 
 function fakeRun(processes) {
   return async (file, args) => {
-    if (file === 'ps' && args[0] === '-axo') return { stdout: Object.entries(processes).map(([pid, p]) => `${pid} ${p.comm}`).join('\n') };
+    if (file === 'pgrep') {
+      const pattern = new RegExp(args[1]);
+      const pids = Object.entries(processes).filter(([, p]) => pattern.test(p.comm.split('/').at(-1))).map(([pid]) => pid);
+      if (!pids.length) throw Object.assign(new Error('no match'), { code: 1, stdout: '' });
+      return { stdout: pids.join('\n') + '\n' };
+    }
     const pid = args[args.indexOf('-p') + 1], p = processes[pid];
     if (!p) throw Object.assign(new Error('gone'), { stdout: '' });
     if (file === 'ps' && args[0] === 'ww') return { stdout: `${p.command}\n` };

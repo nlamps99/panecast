@@ -1,12 +1,12 @@
 import { execFile } from 'node:child_process';
-import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The Antigravity CLI's executable names (cmux's own registration uses the same). */
-const NAMES = new Set(['agy', 'antigravity']);
-const LIST_TTL_MS = 3_000;
+const NAMES = '^(agy|antigravity)$';
+/** Every terminal is polled every few seconds; a new agy shows up within this. */
+const LIST_TTL_MS = 10_000;
 const PROCESS_TTL_MS = 10_000;
 
 /**
@@ -32,17 +32,13 @@ export class AntigravityProcesses {
     return null;
   }
 
-  /** Running agy processes; one `ps` for every terminal polled within a few seconds. */
+  /** Running agy processes; one `pgrep` for every terminal polled within ten seconds. */
   async candidates() {
     if (this.list && Date.now() - this.list.at < LIST_TTL_MS) return this.list.pids;
-    let pids = [];
-    try {
-      const { stdout } = await this.run('ps', ['-axo', 'pid=,comm='], { timeout: 2000, maxBuffer: 4 * 1024 * 1024 });
-      pids = stdout.split('\n').flatMap((line) => {
-        const match = /^\s*(\d+)\s+(.+)$/.exec(line);
-        return match && NAMES.has(basename(match[2].trim())) ? [Number(match[1])] : [];
-      });
-    } catch { /* No process list: nothing to bind. */ }
+    let output = '';
+    // pgrep exits 1 when nothing matches.
+    try { ({ stdout: output } = await this.run('pgrep', ['-x', NAMES], { timeout: 2000 })); } catch (error) { output = error.stdout ?? ''; }
+    const pids = output.split('\n').filter((line) => /^\d+$/.test(line.trim())).map(Number);
     this.list = { at: Date.now(), pids };
     return pids;
   }
