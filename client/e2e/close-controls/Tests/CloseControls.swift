@@ -14,15 +14,19 @@ final class CloseControls: XCTestCase {
     XCTAssertTrue(alert.waitForExistence(timeout: 5), "missing alert \(title)")
     alert.buttons[choice].tap()
   }
-  /** Workspace cards wrap their × in the card's own button, so tap it by position when it is not separately exposed. */
-  private func tapWorkspaceClose(_ title: String) {
-    let close = button("关闭工作区 \(title)")
-    if close.exists && close.isHittable { close.tap(); return }
-    let card = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(title)，")).firstMatch
-    XCTAssertTrue(card.waitForExistence(timeout: 5), "missing card \(title)")
-    // Right to left the header ends with the chevron, the demo's unread badge, then the ×.
-    card.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5)).withOffset(CGVector(dx: card.frame.width - 84, dy: 0)).tap()
+  /** On a phone 置顶 and 关闭 sit behind a left swipe on the card. */
+  private func swipeOpen(_ title: String, revealing label: String) -> XCUIElement {
+    let action = button(label)
+    for _ in 0..<3 where !(action.exists && action.isHittable) {
+      let row = card(title)
+      XCTAssertTrue(row.waitForExistence(timeout: 5), "missing card \(title)")
+      row.swipeLeft()
+      _ = action.waitForExistence(timeout: 2)
+    }
+    XCTAssertTrue(action.exists && action.isHittable, "swipe did not reveal \(label)")
+    return action
   }
+  private func tapWorkspaceClose(_ title: String) { swipeOpen(title, revealing: "关闭工作区 \(title)").tap() }
   private func card(_ title: String) -> XCUIElement {
     app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(title)，")).firstMatch
   }
@@ -35,8 +39,23 @@ final class CloseControls: XCTestCase {
     let demo = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "先看看演示")).firstMatch
     XCTAssertTrue(demo.waitForExistence(timeout: 10)); demo.tap()
     XCTAssertTrue(card("notes").waitForExistence(timeout: 15))
-    XCTAssertTrue(app.staticTexts["点 × 关闭工作区；长按可以重命名"].waitForExistence(timeout: 5))
-    shot("Workspace list with close buttons")
+    XCTAssertTrue(app.staticTexts["向左滑动卡片可以置顶或关闭；长按可以重命名"].waitForExistence(timeout: 5))
+    // The title row no longer carries ☆ and ×; the swipe actions wait behind the card.
+    XCTAssertFalse(button("置顶 notes").exists && button("置顶 notes").isHittable)
+    XCTAssertFalse(button("关闭工作区 notes").exists && button("关闭工作区 notes").isHittable)
+    shot("Workspace list")
+
+    // Pin from the swipe: the card moves to the top and says so.
+    let pin = swipeOpen("notes", revealing: "置顶 notes")
+    shot("Swipe actions")
+    pin.tap()
+    let pinned = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "notes，", "已置顶")).firstMatch
+    XCTAssertTrue(pinned.waitForExistence(timeout: 5))
+    XCTAssertLessThan(pinned.frame.minY, card("panecast").frame.minY, "pinned card goes first")
+    shot("Pinned card first")
+    swipeOpen("notes", revealing: "取消置顶 notes").tap()
+    let unpinned = NSPredicate(format: "label CONTAINS %@", "已置顶")
+    expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons.matching(unpinned).firstMatch); waitForExpectations(timeout: 5)
 
     // Cancelling keeps the workspace.
     tapWorkspaceClose("notes")

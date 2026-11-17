@@ -1,6 +1,7 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { canManage, windowLabel, type SurfaceInfo, type WorkspaceInfo } from '../../session/surfaces';
@@ -20,6 +21,16 @@ import { TerminalActivityBadge, useTerminalActivity } from '../../ui/TerminalAct
 import { CloseButton } from '../../ui/CloseButton';
 import { confirmClose } from '../../platform/confirm';
 import { requestWorkspaceClose } from '../../session/closeRequests';
+import { desktopBridge } from '../../platform/desktop';
+
+/**
+ * Phones swipe a card left for 置顶 and 关闭, which keeps the narrow title row
+ * for the name; the iPad and the desktop keep the ☆ and × buttons.
+ */
+function usePhoneSwipe(): boolean {
+  const { width, height } = useWindowDimensions();
+  return desktopBridge() === null && Math.min(width, height) < 600;
+}
 
 /** The workspace whose long-press menu is up. `key` remounts it per opening; `open` false while it fades out. */
 type MenuState = { key: number; workspace: WorkspaceInfo; stage: WorkspaceMenuStage; open: boolean };
@@ -44,6 +55,13 @@ export default function WorkspacesScreen() {
   const [pulling, setPulling] = useState(false);
   const [createDialog, setCreateDialog] = useState<{ key: number; open: boolean } | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const swipe = usePhoneSwipe();
+  // One card open at a time, as in Mail.
+  const openCard = useRef<{ id: string; methods: SwipeableMethods } | null>(null);
+  const cardOpened = (id: string, methods: SwipeableMethods) => {
+    if (openCard.current && openCard.current.id !== id) openCard.current.methods.close();
+    openCard.current = { id, methods };
+  };
   const banner = statusBanner(status);
   const canCreate = status.state === 'open' && !creating && canManage(windows.find((w) => w.id === selectedWindowId));
 
@@ -152,7 +170,9 @@ export default function WorkspacesScreen() {
           unread={unreadByWorkspace[workspace.id] ?? 0}
           needsAttention={pendingByWorkspace[workspace.id] ?? 0}
           pinned={memory.pinned.includes(workspace.id)}
-          onPin={() => sessionMemory.pin(computerId, workspace.id)}
+          swipe={swipe}
+          onSwipeOpen={cardOpened}
+          onPin={(value) => sessionMemory.setPinned(computerId, workspace.id, value)}
           currentSurfaceId={target?.workspaceId === workspace.id ? target.surfaceId : null}
           busy={pending[workspace.id] ?? null}
           error={actionError && errorOnCard === workspace.id ? actionErrorText(actionError) : null}
@@ -176,7 +196,8 @@ export default function WorkspacesScreen() {
       ) : null}
       {!loaded ? <Text style={styles.emptyText}>{status.state === 'open' ? '正在读取工作区…' : '正在连接电脑…'}</Text> : null}
       {loaded && workspaces.length > 0 && shown.length === 0 ? <Text style={styles.emptyText}>没有匹配「{query}」的工作区</Text> : null}
-      {shown.some(w => canManage(w)) ? <Text style={styles.hint}>点 × 关闭工作区；长按可以重命名</Text> : null}
+      {swipe && shown.length > 0 ? <Text style={styles.hint}>{shown.some(w => canManage(w)) ? '向左滑动卡片可以置顶或关闭；长按可以重命名' : '向左滑动卡片可以置顶'}</Text>
+        : shown.some(w => canManage(w)) ? <Text style={styles.hint}>点 × 关闭工作区；长按可以重命名</Text> : null}
 
       {createDialog ? (
         <NameDialog
@@ -232,7 +253,10 @@ type CardProps = {
   unread: number;
   needsAttention: number;
   pinned: boolean;
-  onPin: () => void;
+  onPin: (pinned: boolean) => void;
+  /** 置顶 and 关闭 sit behind a left swipe instead of in the title row. */
+  swipe: boolean;
+  onSwipeOpen: (id: string, methods: SwipeableMethods) => void;
   currentSurfaceId: string | null;
   /** A rename or close running on this workspace; the card is disabled meanwhile. */
   busy: 'rename' | 'close' | null;
@@ -243,32 +267,41 @@ type CardProps = {
   onDismissError: () => void;
 };
 
-function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needsAttention, pinned, onPin, currentSurfaceId, busy, error, onOpen, onMenu, onClose, onDismissError }: CardProps) {
+function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needsAttention, pinned, onPin, swipe, onSwipeOpen, currentSurfaceId, busy, error, onOpen, onMenu, onClose, onDismissError }: CardProps) {
+  const swipeable = useRef<SwipeableMethods>(null);
+  // A tap on an open card closes it, as in Mail, instead of opening the terminal.
+  const [swiped, setSwiped] = useState(false);
+  const closable = canManage(workspace);
+  const closeDisabled = busy !== null || !connected;
+  const pinLabel = pinned ? '取消置顶' : '置顶';
+  const fromSwipe = (action: () => void) => { swipeable.current?.close(); action(); };
   const primary = surfaces.find((s) => s.id === currentSurfaceId) ?? surfaces.find((s) => s.focused) ?? surfaces[0];
   const isCurrent = currentSurfaceId !== null;
   const surfaceActivity = (surface: SurfaceInfo) => activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })];
   const running = surfaces.filter((surface) => surfaceActivity(surface)?.status === 'running');
   const meta = busy === 'rename' ? '正在重命名…' : busy === 'close' ? '正在关闭…' : `${surfaces.length} 个终端${workspace.access === 'read' ? ' · 只读' : workspace.access === 'shared' ? ' · 别人分享的窗口' : ''}${workspace.selected ? ' · 电脑上正在用' : ''}`;
-  return (
+  const card = (
     <View style={[styles.card, isCurrent && styles.cardCurrent, busy && styles.cardBusy]}>
       <Pressable
-        onPress={() => primary && onOpen(primary.id)}
+        onPress={() => { if (swiped) swipeable.current?.close(); else if (primary) onOpen(primary.id); }}
         onLongPress={() => onMenu()}
         disabled={busy !== null}
         style={({ pressed }) => [styles.cardHeader, pressed && styles.pressed]}
         accessibilityRole="button"
-        accessibilityLabel={`${workspace.title}，${surfaces.length} 个终端${needsAttention ? `，${needsAttention} 项待处理` : ''}`}
-        accessibilityHint="长按可以重命名或关闭"
+        accessibilityLabel={`${workspace.title}，${surfaces.length} 个终端${needsAttention ? `，${needsAttention} 项待处理` : ''}${swipe && pinned ? '，已置顶' : ''}`}
+        accessibilityHint={swipe ? '向左滑动可以置顶或关闭，长按可以重命名' : '长按可以重命名或关闭'}
         accessibilityState={{ disabled: busy !== null, busy: busy !== null }}
         accessibilityValue={running.length ? { text: `${running.length} 个正在运行` } : undefined}
         accessibilityActions={[
           { name: 'longpress', label: '更多操作' },
           { name: 'rename', label: '重命名' },
           { name: 'close', label: '关闭' },
+          { name: 'pin', label: pinLabel },
         ]}
         onAccessibilityAction={(event) => {
           const action = event.nativeEvent.actionName;
-          onMenu(action === 'rename' || action === 'close' ? action : 'menu');
+          if (action === 'pin') onPin(!pinned);
+          else onMenu(action === 'rename' || action === 'close' ? action : 'menu');
         }}
       >
         <View style={[styles.index, isCurrent && styles.indexCurrent]}>
@@ -280,16 +313,17 @@ function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needs
             <Text style={styles.cardTitle} numberOfLines={1}>
               {workspace.title}
             </Text>
+            {swipe && pinned ? <Text style={styles.pinMark}>★</Text> : null}
           </View>
           <Text style={styles.cardMeta} numberOfLines={1}>
             {needsAttention ? <Text style={{ color: colors.yellow }}>{needsAttention} 项待处理 · </Text> : null}
             {running.length && !busy ? <Text style={{ color: colors.green }}>{surfaces.length > 1 ? `${running.length} 个正在运行` : '正在运行'} · </Text> : null}{meta}
           </Text>
         </View>
-        <Pressable onPress={(event) => { event.stopPropagation(); onPin(); }} hitSlop={6} style={styles.pin} accessibilityRole="button" accessibilityLabel={`${pinned ? '取消置顶' : '置顶'} ${workspace.title}`}>
+        {swipe ? null : <Pressable onPress={(event) => { event.stopPropagation(); onPin(!pinned); }} hitSlop={6} style={styles.pin} accessibilityRole="button" accessibilityLabel={`${pinLabel} ${workspace.title}`}>
           <Text style={[styles.pinText, pinned && styles.pinActive]}>{pinned ? '★' : '☆'}</Text>
-        </Pressable>
-        {!canManage(workspace) ? null : <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={busy !== null || !connected} onPress={onClose} />}
+        </Pressable>}
+        {swipe || !closable ? null : <CloseButton label={`关闭工作区 ${workspace.title}`} disabled={closeDisabled} onPress={onClose} />}
         {unread > 0 ? (
           <View style={styles.unread}>
             <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
@@ -333,11 +367,60 @@ function WorkspaceCard({ workspace, surfaces, activity, connected, unread, needs
         : null}
     </View>
   );
+  if (!swipe) return card;
+  // The swipeable draws the actions as the card slides away. Taps inside its
+  // action area did not reach the buttons there (the row stayed open and
+  // nothing happened), so while the card is open the buttons that take the
+  // tap sit over that area, outside the swipeable.
+  const actions = (interactive: boolean) => (
+    <View style={styles.swipeActions} pointerEvents={interactive ? 'auto' : 'none'}
+      accessibilityElementsHidden={!interactive} importantForAccessibility={interactive ? 'auto' : 'no-hide-descendants'}>
+      <Pressable onPress={() => fromSwipe(() => onPin(!pinned))} style={({ pressed }) => [styles.swipeAction, !interactive && styles.pinAction, pressed && styles.swipePressed]}
+        accessibilityRole="button" accessibilityLabel={`${pinLabel} ${workspace.title}`}>
+        {interactive ? null : <Text style={styles.swipeText}>{pinLabel}</Text>}
+      </Pressable>
+      {closable ? (
+        <Pressable onPress={() => fromSwipe(onClose)} disabled={closeDisabled}
+          style={({ pressed }) => [styles.swipeAction, !interactive && styles.closeAction, !interactive && closeDisabled && styles.dimmed, pressed && styles.swipePressed]}
+          accessibilityRole="button" accessibilityLabel={`关闭工作区 ${workspace.title}`} accessibilityState={{ disabled: closeDisabled }}>
+          {interactive ? null : <Text style={[styles.swipeText, styles.closeText]}>关闭</Text>}
+        </Pressable>
+      ) : null}
+    </View>
+  );
+  return (
+    <View>
+      <Swipeable
+        ref={swipeable}
+        enabled={busy === null}
+        friction={1.5}
+        rightThreshold={40}
+        overshootRight={false}
+        containerStyle={styles.swipeContainer}
+        onSwipeableWillOpen={() => { setSwiped(true); if (swipeable.current) onSwipeOpen(workspace.id, swipeable.current); }}
+        onSwipeableWillClose={() => setSwiped(false)}
+        renderRightActions={() => actions(false)}
+      >
+        {card}
+      </Swipeable>
+      {swiped ? <View style={styles.swipeOverlay} pointerEvents="box-none">{actions(true)}</View> : null}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
   recentBlock: { gap: 8 }, recentTitle: { color: colors.inkDim, fontSize: 13 }, recentList: { gap: 8 }, recentCard: { width: 160, borderRadius: 8, backgroundColor: colors.surface, padding: 10, gap: 4 }, recentName: { color: colors.ink, fontSize: 13 }, recentMeta: { color: colors.muted, fontSize: 11 },
   pin: { padding: 5 }, pinText: { color: colors.mutedDim, fontSize: 20 }, pinActive: { color: colors.yellow },
+  pinMark: { color: colors.yellow, fontSize: 13 },
+  swipeContainer: { borderRadius: 12 },
+  swipeActions: { flexDirection: 'row' },
+  swipeAction: { width: 76, alignItems: 'center', justifyContent: 'center' },
+  pinAction: { backgroundColor: colors.surfaceRaised },
+  closeAction: { backgroundColor: colors.red },
+  swipeText: { color: colors.ink, fontSize: 15, fontWeight: '600' },
+  swipeOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, flexDirection: 'row' },
+  swipePressed: { backgroundColor: 'rgba(0, 0, 0, 0.2)' },
+  closeText: { color: colors.canvas },
   screen: { flex: 1, backgroundColor: colors.canvas },
   content: { paddingBottom: 24, gap: 12 },
   header: { gap: 6, marginBottom: 4 },
