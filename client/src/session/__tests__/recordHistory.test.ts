@@ -1,8 +1,9 @@
-import { itemRows, itemsOnScreen, recordRows, RECORD_WRITING_NOTICE, wrapCells } from '../recordHistory';
+import { itemRows, itemsOnScreen, recordLayout, recordRows, RECORD_WRITING_NOTICE, seamOverlap, wrapCells } from '../recordHistory';
 import type { AgentItem } from '../sourceStore';
 import { TerminalSession, type RpcChannel } from '../terminalSession';
 import type { PushFrame } from '../../protocol/frames';
 import { plainTerminalRows } from '../../terminal/textTools';
+import { makeReadingPosition, type PositionedLine } from '../readingPosition';
 
 const reply = (n: number, text = `reply number ${n} with some words`): AgentItem => ({ id: `item-${n}`, type: 'agentMessage', text, sequence: n });
 const plain = (rows: readonly string[]) => plainTerminalRows(rows);
@@ -17,7 +18,7 @@ it('draws items in the program\'s terminal style', () => {
   expect(plain(itemRows(reply(1, '## 结论\n**滚动**用 `record` 读取'), 80))).toEqual(['⏺ 结论', '  滚动用 record 读取']);
   const tool = plain(itemRows({ id: 't', type: 'toolExecution', tool: 'Bash', command: 'git status', aggregatedOutput: Array.from({ length: 15 }, (_, i) => `line ${i}`).join('\n') }, 80));
   expect(tool.slice(0, 3)).toEqual(['⏺ Bash(git status)', '  ⎿  line 0', '     line 1']);
-  expect(tool.at(-1)).toBe('     … 还有 3 行');
+  expect(tool.at(-1)).toBe('     … 还有 3 行，点按展开');
   const change = itemRows({ id: 'f', type: 'fileChange', changes: [{ path: 'a.ts', diff: '--- a\n+++ b\n-old\n+new' }] }, 80);
   expect(plain(change)).toEqual(['⏺ Update(a.ts)', '     -old', '     +new']);
   expect(change[1]).toContain('\u001b[31m');
@@ -34,6 +35,23 @@ it('finds the newest items the screen already shows, in order from the bottom', 
   const repeated = [reply(1, 'Done.'), reply(2, 'something else entirely'), reply(3, 'Done.')];
   expect(itemsOnScreen(repeated, ['⏺ Done.', '❯ '])).toBe(1);
   expect(itemsOnScreen([reply(1)], ['❯ ', 'nothing here'])).toBe(0);
+});
+
+it('marks shortened output rows for expansion and draws them in full once expanded', () => {
+  const tool: AgentItem = { id: 't', type: 'toolExecution', tool: 'Bash', command: 'ls', aggregatedOutput: Array.from({ length: 15 }, (_, i) => `file ${i}`).join('\n') };
+  const shortened = recordLayout([reply(1), tool], 80);
+  expect([...shortened.expandable]).toEqual([[shortened.rows.length - 1, 't']]);
+  const full = recordLayout([reply(1), tool], 80, new Set(['t']));
+  expect(full.expandable.size).toBe(0);
+  expect(plain(full.rows).at(-1)).toBe('     file 14');
+});
+
+it('trims only an exact run of rows the screen repeats at its top', () => {
+  const history = ['⏺ Bash(ls)', '  ⎿  file 1', '     file 2', ''];
+  expect(seamOverlap(history, ['  ⎿  file 1', '     file 2', '', '⏺ next'])).toBe(3);
+  expect(seamOverlap(history, ['     file 2', '⏺ next'])).toBe(2);
+  // A line that merely appears somewhere on screen is not a seam.
+  expect(seamOverlap(history, ['⏺ next', '  ⎿  file 1', '     file 2'])).toBe(0);
 });
 
 const application = { render_grid: { active_screen: 'alternate', columns: 100, rows: 12, modes: [{ ansi: false, code: 1000, on: true }] } };
@@ -105,6 +123,58 @@ it('reads ahead past newest pages that hold only internal entries', async () => 
   session.startApplicationHistory();
   expect(plain(session.getState().browse!.olderRows).filter(Boolean)).toHaveLength(40);
   expect(reads(call).map((params) => params.cursor ?? null)).toEqual([null, 'p1']);
+  session.dispose();
+});
+
+it('expands a tool output in place and reads the whole record for search', async () => {
+  const tool = { id: 'tool', type: 'toolExecution', tool: 'Bash', command: 'ls', aggregatedOutput: Array.from({ length: 20 }, (_, i) => `file ${i}`).join('\n'), sequence: 50 };
+  const { session, call } = fixture((params) => params.cursor === 'p2' ? page(0, 30, null) : params.cursor === 'p1' ? page(30, 60, 'p2')
+    : { ...page(60, 100, 'p1'), items: [...page(60, 100, null).items.slice(0, 10), tool, ...page(60, 100, null).items.slice(10)] });
+  await session.inspectScrollMode();
+  session.startApplicationHistory();
+  await session.loadOlder();
+  const browse = session.getState().browse!;
+  const [[index, id]] = [...browse.expandable!];
+  expect(id).toBe('tool');
+  expect(plain([browse.olderRows[index]])[0]).toBe('     … 还有 8 行，点按展开');
+  const before = browse.olderRows.length;
+  session.expandRecordItem('tool');
+  expect(session.getState().browse!.olderRows.length).toBe(before + 7);
+  expect(session.getState().browse!.expandable!.size).toBe(0);
+  expect(await session.loadWholeRecord()).toBe(true);
+  const all = plain(session.getState().browse!.olderRows).filter(Boolean);
+  expect(all[0]).toBe('⏺ reply number 0 with some words');
+  expect(all).toContain('     file 19');
+  expect(session.getState().browse).toMatchObject({ exhausted: true, loading: false });
+  expect(reads(call).map((params) => params.cursor ?? null)).toEqual([null, 'p1', 'p2']);
+  session.dispose();
+});
+
+it('finds a saved reading place again in the record when coming back to the window', async () => {
+  let listener: (frame: PushFrame) => void = () => {};
+  const saved: unknown[] = [];
+  const call = jest.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+    if (method === 'terminal.replay') return application;
+    if (method === 'terminal.conversation') return params?.cursor === 'p1' ? page(0, 20, null) : page(20, 100, 'p1');
+    return {};
+  });
+  const channel: RpcChannel = { isOpen: true, call: call as RpcChannel['call'], onPush: (fn) => { listener = fn; return () => {}; }, onStatus: () => () => {} };
+  // The place as the view saved it: the rows the record history showed, plus the screen.
+  const frozen = ['⏺ reply number 99 with some words', '❯ '];
+  const shownRows = [...recordRows(Array.from({ length: 99 }, (_, i) => reply(i)), 100), ...frozen];
+  const at = shownRows.indexOf(recordRows([reply(5)], 100)[0]);
+  const position = makeReadingPosition(shownRows, { rowFromBottom: shownRows.length - at - 1, segmentFromBottom: 0 } as PositionedLine);
+  const session = new TerminalSession(channel, { readingForTarget: () => position, saveReading: (_target, value) => { saved.push(value); } });
+  session.setTarget({ workspaceId: 'w', surfaceId: 's' });
+  expect(session.getState().restoringReading).toBe(true);
+  listener({ type: 'screen.full', surfaceId: 's', rev: 1, rows: frozen, cols: 100, rowsCount: 2, cursor: { x: 0, y: 0 } });
+  for (let i = 0; i < 50 && session.getState().restoringReading; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  const state = session.getState();
+  expect(state).toMatchObject({ restoringReading: false, readingNotice: null });
+  expect(state.browse?.kind).toBe('application');
+  const rows = [...state.browse!.olderRows, ...state.browse!.frozenRows];
+  expect(plain([rows[rows.length - 1 - state.restoredReading!.rowFromBottom]])[0]).toBe('⏺ reply number 5 with some words');
+  expect(call.mock.calls.some(([method]) => method === 'terminal.scroll')).toBe(false);
   session.dispose();
 });
 

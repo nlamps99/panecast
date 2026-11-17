@@ -72,7 +72,10 @@ function block(lines: { text: string; style: string }[], columns: number, marker
   return rows;
 }
 
-/** Tool output under its call, first rows only, as the program shows it. */
+/** Ends a shortened block; tapping it shows the rest (`RecordRows.expandable`). */
+const more = (hidden: number) => `${DIM}     … 还有 ${hidden} 行，点按展开${RESET}`;
+
+/** Tool output under its call, first rows only unless expanded, as the program shows it. */
 function output(text: string, columns: number, limit = OUTPUT_ROWS): string[] {
   const lines = text.replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
   if (!text.trim()) return [];
@@ -80,18 +83,18 @@ function output(text: string, columns: number, limit = OUTPUT_ROWS): string[] {
   lines.slice(0, limit).forEach((line, index) => {
     for (const row of wrapCells((index === 0 ? '  ⎿  ' : '     ') + line, columns, '     ')) rows.push(`${DIM}${row}${RESET}`);
   });
-  if (lines.length > limit) rows.push(`${DIM}     … 还有 ${lines.length - limit} 行${RESET}`);
+  if (lines.length > limit) rows.push(more(lines.length - limit));
   return rows;
 }
 
-function diff(text: string, columns: number): string[] {
+function diff(text: string, columns: number, limit = DIFF_ROWS): string[] {
   const lines = text.replace(/\r\n/g, '\n').split('\n').filter((line) => !/^(\+\+\+|---|diff |index )/.test(line));
   const rows: string[] = [];
-  for (const line of lines.slice(0, DIFF_ROWS)) {
+  for (const line of lines.slice(0, limit)) {
     const color = line.startsWith('+') ? GREEN : line.startsWith('-') ? RED : DIM;
     for (const row of wrapCells(`     ${line}`, columns, '       ')) rows.push(`${color}${row}${RESET}`);
   }
-  if (lines.length > DIFF_ROWS) rows.push(`${DIM}     … 还有 ${lines.length - DIFF_ROWS} 行${RESET}`);
+  if (lines.length > limit) rows.push(more(lines.length - limit));
   return rows;
 }
 
@@ -102,8 +105,9 @@ function toolTitle(item: AgentItem): string {
   return command ? `${name}(${command.length > 200 ? `${command.slice(0, 200)}…` : command})` : name;
 }
 
-/** The rows one record item draws as. */
-export function itemRows(item: AgentItem, columns: number): string[] {
+/** The rows one record item draws as; `expanded` shows tool output and diffs in full. */
+export function itemRows(item: AgentItem, columns: number, expanded = false): string[] {
+  const all = expanded ? Number.MAX_SAFE_INTEGER : undefined;
   switch (item.type) {
     case 'userMessage': {
       const text = itemText(item).trim();
@@ -116,28 +120,64 @@ export function itemRows(item: AgentItem, columns: number): string[] {
     case 'commandExecution': case 'toolExecution': case 'mcpToolCall': {
       const failed = /fail|error/i.test(item.status ?? '');
       return [...block([{ text: toolTitle(item), style: BOLD }], columns, '⏺', failed ? RED : GREEN),
-        ...output(item.aggregatedOutput || (item.type === 'toolExecution' ? item.text ?? '' : ''), columns)];
+        ...output(item.aggregatedOutput || (item.type === 'toolExecution' ? item.text ?? '' : ''), columns, all)];
     }
     case 'fileChange':
-      return (item.changes ?? []).flatMap((change) => [...block([{ text: `Update(${change.path})`, style: BOLD }], columns, '⏺', GREEN), ...diff(change.diff ?? '', columns)]);
+      return (item.changes ?? []).flatMap((change) => [...block([{ text: `Update(${change.path})`, style: BOLD }], columns, '⏺', GREEN), ...diff(change.diff ?? '', columns, all)]);
     default:
       return [];
   }
 }
 
-const drawn = new WeakMap<AgentItem, { columns: number; rows: string[] }>();
+const drawn = new WeakMap<AgentItem, { columns: number; expanded: boolean; rows: string[] }>();
+const MORE = /… 还有 \d+ 行，点按展开/;
+
+/** Rows for a record, and which rows expand which item when tapped. */
+export type RecordRows = { rows: string[]; expandable: Map<number, string> };
 
 /** Record items as terminal rows, oldest first, a blank row between items. */
-export function recordRows(items: readonly AgentItem[], columns: number): string[] {
+export function recordRows(items: readonly AgentItem[], columns: number, expanded: ReadonlySet<string> = new Set()): string[] {
+  return recordLayout(items, columns, expanded).rows;
+}
+
+export function recordLayout(items: readonly AgentItem[], columns: number, expanded: ReadonlySet<string> = new Set()): RecordRows {
   const rows: string[] = [];
+  const expandable = new Map<number, string>();
   for (const item of items) {
+    const open = expanded.has(item.id);
     let cached = drawn.get(item);
-    if (!cached || cached.columns !== columns) { cached = { columns, rows: itemRows(item, columns) }; drawn.set(item, cached); }
+    if (!cached || cached.columns !== columns || cached.expanded !== open) { cached = { columns, expanded: open, rows: itemRows(item, columns, open) }; drawn.set(item, cached); }
     if (!cached.rows.length) continue;
     if (rows.length) rows.push('');
-    rows.push(...cached.rows);
+    for (const row of cached.rows) {
+      if (!open && MORE.test(row)) expandable.set(rows.length, item.id);
+      rows.push(row);
+    }
   }
-  return rows;
+  return { rows, expandable };
+}
+
+/**
+ * How many rows at the end of the history the screen repeats at its top:
+ * the item cut off by the screen's top edge, where both draw the same lines.
+ * Only an exact run (blank rows aside) counts, so nothing else is trimmed.
+ */
+export function seamOverlap(rows: readonly string[], screenRows: readonly string[]): number {
+  const text = (row: string) => plainTerminalRows([row])[0].trim();
+  const screen = screenRows.slice(0, 40).map(text).filter(Boolean);
+  let best = 0;
+  for (let length = 1; length <= Math.min(screen.length, 40); length++) {
+    // The history's last `length` non-blank rows must equal the screen's first `length`.
+    let index = rows.length - 1, matched = 0, start = rows.length;
+    for (let i = length - 1; i >= 0 && index >= 0; index--) {
+      const row = text(rows[index]);
+      if (!row) continue;
+      if (row !== screen[i]) break;
+      matched++; i--; start = index;
+    }
+    if (matched === length) best = rows.length - start;
+  }
+  return best;
 }
 
 const letters = (text: string) => text.normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '');

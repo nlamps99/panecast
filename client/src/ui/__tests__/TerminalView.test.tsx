@@ -329,6 +329,24 @@ it.each([true, false])('reads a full-screen program\'s history from its session 
   expect(scrolls()).toEqual([]);
 });
 
+it('expands a shortened tool output when its "点按展开" line is tapped', async () => {
+  const tool = { id: 'tool', type: 'toolExecution', tool: 'Bash', command: 'ls', aggregatedOutput: Array.from({ length: 20 }, (_, i) => `file ${i}`).join('\n'), sequence: 120 };
+  channel.rpc.mockImplementation(async (method) => {
+    if (method === 'terminal.replay') return application;
+    if (method === 'terminal.conversation') { const page = recordPage(80, 160, null); return { ...page, items: [...page.items.slice(0, 40), tool, ...page.items.slice(40)] }; }
+    return {};
+  });
+  await mount(recordScreen(150, 160));
+  await act(async () => { callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803)); await new Promise((resolve) => setTimeout(resolve, 0)); });
+  const list = () => mockNative.get('terminal-output-list') as { data: { plain: string }[]; renderItem: (info: { item: unknown; index: number }) => { props: { onPress: () => void } } };
+  const index = list().data.findIndex((line) => line.plain.includes('点按展开'));
+  expect(index).toBeGreaterThanOrEqual(0);
+  await act(async () => list().renderItem({ item: list().data[index], index }).props.onPress());
+  expect(list().data.some((line) => line.plain.includes('点按展开'))).toBe(false);
+  expect(list().data.some((line) => line.plain.trim() === 'file 19')).toBe(true);
+  expect(scrolls()).toEqual([]);
+});
+
 it('passes the wheel straight to a full-screen program that has no session record', async () => {
   mockOS = 'web';
   channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : method === 'terminal.conversation' ? { available: false, provider: 'terminal' } : {});

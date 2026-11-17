@@ -1,7 +1,8 @@
 //! Self-update for the Mac app.
 //!
-//! A few seconds after launch and then every few hours the app reads the
-//! signed update manifest. A newer version is downloaded, its signature is
+//! A few seconds after launch, every half hour, and when the window comes to
+//! the front (at most every ten minutes) the app reads the signed update
+//! manifest. A newer version is downloaded, its signature is
 //! checked against the public key built into the app, and the app bundle is
 //! replaced in place. The running copy keeps working; the new version starts
 //! with the next launch, or right away when the user chooses to restart.
@@ -14,7 +15,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
 const FIRST_CHECK: Duration = Duration::from_secs(8);
-const CHECK_EVERY: Duration = Duration::from_secs(4 * 3600);
+const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
+/// Coming back to the window checks again when the last check is this old.
+const FOCUS_CHECK_AFTER: Duration = Duration::from_secs(10 * 60);
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -51,6 +54,7 @@ pub struct Updates {
     state: Mutex<UpdateState>,
     /// One check or download at a time, whether started by the timer or the user.
     running: tokio::sync::Mutex<()>,
+    last_check: Mutex<Option<Instant>>,
 }
 
 impl Default for Updates {
@@ -58,6 +62,7 @@ impl Default for Updates {
         Self {
             state: Mutex::new(UpdateState::Idle),
             running: tokio::sync::Mutex::new(()),
+            last_check: Mutex::new(None),
         }
     }
 }
@@ -103,6 +108,9 @@ pub async fn check(app: &AppHandle) -> UpdateStatus {
     // Already installed: the next check belongs to the new version.
     if ready(app) {
         return status(app);
+    }
+    if let Ok(mut last) = updates.last_check.lock() {
+        *last = Some(Instant::now());
     }
     set(app, UpdateState::Checking);
     let result = async {
@@ -166,6 +174,22 @@ fn describe(error: &tauri_plugin_updater::Error) -> String {
             "没有权限替换应用，请把 Panecast 放在“应用程序”文件夹".into()
         }
         other => format!("更新失败：{other}"),
+    }
+}
+
+/// The window came to the front: check again unless that happened recently.
+pub fn on_focus(app: &AppHandle) {
+    let Some(updates) = app.try_state::<Updates>() else { return };
+    let due = updates
+        .last_check
+        .lock()
+        .map(|last| last.map_or(false, |at| at.elapsed() >= FOCUS_CHECK_AFTER))
+        .unwrap_or(false);
+    if due && !ready(app) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            check(&app).await;
+        });
     }
 }
 

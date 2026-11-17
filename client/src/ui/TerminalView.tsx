@@ -91,6 +91,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const requestedOffset = useRef<number | null>(null);
   const dragging = useRef(false);
   const wheeling = useRef(false);
+  const expanders = useRef(new Map<string, () => void>());
   const wheelCarry = useRef(0);
   const scrollRange = useRef(0);
   const historyRunway = useRef(0);
@@ -166,7 +167,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
 
   const savePosition = () => {
     const current = session.getState();
-    if (!current.browse || current.browse.kind === 'application' || current.restoringReading || !lines.length) return;
+    if (!current.browse || current.restoringReading || !lines.length) return;
     const index = Math.max(0, Math.min(lines.length - 1, Math.round(lastFromBottom.current / lineHeight)));
     const position = makeReadingPosition(allRows, lines[index], horizontalOffset.current / (size * MONO_ADVANCE_EM));
     viewPosition.current = position;
@@ -349,9 +350,25 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     end: () => { savePosition(); dragging.current = false; wheeling.current = false; },
   });
 
+  /** "… 还有 N 行，点按展开" under a shortened tool output in record history. */
+  const expanderFor = (line: PositionedLine) => {
+    const expandable = browse?.expandable;
+    if (!expandable?.size) return undefined;
+    const id = expandable.get(allRows.length - 1 - line.rowFromBottom);
+    if (!id) return undefined;
+    let handler = expanders.current.get(id);
+    if (!handler) { handler = () => session.expandRecordItem(id); expanders.current.set(id, handler); }
+    return handler;
+  };
+
   const openTools = () => {
-    wasLiveBeforeTools.current = !session.getState().browse;
-    session.startBrowsing({ freezeApplication: true });
+    const current = session.getState();
+    wasLiveBeforeTools.current = !current.browse;
+    // A full-screen program's whole conversation is searchable from its record.
+    if (current.applicationScroll && current.applicationScroll.record !== false) {
+      session.startApplicationHistory();
+      void session.loadWholeRecord();
+    } else session.startBrowsing({ freezeApplication: true });
     setToolsOpen(true);
   };
   useImperativeHandle(ref, () => ({ openTools }));
@@ -398,7 +415,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       inverted
       data={lines}
       keyExtractor={keyForIndex}
-      renderItem={({ item }) => <TerminalLine line={item} style={lineStyle} size={size} onPress={onTap}
+      renderItem={({ item }) => <TerminalLine line={item} style={lineStyle} size={size} onPress={expanderFor(item) ?? onTap}
         cursor={cursor && item.rowFromBottom === cursor.rowFromBottom && item.segmentFromBottom === 0 ? cursor.column : undefined} />}
       extraData={cursor ? `${cursor.rowFromBottom}:${cursor.column}` : ''}
       getItemLayout={(_, index) => ({ length: lineHeight, offset: lineHeight * index, index })}

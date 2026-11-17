@@ -514,6 +514,9 @@ fn open_window(app: &tauri::AppHandle) -> tauri::Result<()> {
             save_window(&handle, state_path.as_deref())
         }
         tauri::WindowEvent::Destroyed => transport.disconnect(),
+        // Coming back to the app is when a waiting fix is most useful.
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::Focused(true) => updater::on_focus(handle.app_handle()),
         _ => {}
     });
     Ok(())

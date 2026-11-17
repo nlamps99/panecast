@@ -140,6 +140,8 @@ describe('TerminalSession subscription', () => {
     const session = new TerminalSession(channel, { readingForTarget: () => position });
     session.setTarget(target); await flush();
     channel.push(firstTick(rows.slice(-5)));
+    // Restoring first asks whether this is a full-screen program (whose place is in its record).
+    channel.calls.find((c) => c.method === 'terminal.replay')!.resolve({}); await flush();
     const call = channel.calls.find((c) => c.method === 'surface.history')!;
     expect(call).toBeDefined();
     call.resolve({ rows: rows.slice(0, -5), anchor_rows: rows.slice(-5), next_cursor: null });
@@ -151,6 +153,7 @@ describe('TerminalSession subscription', () => {
     const channel = new FakeChannel(), saveReading = jest.fn();
     const session = new TerminalSession(channel, { readingForTarget: () => ({ anchor: 'a'.repeat(64), rowFromBottom: 100, segmentFromBottom: 0, horizontalColumns: 0 }), saveReading });
     session.setTarget(target); await flush(); channel.push(firstTick(['latest']));
+    channel.calls.find((c) => c.method === 'terminal.replay')!.resolve({}); await flush();
     const call = channel.calls.find((c) => c.method === 'surface.history')!;
     session.resumeLive();
     call.resolve({ rows: ['old'], anchor_rows: ['latest'], next_cursor: null }); await flush();

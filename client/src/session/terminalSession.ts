@@ -5,7 +5,7 @@ import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
 import { agentItem } from './agentData';
-import { itemsOnScreen, recordRows, RECORD_WRITING_NOTICE } from './recordHistory';
+import { itemsOnScreen, recordLayout, RECORD_WRITING_NOTICE, seamOverlap } from './recordHistory';
 import type { AgentItem } from './sourceStore';
 import { mergeTerminalItems } from './terminalMerge';
 import type { SnapshotCache } from './snapshotCache';
@@ -45,6 +45,8 @@ export type Browse = {
   liveChanged: boolean;
   /** Expired/stalled cursors must be replaced, not retried verbatim. */
   restartRequired?: boolean;
+  /** Record history: `olderRows` indexes that show the rest of an item when tapped. */
+  expandable?: ReadonlyMap<number, string>;
 };
 
 export type SubscriptionState = 'none' | 'subscribing' | 'live' | 'error';
@@ -137,7 +139,7 @@ export class TerminalSession {
   private recordHead: RecordPage | null = null;
   private recordHeadTask: Promise<RecordPage | null> | null = null;
   /** The record being browsed: merged items, the newest ones the live screen already shows, the next older page. */
-  private record: { items: AgentItem[]; hidden: Set<string>; cursor: string | null; conversationId: string | null; generation: string; active: boolean; verified: boolean } | null = null;
+  private record: { items: AgentItem[]; hidden: Set<string>; cursor: string | null; conversationId: string | null; generation: string; active: boolean; verified: boolean; expanded: Set<string> } | null = null;
   /** An unsubscribe + subscribe is in flight (resync or a live-lines change). Only one at a time. */
   private replacing = false;
   private lastResyncAt = 0;
@@ -450,7 +452,6 @@ export class TerminalSession {
   }
 
   rememberReading(position: ReadingPosition): void {
-    if (this.state.browse?.kind === 'application') return;
     if (this.state.target && !this.state.restoringReading) this.options.saveReading?.(this.state.target, position);
   }
 
@@ -459,7 +460,11 @@ export class TerminalSession {
     if (!position || !target) return;
     this.restoringPosition = true;
     const token = ++this.readingTask;
-    this.startBrowsing();
+    // A full-screen program's place is in its session record, not the terminal's scrollback.
+    if (!this.scrollModeChecked) await this.inspectScrollMode();
+    if (this.disposed || token !== this.readingTask || !sameTarget(target, this.state.target)) return;
+    if (this.state.applicationScroll && this.state.applicationScroll.record !== false) this.startApplicationHistory();
+    else this.startBrowsing();
     let found: number | null = null;
     // Bound recovery work. The relay's history may have rotated since the last visit.
     for (let page = 0; page <= 24; page++) {
@@ -602,16 +607,66 @@ export class TerminalSession {
     if (!older || !this.record) {
       const shown = itemsOnScreen(page.items, browse.frozenRows);
       this.record = { items: page.items, hidden: new Set(page.items.slice(page.items.length - shown).map((item) => item.id)), cursor: page.cursor,
-        conversationId: page.conversationId, generation: page.generation, active: page.active, verified };
+        conversationId: page.conversationId, generation: page.generation, active: page.active, verified, expanded: this.record?.expanded ?? new Set() };
     } else {
       this.record = { ...this.record, items: mergeTerminalItems(this.record.items, page.items), cursor: page.cursor };
     }
-    const record = this.record;
+    this.layoutRecord({ loading: false, error: null });
+  }
+
+  /** Draws the record's rows above the frozen screen. */
+  private layoutRecord(patch: Partial<Browse> = {}): void {
+    const browse = this.state.browse, record = this.record;
+    if (!browse || browse.kind !== 'application' || !record) return;
     const columns = this.state.terminalColumns ?? this.state.applicationScroll?.columns ?? 100;
-    const rows = recordRows(record.items.filter((item) => !record.hidden.has(item.id)), columns);
+    const layout = recordLayout(record.items.filter((item) => !record.hidden.has(item.id)), columns, record.expanded);
+    // Where the screen's top edge cuts an item, both draw its last lines: show them once.
+    const rows = layout.rows.slice(0, layout.rows.length - seamOverlap(layout.rows, browse.frozenRows));
+    const expandable = new Map([...layout.expandable].filter(([index]) => index < rows.length));
     // The reply being written fills the screen; its start reaches the record when it is done.
     const writing = record.active && record.hidden.size === 0 ? [...(rows.length ? [''] : []), RECORD_WRITING_NOTICE] : [];
-    this.update({ browse: { ...browse, olderRows: [...rows, ...writing], cursor: record.cursor, started: true, loading: false, error: null, exhausted: record.verified && record.cursor === null } });
+    this.update({ browse: { ...browse, ...patch, olderRows: [...rows, ...writing], expandable, cursor: record.cursor, started: true,
+      exhausted: record.verified && record.cursor === null } });
+  }
+
+  /** Shows a shortened tool output or diff in full. */
+  expandRecordItem(id: string): void {
+    if (!this.record || this.record.expanded.has(id)) return;
+    this.record.expanded.add(id);
+    this.layoutRecord();
+  }
+
+  /**
+   * Reads every remaining page, for searching the whole conversation. Draws
+   * once at the end rather than after each page. Returns false if browsing
+   * ended or a read failed.
+   */
+  async loadWholeRecord(maxPages = 200): Promise<boolean> {
+    const target = this.state.target;
+    if (this.state.browse?.kind !== 'application' || !target) return false;
+    if (!this.record?.verified) await this.loadOlder();
+    const token = this.historyToken;
+    const browse = this.state.browse;
+    if (!browse || browse.kind !== 'application' || browse.error || !this.record) return false;
+    this.update({ browse: { ...browse, loading: true } });
+    try {
+      for (let pages = 0; this.record.cursor && pages < maxPages; pages++) {
+        const raw = asObject(await this.channel.call('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+          limit: RECORD_PAGE, cursor: this.record.cursor }, 15_000));
+        if (token !== this.historyToken || this.disposed || this.state.browse?.kind !== 'application' || !this.record) return false;
+        const page = parseRecordPage(raw);
+        if (raw.available !== true || page.conversationId !== this.record.conversationId) break;
+        this.record = { ...this.record, items: mergeTerminalItems(this.record.items, page.items), cursor: page.cursor };
+      }
+      this.layoutRecord({ loading: false });
+      return true;
+    } catch (error) {
+      if (token === this.historyToken && this.state.browse) {
+        this.layoutRecord({ loading: false });
+        this.update({ browse: { ...this.state.browse!, error: describeError(error) } });
+      }
+      return false;
+    }
   }
 
   private async loadRecordOlder(): Promise<void> {
@@ -700,8 +755,12 @@ export class TerminalSession {
       if (columns !== (this.state.terminalColumns ?? null)) this.update({ terminalColumns: columns });
       const size = applicationScrollSize(raw);
       if (size) {
-        if (!this.state.applicationScroll) this.resumeLive();
+        const first = !this.state.applicationScroll, reading = this.pendingReading;
+        // Screen-based browsing does not apply to a full-screen program.
+        if (first) this.resumeLive();
         this.update({ applicationScroll: { ...size, busy: this.scrollingApplication, error: this.state.applicationScroll?.error ?? null, record: this.state.applicationScroll?.record ?? null } });
+        // A place saved in its record history is found again there.
+        if (first && reading) { this.pendingReading = reading; this.update({ restoringReading: true }); void this.restoreReadingPosition(); }
       } else if (this.state.applicationScroll) {
         this.cancelApplicationScroll();
         this.update({ applicationScroll: null });
