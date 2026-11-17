@@ -7,9 +7,12 @@ import { WebSocket, WebSocketServer } from "ws";
 import { AccountStore } from "./accounts.mjs";
 import { CloudIdentity } from "./cloud-identity.mjs";
 import { accountRoute } from "./account-routes.mjs";
+import { GuestStore } from "./guests.mjs";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 export const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
+/** Relay feature: it confines guest sessions to their shared window. */
+export const GUEST_FEATURE = "guest-sessions";
 
 function sha256(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -333,6 +336,8 @@ export async function createBrokerServer(options) {
   await store.load();
   const accounts = new AccountStore(config.accountFile ?? resolve(dirname(config.dataFile), 'accounts.json'), { cloud: config.cloudIdentity ?? null });
   await accounts.load();
+  const guests = new GuestStore(config.guestFile ?? resolve(dirname(config.dataFile), "guests.json"));
+  await guests.load();
   const enrollment = {
     enabled: config.relayEnrollment !== false,
     reservedIds: new Set(relays.keys()),
@@ -354,11 +359,14 @@ export async function createBrokerServer(options) {
   const phoneSessions = new Map();
   const pushRequests = new Map();
   const pushLimiter = new SlidingWindowRateLimiter(12, 60_000);
+  const guestLimiter = new SlidingWindowRateLimiter(config.guestLimit ?? 60, 60_000);
 
   async function syncPushDevices(relayId) {
     await store.load();
+    await guests.load();
     const deviceIds = [...store.allDevices(relayId).map((d) => d.device_id), ...accounts.deviceIds(relayId)];
-    const allowed = new Set(deviceIds);
+    // Guests keep their sessions but never receive push notifications.
+    const allowed = new Set([...deviceIds, ...guests.list(relayId).map((guest) => guest.device_id)]);
     for (const [sessionId, session] of phoneSessions) {
       if (session.relayId === relayId && !allowed.has(session.deviceId)) {
         closePhoneSession(sessionId);
@@ -385,7 +393,43 @@ export async function createBrokerServer(options) {
   }
 
   const authenticatePhone = async (request, relayId) =>
-    relayAccess.has(relayId) ? (await store.authenticate(bearerToken(request), relayId)) ?? accounts.authenticateDevice(bearerToken(request), relayId) : null;
+    relayAccess.has(relayId)
+      ? (await store.authenticate(bearerToken(request), relayId)) ?? accounts.authenticateDevice(bearerToken(request), relayId) ?? await guests.authenticate(bearerToken(request), relayId)
+      : null;
+
+  /** A relay manages the guest credentials of its shared windows with its own relay token. */
+  async function guestRoute(request, response, url) {
+    if (url.pathname !== "/v1/relay/guests" && !url.pathname.startsWith("/v1/relay/guests/")) return false;
+    if (!guestLimiter.allow(remoteIP(request, config.trustProxy))) { sendJSON(response, 429, { error: "too_many_requests" }); return true; }
+    const relayId = url.searchParams.get("relay_id") ?? "";
+    const token = bearerToken(request);
+    if (!relayAccess.has(relayId) || !token || !relayAccess.token(relayId, token)) { sendJSON(response, 401, { error: "unauthorized" }); return true; }
+    const deviceId = url.pathname.slice("/v1/relay/guests/".length);
+    if (url.pathname === "/v1/relay/guests" && request.method === "GET") {
+      await guests.load();
+      sendJSON(response, 200, { guests: guests.list(relayId) });
+      return true;
+    }
+    if (url.pathname === "/v1/relay/guests" && request.method === "POST") {
+      const body = await readJSON(request);
+      if (!body || !requiredString(body.share_id, 128) || !/^[\w-]+$/.test(body.share_id) || !requiredString(body.name, 200)) {
+        sendJSON(response, 400, { error: "invalid_guest" });
+        return true;
+      }
+      const created = await guests.create({ relayId, shareId: body.share_id, name: body.name });
+      if (!created) { sendJSON(response, 409, { error: "too_many_guests" }); return true; }
+      sendJSON(response, 201, { device_id: created.deviceId, token: created.token });
+      return true;
+    }
+    if (deviceId && !deviceId.includes("/") && request.method === "DELETE") {
+      const removed = await guests.revoke(deviceId, relayId);
+      if (removed) await syncPushDevices(relayId);
+      if (removed) sendEmpty(response, 204); else sendJSON(response, 404, { error: "unknown_guest" });
+      return true;
+    }
+    sendJSON(response, 405, { error: "method_not_allowed" });
+    return true;
+  }
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -395,6 +439,7 @@ export async function createBrokerServer(options) {
         limit: () => accountTotalLimiter.allow('all') && accountLimiter.allow(remoteIP(request, config.trustProxy)),
         sync: () => Promise.all([...relayConnections.keys()].map(syncPushDevices)),
       })) return;
+      if (await guestRoute(request, response, url)) return;
       if (request.method === "GET" && url.pathname === "/v1/health") {
         const relayId = url.searchParams.has("relay_id") ? url.searchParams.get("relay_id") : defaultRelayId;
         if (url.searchParams.has("relay_id") && !await authenticatePhone(request, relayId)) {
@@ -410,6 +455,7 @@ export async function createBrokerServer(options) {
           accounts: true,
           shared_accounts: Boolean(accounts.cloud),
           relay_enrollment: enrollment.enabled,
+          window_sharing: true,
         });
         return;
       }
@@ -462,6 +508,7 @@ export async function createBrokerServer(options) {
           sendJSON(response, 401, { error: "unauthorized" });
           return;
         }
+        if (device.guest) { sendJSON(response, 403, { error: "guest_not_allowed" }); return; }
         if (!pushLimiter.allow(`${relayId}\0${device.device_id}`)) { sendJSON(response, 429, { error: "push_rate_limited" }); return; }
         const body = await readJSON(request);
         const testing = url.pathname.endsWith("/test");
@@ -480,7 +527,8 @@ export async function createBrokerServer(options) {
         const relayId = url.searchParams.get("relay_id") ?? defaultRelayId;
         const device = await authenticatePhone(request, relayId);
         if (!device) { sendJSON(response, 401, { error: "unauthorized" }); return; }
-        await store.revoke(device.device_id, relayId);
+        if (device.guest) await guests.revoke(device.device_id, relayId);
+        else await store.revoke(device.device_id, relayId);
         await syncPushDevices(relayId);
         sendEmpty(response, 204);
         return;
@@ -523,6 +571,7 @@ export async function createBrokerServer(options) {
   }
 
   function removeRelays(relayIds) {
+    void guests.removeRelays(relayIds).catch((error) => logger.error?.("guest cleanup failed", error));
     for (const relayId of relayIds) {
       const socket = relayConnections.get(relayId);
       if (!socket) continue;
@@ -624,6 +673,8 @@ export async function createBrokerServer(options) {
       type: "session.open",
       session_id: sessionId,
       device_id: context.device.device_id,
+      // A relay without window sharing ignores this; it never issued guests.
+      ...(context.device.guest ? { guest: { share_id: context.device.share_id } } : {}),
     });
     socket.on("message", (data, isBinary) => {
       if (!phoneSessions.has(sessionId)) return;
@@ -661,7 +712,11 @@ export async function createBrokerServer(options) {
         rejectUpgrade(socket, 401, "invalid relay credentials");
         return;
       }
+      // A relay lists what it supports; only one that enforces shared-window
+      // limits may receive guests, so a rolled-back relay never sees them.
+      const features = new Set((url.searchParams.get("features") ?? "").split(",").filter(Boolean));
       relayWSS.handleUpgrade(request, socket, head, (webSocket) => {
+        webSocket.features = features;
         relayWSS.emit("connection", webSocket, request, { relayId });
       });
       return;
@@ -674,6 +729,10 @@ export async function createBrokerServer(options) {
       }
       if (relayConnections.get(relayId)?.readyState !== WebSocket.OPEN) {
         rejectUpgrade(socket, 503, "Mac relay offline");
+        return;
+      }
+      if (device.guest && !relayConnections.get(relayId).features?.has(GUEST_FEATURE)) {
+        rejectUpgrade(socket, 503, "Mac relay does not support shared windows");
         return;
       }
       phoneWSS.handleUpgrade(request, socket, head, (webSocket) => {

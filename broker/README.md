@@ -317,6 +317,22 @@ docker compose exec broker npm run devices -- revoke <device-id>
 通知偏好随登记请求转发到对应 relay；broker 保留 relay 回复的 `preferences_applied` 等
 确认字段。每台电脑独立限制待处理推送请求，某台电脑超时不会占满另一台电脑的额度。
 
+### 分享窗口的访客密钥
+
+`panecast share` 生成的密钥是访客凭据（见 `relay-tmux/SHARE.md`）。网关用自己的 relay
+令牌管理它们：
+
+```
+POST   /v1/relay/guests?relay_id=…          {share_id, name} → 201 {device_id, token}
+GET    /v1/relay/guests?relay_id=…          列出（不含令牌）
+DELETE /v1/relay/guests/<device_id>?relay_id=…
+```
+
+- 访客记录存放在数据目录的 `guests.json`，只保存令牌哈希，不进 `devices.json`；回滚到旧版 broker 后访客直接失效。
+- 访客连接只转给连接时带 `features=guest-sessions` 的 relay，`session.open` 里带 `guest.share_id`。旧版 relay 收不到访客。
+- 访客不能注册推送，可以用 `DELETE /v1/devices/me` 删除自己。
+- 每台电脑最多 100 把访客密钥。
+
 ## 排查
 
 | 现象 | 检查 |
