@@ -90,6 +90,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const shortHistory = useRef(false);
   const requestedOffset = useRef<number | null>(null);
   const dragging = useRef(false);
+  const wheeling = useRef(false);
   const scrollRange = useRef(0);
   const historyRunway = useRef(0);
   const lastScrollSample = useRef({ at: 0, offset: 0 });
@@ -209,7 +210,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     if (toolsOpen || state.restoringReading) return;
     void session.inspectScrollMode();
     if (session.getState().applicationScroll) {
-      if (!readOnly) { session.startApplicationHistory(); ensureHistoryRunway(); }
+      if (!readOnly) { session.startApplicationHistory(); retryApplicationHistory(); ensureHistoryRunway(); }
       return;
     }
     if (!session.getState().browse) {
@@ -227,6 +228,12 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     }
   };
 
+  // "请再次滑动重试": a new gesture retries a failed program-history step.
+  const retryApplicationHistory = () => {
+    const current = session.getState().browse;
+    if (current?.kind === 'application' && current.error && !current.loading) void session.loadOlder({ retry: true });
+  };
+
   const ensureHistoryRunway = useCallback(() => {
     const current = session.getState();
     if (toolsOpen || !active || current.restoringReading || !current.browse
@@ -234,7 +241,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       || (current.applicationScroll && current.browse.kind !== 'application')) return;
     const range = Math.max(scrollRange.current, lines.length * lineHeight - viewportHeight);
     const distance = range - Math.max(0, lastFromBottom.current);
-    if (distance < Math.max(viewportHeight * 6, historyRunway.current)) void session.loadOlder();
+    if (distance < Math.max(viewportHeight * 6, historyRunway.current)) void session.loadOlder({ prefetch: distance > viewportHeight * 2 });
   }, [session, toolsOpen, active, readOnly, viewportHeight, lines.length, lineHeight]);
   useEffect(ensureHistoryRunway, [ensureHistoryRunway, rows, olderRows]);
 
@@ -320,6 +327,10 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       if (current.applicationScroll && readOnly) return;
       dragging.current = true;
       requestedOffset.current = null;
+      if (!wheeling.current) {
+        wheeling.current = true;
+        if (pixels > 0) retryApplicationHistory();
+      }
       if (pixels > 0 && !current.browse) {
         shortHistory.current = true;
         if (current.applicationScroll) session.startApplicationHistory();
@@ -335,7 +346,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       list.current?.scrollToOffset({ offset, animated: false });
       if (pixels < 0 && offset <= 2 && session.getState().browse) jumpToLive();
     },
-    end: () => { savePosition(); dragging.current = false; },
+    end: () => { savePosition(); dragging.current = false; wheeling.current = false; },
   });
 
   const openTools = () => {

@@ -6,6 +6,7 @@ import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
 import { applicationPageHasPayload, olderApplicationRows, sameApplicationViewport, type ApplicationHistoryPage } from './applicationHistory';
 import type { SnapshotCache } from './snapshotCache';
+import { plainTerminalRows } from '../terminal/textTools';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -92,6 +93,15 @@ const HISTORY_ALIGNMENT_TIMEOUT_MS = 10_000;
 const SCROLL_INTERVAL_MS = 32;
 const SCROLL_BATCH_LINES = 4;
 const SCROLL_IN_FLIGHT = 4;
+/**
+ * Program history steps. One step aims to reveal about half a screen, so the
+ * next screen still overlaps the last one; prefetch beyond the reader waits
+ * long enough between steps for the relay's color read (every 150 ms).
+ */
+const APPLICATION_STEP_SCREEN = 0.5;
+const APPLICATION_MAX_STEP = 8;
+const APPLICATION_PREFETCH_INTERVAL_MS = 170;
+const APPLICATION_STEP_TIMEOUT_MS = 1_500;
 
 /**
  * State for one terminal surface on top of a relay connection: keeps the
@@ -120,6 +130,13 @@ export class TerminalSession {
   private applicationAnchor: readonly string[] | null = null;
   private applicationTravel = 0;
   private applicationPage: { accept: (rows: readonly string[]) => void; cancel: () => void } | null = null;
+  /** Rows the program moved per wheel unit on the last step; sizes the next one. */
+  private applicationRowsPerUnit = 0;
+  private applicationStepAt = -Infinity;
+  /** Ends a prefetch pause early when the reader reaches the loaded edge. */
+  private applicationWake: (() => void) | null = null;
+  /** Colored rows from pushed frames, by text, for rows first read as plain text. */
+  private applicationColors = new Map<string, string>();
   /** An unsubscribe + subscribe is in flight (resync or a live-lines change). Only one at a time. */
   private replacing = false;
   private lastResyncAt = 0;
@@ -422,6 +439,7 @@ export class TerminalSession {
       while (this.screens.size > 24) this.screens.delete(this.screens.keys().next().value!);
     }
     this.applicationPage?.accept(screen.rows);
+    if (this.state.browse?.kind === 'application') this.colorApplicationHistory(screen.rows);
     const browse = this.state.browse;
     const rowsChanged = screen.rows !== this.state.screen.rows;
     if (browse && browse.kind !== 'application' && rowsChanged && !browse.liveChanged) {
@@ -516,13 +534,19 @@ export class TerminalSession {
     if (!this.state.applicationScroll || this.state.browse || !this.state.screen.rows.length) return;
     this.stopApplicationScroll(true);
     this.applicationAnchor = this.state.screen.rows;
+    this.applicationRowsPerUnit = 0;
+    this.applicationStepAt = -Infinity;
+    this.applicationColors.clear();
     this.update({ browse: { kind: 'application', frozenRows: this.state.screen.rows, olderRows: [],
       cursor: null, started: false, exhausted: false, loading: false, error: null, liveChanged: false } });
+    this.colorApplicationHistory(this.state.screen.rows);
   }
 
   private restoreApplicationViewport(): void {
     this.applicationPage?.cancel();
     this.applicationPage = null;
+    this.applicationWake?.();
+    this.applicationColors.clear();
     const travel = this.applicationTravel;
     this.applicationTravel = 0;
     this.applicationAnchor = null;
@@ -533,23 +557,60 @@ export class TerminalSession {
     }
   }
 
-  private async loadApplicationOlder(): Promise<void> {
+  /**
+   * History rows read straight from the screen are plain text. The relay's
+   * frames color rows a little later; give loaded rows those colors by text.
+   */
+  private colorApplicationHistory(rows: readonly string[]): void {
+    let added = false;
+    for (const row of rows) {
+      if (!row.includes('\u001b')) continue;
+      const plain = plainTerminalRows([row])[0];
+      if (!plain || this.applicationColors.get(plain) === row) continue;
+      this.applicationColors.delete(plain);
+      this.applicationColors.set(plain, row);
+      added = true;
+    }
+    while (this.applicationColors.size > 4_000) this.applicationColors.delete(this.applicationColors.keys().next().value!);
+    const browse = this.state.browse;
+    if (!added || browse?.kind !== 'application') return;
+    let changed = false;
+    const olderRows = browse.olderRows.map((row) => {
+      const colored = this.applicationColor(row);
+      if (colored !== row) changed = true;
+      return colored;
+    });
+    if (changed) this.update({ browse: { ...browse, olderRows } });
+  }
+
+  private applicationColor(row: string): string {
+    return row.includes('\u001b') ? row : this.applicationColors.get(row.trimEnd()) ?? row;
+  }
+
+  /** Wait out the prefetch interval; `applicationWake` ends it early. */
+  private applicationPause(): Promise<void> {
+    const wait = this.applicationStepAt + APPLICATION_PREFETCH_INTERVAL_MS - Date.now();
+    if (wait <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        if (this.applicationWake === done) this.applicationWake = null;
+        resolve();
+      };
+      const timer = setTimeout(done, wait);
+      this.applicationWake = done;
+    });
+  }
+
+  private async loadApplicationOlder(prefetch: boolean): Promise<void> {
     const target = this.state.target, browse = this.state.browse, size = this.state.applicationScroll;
-    const anchor = this.applicationAnchor;
-    if (!target || !size || !browse || browse.loading || browse.exhausted || browse.error || !anchor || !this.channel.isOpen) return;
+    if (!target || !size || !browse || browse.loading || browse.exhausted || browse.error || !this.applicationAnchor || !this.channel.isOpen) return;
     const token = ++this.historyToken;
     this.update({ browse: { ...browse, loading: true } });
+    let settled = false;
     let finish!: (page: ApplicationHistoryPage | null) => void;
-    let accepted = false;
-    const result = new Promise<ApplicationHistoryPage | null>((resolve) => { finish = resolve; });
-    const pending = this.applicationPage = {
-      accept: (rows) => {
-        if (accepted) return;
-        const page = olderApplicationRows(anchor, rows);
-        if (page && applicationPageHasPayload(anchor, page)) { accepted = true; this.applicationAnchor = rows; finish(page); }
-      },
-      cancel: () => finish(null),
-    };
+    const result = new Promise<ApplicationHistoryPage | null>((resolve) => { finish = (page) => { settled = true; resolve(page); }; });
+    let pending: { accept: (rows: readonly string[]) => void; cancel: () => void } | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const currentTarget = () => {
       if (token !== this.historyToken || this.disposed) throw new RpcCallError('history_cancelled', '已取消历史加载');
@@ -570,30 +631,71 @@ export class TerminalSession {
       if (typeof fresh.text !== 'string') throw new Error('无法读取程序的历史画面');
       return fresh.text.split('\n');
     };
+    const sameViewport = (anchor: readonly string[], rows: readonly string[]) => sameVisibleRows(anchor, rows) || sameApplicationViewport(anchor, rows);
     try {
-      // cmux and the program can each multiply wheel input. One request can
-      // already reveal many rows; scaling by grid height can skip a full screen.
-      const lines = 1;
-      await scroll(lines);
-      timer = setTimeout(() => finish(null), 1500);
+      if (prefetch) await this.applicationPause();
+      currentTarget();
+      const anchor = this.applicationAnchor;
+      if (!anchor) throw new RpcCallError('history_cancelled', '已取消历史加载');
+      let accepted = false;
+      pending = this.applicationPage = {
+        accept: (rows) => {
+          if (accepted || settled) return;
+          const page = olderApplicationRows(anchor, rows);
+          if (page && applicationPageHasPayload(anchor, page)) { accepted = true; this.applicationAnchor = rows; finish(page); }
+        },
+        cancel: () => finish(null),
+      };
+      // cmux and the program each multiply wheel input, so the first step is
+      // one unit; later steps use what that moved to reveal about half a screen.
+      const units = this.applicationRowsPerUnit > 0
+        ? Math.max(1, Math.min(APPLICATION_MAX_STEP, Math.floor(size.rows * APPLICATION_STEP_SCREEN / this.applicationRowsPerUnit))) : 1;
+      await scroll(units);
+      this.applicationStepAt = Date.now();
+      timer = setTimeout(() => finish(null), APPLICATION_STEP_TIMEOUT_MS);
+      // A pushed frame waits for the relay's next poll, up to 200 ms on a quiet
+      // screen; reading directly sees the program's redraw within tens of ms.
+      const accept = pending.accept;
+      void (async () => {
+        for (let wait = 12; !settled; wait = Math.min(Math.round(wait * 1.5), 100)) {
+          await delay(wait);
+          if (settled) return;
+          try { accept(await read()); } catch { return; }
+        }
+      })();
       let page = await result;
+      let retry = false;
       if (!page && token === this.historyToken) {
         const rows = await read();
         page = olderApplicationRows(anchor, rows);
         if (page) this.applicationAnchor = rows;
-        else if (!sameVisibleRows(anchor, rows) && !sameApplicationViewport(anchor, rows)) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
+        else if (!sameViewport(anchor, rows)) {
+          // A multi-unit step moved further than the last one measured. Step
+          // back; when the screen returns, the next step uses single units.
+          if (units > 1) {
+            await scroll(-units);
+            for (let attempt = 0; attempt < 20 && !retry; attempt++) { await delay(25); retry = sameViewport(anchor, await read()); }
+          }
+          if (!retry) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
+          this.applicationRowsPerUnit = 0;
+        }
+      }
+      if (page) {
+        const moved = page.rows.length - page.replacedRows;
+        if (moved > 0) this.applicationRowsPerUnit = moved / units;
       }
       const current = this.state.browse;
       if (token !== this.historyToken || !current || this.disposed) return;
       this.update({ browse: { ...current,
         frozenRows: page ? current.frozenRows.slice(Math.max(0, page.replacedRows - current.olderRows.length)) : current.frozenRows,
-        olderRows: page ? [...page.rows, ...current.olderRows.slice(page.replacedRows)] : current.olderRows,
-        started: true, loading: false, exhausted: page === null } });
+        olderRows: page ? [...page.rows.map((row) => this.applicationColor(row)), ...current.olderRows.slice(page.replacedRows)] : current.olderRows,
+        started: true, loading: false, exhausted: page === null && !retry } });
     } catch (error) {
       if (token === this.historyToken && this.state.browse) this.update({ browse: { ...this.state.browse, loading: false, error: describeError(error) } });
     } finally {
+      settled = true;
       if (timer !== null) clearTimeout(timer);
-      if (this.applicationPage === pending) this.applicationPage = null;
+      if (pending && this.applicationPage === pending) this.applicationPage = null;
     }
   }
 
@@ -724,11 +826,15 @@ export class TerminalSession {
     this.update({ browse: null, restoringReading: false, restoredReading: null, readingNotice: null });
   }
 
-  /** Loads the page above what is shown. No-op while loading, after the start of history, or after an error. */
-  async loadOlder(options: { retry?: boolean } = {}): Promise<void> {
+  /**
+   * Loads the page above what is shown. No-op while loading, after the start of history, or after an error.
+   * `prefetch`: the reader is still far from the loaded edge, so program history may pace its steps.
+   */
+  async loadOlder(options: { retry?: boolean; prefetch?: boolean } = {}): Promise<void> {
     if (this.state.browse?.kind === 'application') {
+      if (!options.prefetch) this.applicationWake?.();
       if (options.retry && this.state.browse.error) this.update({ browse: { ...this.state.browse, error: null } });
-      return this.loadApplicationOlder();
+      return this.loadApplicationOlder(options.prefetch === true);
     }
     const target = this.state.target;
     let browse = this.state.browse;

@@ -332,9 +332,32 @@ it.each([true, false])('appends application captures without replacing visible c
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
   expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(requestsBeforeReverse);
   expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
+  // The first unit moved 7 of 47 rows, so the next step asked for 3 units.
+  const sent = channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, p]) => Number(p?.delta_lines));
+  expect(sent.slice(0, 2)).toEqual([1, 3]);
   await act(async () => callback('terminal-application-newer', 'onPress', undefined));
   expect(session.getState().browse).toBeNull();
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(-2).map(([, p]) => p?.delta_lines)).toEqual([-requestsBeforeReverse, -3]);
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(-2).map(([, p]) => p?.delta_lines))
+    .toEqual([-sent.reduce((total, delta) => total + delta, 0), -3]);
+});
+
+it('retries a failed program-history step on the next wheel gesture, not on every event', async () => {
+  mockOS = 'web';
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : {});
+  await mount(applicationRows(1000));
+  await session.inspectScrollMode();
+  await wheel(-40);
+  expect(session.getState().browse?.kind).toBe('application');
+  const fail = () => (session as unknown as { update(patch: object): void }).update({ browse: { ...session.getState().browse!, loading: false, error: '程序画面变化' } });
+  const retry = jest.spyOn(session, 'loadOlder');
+  // The step fails while the same gesture continues: no retry yet.
+  await act(async () => fail());
+  await wheel(-40);
+  expect(retry.mock.calls.filter(([options]) => options?.retry)).toHaveLength(0);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+  await wheel(-40);
+  expect(retry.mock.calls.filter(([options]) => options?.retry)).toHaveLength(1);
+  retry.mockRestore();
 });
 
 it('drops application prefetch and restores its viewport when an explicit key is sent', async () => {
