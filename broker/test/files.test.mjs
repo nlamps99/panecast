@@ -154,3 +154,18 @@ test("file links need both the URL and the secret", async () => {
     assert.equal(configFromEnvironment({}).files, null);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("a forwarding server in front of the proxy does not hide the client", async () => {
+  const { remoteIP } = await import("../src/server.mjs");
+  const request = (forwarded) => ({ headers: { "x-forwarded-for": forwarded }, socket: { remoteAddress: "10.0.0.2" } });
+  const hops = new Set(["175.178.106.217"]);
+  assert.equal(remoteIP(request("203.0.113.9"), true, hops), "203.0.113.9");
+  assert.equal(remoteIP(request("203.0.113.9, 175.178.106.217"), true, hops), "203.0.113.9", "old address forwarding");
+  assert.equal(remoteIP(request("1.1.1.1, 203.0.113.9, 175.178.106.217"), true, hops), "203.0.113.9", "spoofed entries stay ignored");
+  assert.equal(remoteIP(request("175.178.106.217"), true, hops), "175.178.106.217");
+  assert.equal(remoteIP(request("1.1.1.1, 203.0.113.9"), true), "203.0.113.9");
+  assert.equal(remoteIP(request("203.0.113.9"), false), "10.0.0.2");
+  const config = configFromEnvironment({ CMUX_TRUST_PROXY: "1", CMUX_TRUSTED_PROXIES: " 175.178.106.217 ,", CMUX_PUBLIC_URL: "https://panecast.drinklake.com/cmux-remote" });
+  assert.deepEqual([...config.trustedHops], ["175.178.106.217"]);
+  assert.equal(config.publicURL, "https://panecast.drinklake.com/cmux-remote");
+});

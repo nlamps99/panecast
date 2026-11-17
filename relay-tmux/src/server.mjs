@@ -13,6 +13,7 @@ import { isNamedPipe, notifySocketPath } from './platform.mjs';
 import { saveUpload, UPLOAD_CHUNK_BYTES } from './upload.mjs';
 
 const MAX_MESSAGE = 32 * 1024 * 1024;
+export const HELLO_TIMEOUT_MS = 5000;
 const hash = (value) => createHash('sha256').update(String(value)).digest();
 const equal = (a, b) => timingSafeEqual(hash(a), hash(b));
 const clamp = (n, fallback, max) => Number.isInteger(n) ? Math.min(max, Math.max(1, n)) : fallback;
@@ -76,7 +77,10 @@ export class RelaySession {
   constructor(backend, config, send, close, notify) {
     this.backend = backend; this.config = config; this.send = send; this.close = close; this.notify = notify;
     this.hello = false; this.disposed = false; this.subscriptions = new Map(); this.history = new Map(); this.queue = Promise.resolve();
-    this.timer = setTimeout(() => { if (!this.hello) close(); }, 100);
+    // The client sends its hello as soon as the socket opens, but through the broker
+    // (and an old address forwarding to it) that is a full round trip after this
+    // session opened here; 100 ms dropped phones on slow networks.
+    this.timer = setTimeout(() => { if (!this.hello) close(); }, HELLO_TIMEOUT_MS);
   }
   dispose() { this.disposed = true; clearTimeout(this.timer); this.subscriptions.clear(); this.history.clear(); this.readWaiters = []; }
   /**

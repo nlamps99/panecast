@@ -229,20 +229,25 @@ class SlidingWindowRateLimiter {
   }
 }
 
-function remoteIP(request, trustProxy) {
+export function remoteIP(request, trustProxy, trustedHops = NO_HOPS) {
   if (trustProxy) {
     const forwarded = request.headers["x-forwarded-for"];
     if (typeof forwarded === "string" && forwarded.length > 0) {
       // X-Forwarded-For is a client-controlled, comma-separated chain. Only the
       // last entry is written by our trusted reverse proxy (e.g. nginx's
       // $proxy_add_x_forwarded_for appends the immediate peer); earlier entries
-      // can be spoofed to rotate the rate-limit key. Trust the last hop only.
+      // can be spoofed to rotate the rate-limit key. Trust the last hop only,
+      // except that a hop which is itself a known forwarding server (an old
+      // address that now forwards here) is skipped once for the entry before it.
       const hops = forwarded.split(",").map((value) => value.trim()).filter(Boolean);
-      if (hops.length > 0) return hops[hops.length - 1];
+      let index = hops.length - 1;
+      if (index > 0 && trustedHops.has(hops[index])) index -= 1;
+      if (index >= 0) return hops[index];
     }
   }
   return request.socket.remoteAddress ?? "unknown";
 }
+const NO_HOPS = new Set();
 
 export function configFromEnvironment(environment = process.env) {
   const config = {
@@ -253,6 +258,10 @@ export function configFromEnvironment(environment = process.env) {
     pairingCode: environment.CMUX_PAIRING_CODE ?? "",
     dataFile: resolve(environment.CMUX_BROKER_DATA_DIR ?? "./data", "devices.json"),
     trustProxy: environment.CMUX_TRUST_PROXY === "1",
+    // Servers that forward to this broker from an old address (comma-separated IPs).
+    trustedHops: new Set((environment.CMUX_TRUSTED_PROXIES ?? "").split(",").map((value) => value.trim()).filter(Boolean)),
+    // The address clients should use from now on; reported by /v1/health.
+    publicURL: environment.CMUX_PUBLIC_URL || undefined,
     relayEnrollment: environment.CMUX_RELAY_ENROLLMENT !== "0",
     // Accounts shared with cmux cloud (CMUX_ACCOUNT_*); unset keeps local passwords.
     cloudIdentity: CloudIdentity.fromEnvironment(environment),
@@ -404,7 +413,7 @@ export async function createBrokerServer(options) {
   /** A relay manages the guest credentials of its shared windows with its own relay token. */
   async function guestRoute(request, response, url) {
     if (url.pathname !== "/v1/relay/guests" && !url.pathname.startsWith("/v1/relay/guests/")) return false;
-    if (!guestLimiter.allow(remoteIP(request, config.trustProxy))) { sendJSON(response, 429, { error: "too_many_requests" }); return true; }
+    if (!guestLimiter.allow(remoteIP(request, config.trustProxy, config.trustedHops))) { sendJSON(response, 429, { error: "too_many_requests" }); return true; }
     const relayId = url.searchParams.get("relay_id") ?? "";
     const token = bearerToken(request);
     if (!relayAccess.has(relayId) || !token || !relayAccess.token(relayId, token)) { sendJSON(response, 401, { error: "unauthorized" }); return true; }
@@ -461,7 +470,7 @@ export async function createBrokerServer(options) {
       const url = new URL(request.url ?? "/", "http://localhost");
       if (await accountRoute(request, response, url, {
         accounts, relayAccess, relayConnections, store, readJSON, sendJSON, sendEmpty, bearerToken, enrollment, removeRelays,
-        limit: () => accountTotalLimiter.allow('all') && accountLimiter.allow(remoteIP(request, config.trustProxy)),
+        limit: () => accountTotalLimiter.allow('all') && accountLimiter.allow(remoteIP(request, config.trustProxy, config.trustedHops)),
         sync: () => Promise.all([...relayConnections.keys()].map(syncPushDevices)),
       })) return;
       if (await guestRoute(request, response, url)) return;
@@ -483,12 +492,13 @@ export async function createBrokerServer(options) {
           relay_enrollment: enrollment.enabled,
           window_sharing: true,
           file_links: Boolean(config.files),
+          ...(config.publicURL ? { server_url: config.publicURL } : {}),
         });
         return;
       }
 
       if (request.method === "POST" && url.pathname === "/v1/devices/me/register") {
-        const ip = remoteIP(request, config.trustProxy);
+        const ip = remoteIP(request, config.trustProxy, config.trustedHops);
         if (!totalPairingLimiter.allow(ip)) {
           sendJSON(response, 429, { error: "too_many_pairing_attempts" });
           return;
