@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, appendFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, appendFile, rm, symlink, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { parseConversation, TerminalConversationReader, localConversationSource } from '../src/hub/terminal-conversation.mjs';
@@ -87,6 +87,20 @@ test('reader pages an exact bound file, ignores partial appends and keeps active
   assert.equal((await fx.reader.read(fx.binding)).items.at(-1).text, 'new reply');
   const token = JSON.parse(Buffer.from(page.next_cursor, 'base64url').toString()); token.id = other;
   await assert.rejects(fx.reader.read(fx.binding, { cursor: Buffer.from(JSON.stringify(token)).toString('base64url') }), { code: 'cursor_expired' });
+});
+
+test('reader keeps older pages until the file is replaced', async t => {
+  const fx = await fixture(t, 'codex', [{ type: 'session_meta', payload: { id } }, ...Array.from({ length: 60 }, (_, i) => completed(agent(`answer ${i}`), `t${i}`))]);
+  const head = await fx.reader.read(fx.binding, { limit: 20 });
+  const older = await fx.reader.read(fx.binding, { cursor: head.next_cursor, limit: 20 });
+  // Appending does not change an older page, so it is answered from memory:
+  // blanking those records in place (same file identity) does not show.
+  await appendFile(fx.file, JSON.stringify(completed(agent('later'), 'later')) + '\n');
+  const handle = await open(fx.file, 'r+'); await handle.write(' '.repeat(2000), 200); await handle.close();
+  assert.deepEqual(await fx.reader.read(fx.binding, { cursor: head.next_cursor, limit: 20 }), older);
+  // A replaced file has a new identity, so its old cursors expire instead of hitting the cache.
+  await rm(fx.file); await writeFile(fx.file, jsonl([{ type: 'session_meta', payload: { id } }, completed(agent('fresh'), 'f')]));
+  await assert.rejects(fx.reader.read(fx.binding, { cursor: head.next_cursor, limit: 20 }), { code: 'cursor_expired' });
 });
 
 test('Claude pagination preserves ancestors and detects a rewind without changing the file identity', async t => {

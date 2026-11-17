@@ -7,6 +7,10 @@ import { RpcError } from '../tmux.mjs';
 import { conversationUserText, visibleUserText } from './conversation-visibility.mjs';
 
 const WINDOW = 4 * 1024 * 1024;
+/** Newest pages kept per reader: one per open terminal is the common case. */
+const HEADS_CACHED = 64;
+/** Older pages kept: scrolling back and forth or searching reads them again. */
+const PAGES_CACHED = 64;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const clipped = (value, limit = 16000) => typeof value === 'string' ? value.slice(0, limit) : '';
 const blocks = value => Array.isArray(value) ? value : typeof value === 'string' ? [{ type: 'text', text: value }] : [];
@@ -133,7 +137,7 @@ export function parseConversation(records, provider, sessionId, options = {}) {
 }
 
 export class TerminalConversationReader {
-  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.files = new Map(); this.heads = new Map(); }
+  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.files = new Map(); this.heads = new Map(); this.pages = new Map(); }
   async find(provider, id) {
     const key = `${provider}:${id}`, cached = this.files.get(key);
     if (cached) { try { if ((await lstat(cached.path)).isFile() && (await realpath(cached.path)).startsWith(cached.root + sep)) return cached.path; } catch {} this.files.delete(key); }
@@ -179,6 +183,10 @@ export class TerminalConversationReader {
       };
       const cached = this.heads.get(cacheKey);
       if (!params.cursor && cached?.fileRevision === fileRevision) return reply(cached);
+      // Records are only appended, and a cursor names the file it came from:
+      // an older page reads the same until the file is replaced.
+      const pageKey = params.cursor ? `${cacheKey}:${params.cursor}` : null, page = pageKey && this.pages.get(pageKey);
+      if (page && page.epoch === epoch) { this.pages.delete(pageKey); this.pages.set(pageKey, page); return page.value; }
       // Validate the file's own identity, not just its filename.
       let first = Buffer.alloc(Math.min(info.size, 65536)); await handle.read(first, 0, first.length, 0);
       if (first.indexOf(10) < 0 && first.length < info.size) { first = Buffer.alloc(Math.min(info.size, 2 * 1024 * 1024)); await handle.read(first, 0, first.length, 0); }
@@ -224,7 +232,10 @@ export class TerminalConversationReader {
       const entry = { fileRevision, value, start: records[0]?.offset ?? start, ancestors: new Set(parsed.branch.map(record => record.uuid)) };
       if (!params.cursor) {
         this.heads.delete(cacheKey); this.heads.set(cacheKey, entry);
-        while (this.heads.size > 8) this.heads.delete(this.heads.keys().next().value);
+        while (this.heads.size > HEADS_CACHED) this.heads.delete(this.heads.keys().next().value);
+      } else {
+        this.pages.set(pageKey, { epoch, value });
+        while (this.pages.size > PAGES_CACHED) this.pages.delete(this.pages.keys().next().value);
       }
       return reply(entry);
     } finally { await handle.close(); }

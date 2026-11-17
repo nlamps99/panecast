@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -8,6 +8,9 @@ import { writeJSON } from '../push.mjs';
 import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { localConversationSource } from './terminal-conversation.mjs';
+import { sharesDirectory, sharesFile } from './share-binding.mjs';
+
+export { sharesDirectory, sharesFile };
 
 const exec = promisify(execFile);
 const KEY_PREFIX = 'pcs1.';
@@ -24,8 +27,6 @@ export const OPEN_NETWORK_DOMAINS = ['github.com', '*.github.com', '*.githubuser
 /** Services on this computer stay out of reach even when a guest approves a host. */
 export const LOOPBACK_DOMAINS = ['localhost', '127.0.0.1', '[::1]', '0.0.0.0'];
 
-export const sharesDirectory = (config) => join(config.state_directory ?? join(homedir(), '.cmuxremote', 'hub'), 'shares');
-export const sharesFile = (config) => join(sharesDirectory(config), 'shares.json');
 
 /** The one string a guest pastes: where the window's computer is and the guest's own credential. */
 export function encodeShareKey({ serverUrl, relayId, deviceId, token, name }) {
@@ -166,8 +167,9 @@ const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
  * `full`: the owner's own Claude with every tool, command and setting, no sandbox and no permission prompts.
  * `web`: the confined Claude may also fetch web pages without asking (WebFetch never reaches private addresses).
  */
-export function shareCommand(binary, settingsPath, { full = false, web = false } = {}) {
-  const start = ['exec', '/usr/bin/env', '-u', 'CLAUDECODE', '-u', 'CLAUDE_CODE_ENTRYPOINT', quote(binary)];
+export function shareCommand(binary, settingsPath, { full = false, web = false, sessionId = null } = {}) {
+  // A known session id lets the gateway read the window's history from its record (share-binding.mjs).
+  const start = ['exec', '/usr/bin/env', '-u', 'CLAUDECODE', '-u', 'CLAUDE_CODE_ENTRYPOINT', quote(binary), ...(sessionId ? ['--session-id', quote(sessionId)] : [])];
   if (full) return [...start, '--dangerously-skip-permissions'].join(' ');
   return [...start,
     '--restricted', '--disable-slash-commands', '--strict-mcp-config',
@@ -209,14 +211,14 @@ async function claudeBinary() {
 }
 
 /** Opens a visible cmux workspace in the directory and starts the shared Claude in it. */
-export async function openShareWindow(config, { name, directory, settingsPath, sourceId, full = false, web = false }) {
+export async function openShareWindow(config, { name, directory, settingsPath, sourceId, full = false, web = false, sessionId = null }) {
   const registry = new SourceRegistry(config.sources ?? []);
   const session = new HubSession(registry, config, () => {}, () => {}, () => {});
   try {
     const source = sourceId ? registry.get(sourceId) : [...registry.sources.values()].find((s) => s.config.type === 'cmux' && localConversationSource(s.config.url));
     if (!source || source.config.type !== 'cmux' || !localConversationSource(source.config.url)) throw new Error('需要本机的 cmux 来源，请先打开 cmux 并运行 panecast restart');
     const client = session.client(source.config.id);
-    const command = shareCommand(await claudeBinary(), settingsPath, { full, web });
+    const command = shareCommand(await claudeBinary(), settingsPath, { full, web, sessionId });
     const created = await client.call('workspace.create', { title: `${full ? '完整权限分享' : '分享'} · ${name}`, cwd: directory, initial_command: command, focus: false });
     const workspaceId = created.workspace_id ?? created.workspace?.id;
     if (!workspaceId) throw new Error('cmux 没有返回新工作区');
@@ -270,8 +272,9 @@ export async function shareCLI(args, configPath) {
     const id = newId();
     const settingsPath = join(sharesDirectory(config), id, 'claude-settings.json');
     if (!full) await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)), openNetwork: web }));
-    const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web });
-    const share = { id, name, directory, source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId,
+    const sessionId = randomUUID();
+    const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web, sessionId });
+    const share = { id, name, directory, source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId,
       created_at: new Date().toISOString(), revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), ...(web ? { network: 'open' } : {}), guests: [] };
     shares.push(share);
     await store.write(shares);
@@ -296,9 +299,11 @@ export async function shareCLI(args, configPath) {
     const full = share.full === true;
     const settingsPath = join(sharesDirectory(config), share.id, 'claude-settings.json');
     if (!full) await writeJSON(settingsPath, withPromptHook(JSON.parse(await readFile(settingsPath, 'utf8'))));
-    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open' });
+    // A fresh conversation, as before; its new session id replaces the old one.
+    const sessionId = randomUUID();
+    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open', sessionId });
     const previous = { sourceId: share.source_id, workspaceId: share.workspace_id };
-    Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, prompt_hook: !full });
+    Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId, prompt_hook: !full });
     await store.write(shares);
     const closed = await closeShareWindow(config, previous).then(() => true, () => false);
     console.log(`已为「${share.name}」打开新窗口，访客的密钥不变，连接后就是新窗口。${closed ? '旧窗口已关闭。' : '旧窗口没能关闭，可以在 cmux 里自己关掉。'}`);

@@ -16,6 +16,7 @@ import { HubSession } from '../src/hub/session.mjs';
 const batchedInput = typeof relayServer.inputItems === 'function';
 const conversationBatch = typeof HubSession.prototype.conversationBatch === 'function';
 import { guestText, guestKey, guestPaste } from '../src/hub/guest-session.mjs';
+import { shareConversationBinding } from '../src/hub/share-binding.mjs';
 import { decodeShareKey, encodeShareKey, PROMPT_HOOK, shareCommand, shareDirectory, shareSettings, ShareStore, BrokerGuests, validName, withPromptHook } from '../src/hub/share.mjs';
 import { spawn } from 'node:child_process';
 
@@ -422,4 +423,24 @@ test('a guest uploads a file of any size in chunks kept outside the shared direc
     await assert.rejects(relay.call('g', 'file.upload', { ...own, ...bad, data_base64: 'aGk=', done: true }), { code: 'invalid_params' }, JSON.stringify(bad));
   }
   await assert.rejects(relay.call('g', 'file.upload', { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0'), upload_id: 'up-abcdef123456', offset: 0, data_base64: 'aGk=' }), { code: 'forbidden' });
+});
+
+test('shared windows start Claude with a known session id that the gateway can find', async (t) => {
+  const sessionId = '0f750287-1d0a-4d17-8173-f68c540634af';
+  for (const options of [{}, { full: true }, { web: true }]) {
+    assert.match(shareCommand('/bin/claude', '/s.json', { ...options, sessionId }), new RegExp(`/bin/claude'? --session-id '?${sessionId}`));
+  }
+  assert.ok(!shareCommand('/bin/claude', '/s.json').includes('--session-id'));
+  const state = await mkdtemp(join(tmpdir(), 'panecast-share-binding-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const config = { state_directory: state };
+  assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's1'), null);
+  await mkdir(join(state, 'shares'), { recursive: true });
+  const share = { id: 's1', source_id: 'cmux', workspace_id: 'w1', surface_id: 's1', session_id: sessionId, revoked_at: null };
+  await writeFile(join(state, 'shares', 'shares.json'), JSON.stringify({ version: 1, shares: [share, { ...share, id: 's2', surface_id: 's2', session_id: 'not-a-uuid' }] }));
+  assert.deepEqual(await shareConversationBinding(config, 'cmux', 'w1', 's1'), { kind: 'claude', checkpoint_id: sessionId });
+  assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's2'), null);
+  assert.equal(await shareConversationBinding(config, 'other', 'w1', 's1'), null);
+  await writeFile(join(state, 'shares', 'shares.json'), JSON.stringify({ version: 1, shares: [{ ...share, revoked_at: '2026-11-17T00:00:00Z' }] }));
+  assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's1'), null);
 });

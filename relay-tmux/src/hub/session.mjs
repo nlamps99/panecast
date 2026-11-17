@@ -5,6 +5,7 @@ import { scopeResult, scoped, targetParams } from './ids.mjs';
 import { realpath } from 'node:fs/promises';
 import { TERMINAL_TYPES, terminalBackend } from './registry.mjs';
 import { TerminalConversationReader, localConversationSource } from './terminal-conversation.mjs';
+import { shareConversationBinding } from './share-binding.mjs';
 
 const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
 const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'terminal.paste', 'notification.create']);
@@ -175,8 +176,11 @@ export class HubSession extends RelaySession {
         throw error;
       }
       source.conversationReader ??= new TerminalConversationReader({ codexHome: source.config.codex_home, claudeHome: source.config.claude_home });
+      // A shared window's Claude was started with a known session id instead of cmux's binding.
+      let binding = info?.resume_binding;
+      if (!['codex', 'claude'].includes(binding?.kind)) binding = await shareConversationBinding(this.config, id, params.workspace_id, params.surface_id) ?? binding;
       try {
-        const result = await source.conversationReader.read(info.resume_binding, params);
+        const result = await source.conversationReader.read(binding, params);
         if (result.available && source.config.access === 'control') {
           source.pasteCapability ??= this.client(id).call('system.capabilities', {}).then(r => (r.methods ?? []).includes('terminal.paste')).catch(() => false);
           if (await source.pasteCapability) result.input_method = 'terminal.paste';
