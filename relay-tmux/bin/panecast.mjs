@@ -32,6 +32,7 @@ async function main() {
   panecast supervisor status | pause | resume
   panecast share create 名称 [--dir 目录]  在 cmux 新开一个受限的 Claude 窗口，并生成给别人的分享密钥
   panecast share key 分享 [--guest 名字]   给同一个窗口再发一把密钥
+  panecast share reopen 分享               重新打开分享窗口（旧窗口打开后才能用退格等编辑键）
   panecast share list | revoke 分享 [--guest 名字或序号]
 
 cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；

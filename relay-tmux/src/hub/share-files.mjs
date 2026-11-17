@@ -1,5 +1,6 @@
-import { constants } from 'node:fs';
-import { lstat, open, readdir, realpath, stat } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import { createHash } from 'node:crypto';
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path';
 
@@ -178,8 +179,12 @@ export function uploadName(value) {
   return (base || '附件').slice(-120);
 }
 
-/** Saves a guest's upload directly in the shared directory, never replacing a file. */
-export async function saveUpload(root, filename, data) {
+/**
+ * Claims a new name in the shared directory, numbered past existing ones, and
+ * opens it for writing. The directory itself is not a subfolder Claude could
+ * swap; O_EXCL refuses an existing name or link.
+ */
+async function reserve(root, filename) {
   const base = await realpath(root).catch(() => { throw new RpcError('not_found', '分享目录不存在'); });
   const name = uploadName(filename);
   const extension = extname(name);
@@ -187,12 +192,75 @@ export async function saveUpload(root, filename, data) {
   for (let n = 1; n <= 99; n++) {
     const candidate = n === 1 ? name : `${stem} (${n})${extension}`;
     const path = join(base, candidate);
-    let handle;
-    // The directory itself is not a subfolder Claude could swap; O_EXCL refuses an existing name or link.
-    try { handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644); }
+    try { return { path, filename: candidate, handle: await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644) }; }
     catch (error) { if (error.code === 'EEXIST' || error.code === 'ELOOP') continue; throw new RpcError('upload_failed', '文件没能保存到分享目录'); }
-    try { await handle.writeFile(data); } finally { await handle.close(); }
-    return { path, filename: candidate };
   }
   throw new RpcError('upload_failed', '分享目录里同名文件太多，请改个文件名');
+}
+
+/** Saves a guest's upload directly in the shared directory, never replacing a file. */
+export async function saveUpload(root, filename, data) {
+  const { path, filename: name, handle } = await reserve(root, filename);
+  try { await handle.writeFile(data); } finally { await handle.close(); }
+  return { path, filename: name };
+}
+
+const UPLOAD_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+/** One chunk's base64, well under the 32 MiB frame. */
+const MAX_CHUNK_BASE64 = 24 * 1024 * 1024;
+/** Part files nobody finished: removed when a later upload starts. */
+const STALE_PART_MS = 24 * 3600 * 1000;
+
+/**
+ * One chunk of a guest's upload of any size (`upload_id`, `offset`, `done`,
+ * as in `src/upload.mjs`). Chunks collect in `parts`, the gateway's own
+ * folder for the share, so Claude never sees or swaps a half-written file;
+ * the last chunk moves the file into the shared directory under a new name.
+ * Returns `{upload_id, received}` until then, `{path, filename, size}` after.
+ */
+export async function saveUploadChunk(parts, root, p) {
+  if (typeof p.upload_id !== 'string' || !UPLOAD_ID.test(p.upload_id) || !Number.isSafeInteger(p.offset) || p.offset < 0) throw new RpcError('invalid_params', '上传参数无效');
+  if (typeof p.data_base64 !== 'string' || p.data_base64.length > MAX_CHUNK_BASE64 || !BASE64.test(p.data_base64)) throw new RpcError('upload_failed', '文件数据无效');
+  const data = Buffer.from(p.data_base64, 'base64');
+  await mkdir(parts, { recursive: true, mode: 0o700 });
+  const part = join(parts, `${p.upload_id}.part`);
+  if (p.offset === 0) await sweepParts(parts);
+  else {
+    const size = await stat(part).then((info) => info.size, () => null);
+    if (size === null) throw new RpcError('upload_failed', '上传已中断，请重新上传');
+    if (size !== p.offset) {
+      const error = new RpcError('upload_failed', '上传进度不一致，请重新上传');
+      error.data = { received: size };
+      throw error;
+    }
+  }
+  const writer = await open(part, p.offset === 0 ? 'w' : 'a', 0o600);
+  try { await writer.write(data); } finally { await writer.close(); }
+  const received = p.offset + data.length;
+  if (p.done !== true) return { upload_id: p.upload_id, received };
+  // The mode is set while the file is still in the gateway's folder: a chmod
+  // of the shared path could follow a link Claude put there.
+  await chmod(part, 0o644);
+  const { path, filename, handle } = await reserve(root, p.filename);
+  try {
+    // A rename replaces the claimed name, never a link's target.
+    try { await rename(part, path); }
+    catch (error) {
+      if (error.code !== 'EXDEV') throw new RpcError('upload_failed', '文件没能保存到分享目录');
+      // The shared directory is on another disk: copy into the claimed file.
+      await pipeline(createReadStream(part), handle.createWriteStream({ autoClose: false }));
+      await unlink(part).catch(() => {});
+    }
+  } finally { await handle.close(); }
+  return { path, filename, size: received };
+}
+
+async function sweepParts(parts) {
+  const now = Date.now();
+  for (const entry of await readdir(parts).catch(() => [])) {
+    const path = join(parts, entry);
+    const info = await stat(path).catch(() => null);
+    if (info && now - info.mtimeMs > STALE_PART_MS) await unlink(path).catch(() => {});
+  }
 }

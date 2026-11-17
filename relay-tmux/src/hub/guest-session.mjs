@@ -1,57 +1,99 @@
+import { join } from 'node:path';
 import { RpcError } from '../tmux.mjs';
 // A namespace import: gateways older than batched input have no inputItems.
 import * as relayServer from '../server.mjs';
+import { UPLOAD_CHUNK_BYTES } from '../upload.mjs';
 import { HubSession } from './session.mjs';
 import { scoped, scopeResult } from './ids.mjs';
-import { listShareFiles, MAX_UPLOAD_BYTES, mimeFor, saveUpload } from './share-files.mjs';
+import { sharesDirectory } from './share.mjs';
+import { listShareFiles, MAX_UPLOAD_BYTES, mimeFor, saveUpload, saveUploadChunk } from './share-files.mjs';
 
-/**
- * Keys a guest may send: enough to answer Claude's menus and interrupt it.
- * Nothing deletes text, so a guest cannot turn typed text into a prompt that
- * starts with a command character; Tab is left out because it can accept text
- * Claude suggests.
- */
-export const GUEST_KEYS = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'pgup', 'pgdn', 'ctrl-c']);
 /** Methods a guest may call, always for the shared terminal only. */
 const TARGETED = new Set(['surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text',
   'terminal.replay', 'terminal.scroll', 'terminal.conversation', 'surface.focus', 'surface.send_text', 'surface.send_key', 'surface.input', 'terminal.paste']);
-// C0 and C1 controls except tab. A newline or escape sequence typed into the
-// terminal could submit, or end a paste, outside the hub's checks.
-const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
-// A paste keeps newlines literal; an escape could still end it early.
-const PASTE_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
-// A prompt that starts with ! runs a shell command outside Claude's sandbox.
-// The ! is refused anywhere, not only first: an open menu can swallow the
-// characters before it and leave it at the start of the prompt.
-const SHELL = /!/;
-// The window starts Claude with slash commands disabled; refusing a leading /
-// as well keeps a window started some other way from taking commands.
-const COMMAND = /^\s*\//;
-
+/*
+ * A guest types and edits freely: every key and slash is allowed except the
+ * few below. What stays out is what reaches past the window, checked on
+ * Claude Code 2.1.326:
+ * - A half-width ! typed into an empty prompt, or a paste that starts with
+ *   one, switches Claude to shell mode, which runs commands OUTSIDE its
+ *   sandbox. Typed text cannot know whether the prompt is empty (an open menu
+ *   takes the characters before it, and the digit 1 picks an option), so a
+ *   typed ! becomes a full-width ！. A paste arrives whole: only a leading !
+ *   is changed. Text edited into starting with ! stays an ordinary prompt.
+ * - Slash commands are off in the window's Claude (--disable-slash-commands),
+ *   so a leading / is plain text.
+ */
+// C0 and C1 controls except tab, newline and return: an escape could encode
+// any key (Ctrl-G as a CSI u sequence) or end a paste early.
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/;
+const BANG = /!/g;
+/**
+ * Keys that act outside the shared window, whatever other modifiers come with
+ * them. Ctrl-Y (and Alt-Y) puts deleted text back as if typed: a deleted
+ * `!ls` yanked into an empty prompt starts shell mode.
+ */
+const CTRL_REFUSED = {
+  g: 'Ctrl-G 会在沙箱外用编辑器打开输入框',
+  v: 'Ctrl-V 会读取这台电脑的剪贴板',
+  z: 'Ctrl-Z 会挂起 Claude，窗口会卡住',
+  r: 'Ctrl-R 会搜索这台电脑上所有项目的输入历史',
+  y: 'Ctrl-Y 会把删掉的文字当作输入放回，可能进入 shell 模式',
+};
+const ALT_REFUSED = { y: CTRL_REFUSED.y };
+/*
+ * Deleting is safe only where the window's Claude refuses a prompt that
+ * starts with ! (PROMPT_HOOK in share.mjs): otherwise a guest could edit a
+ * prompt into `!ls`, send it as text and recall it from history in shell
+ * mode. Windows opened before the hook keep the keys that cannot delete.
+ */
+const KEEPS_TEXT = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'home', 'end', 'pgup', 'pgdn', 'tab', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12']);
+const KEEPS_TEXT_CTRL = new Set(['c', 'a', 'e', 'b', 'f', 'p', 'n', 'l', 'o', 't', 's', 'x']);
+const MODIFIER = /^(ctrl|control|alt|option|opt|shift|cmd|command|meta|super)-(?=.)/;
+const SYSTEM_MODIFIERS = new Set(['cmd', 'command', 'meta', 'super']);
 const forbidden = () => new RpcError('forbidden', '分享窗口只能操作被分享的这一个终端');
 
-/** Checks what a guest types into the shared Claude. */
+/** What a guest types: any text without control characters; a ! is typed as ！ (see above). */
 export function guestText(text) {
   if (typeof text !== 'string' || text.length === 0 || text.length > 32_000) throw new RpcError('invalid_params', '请输入要发送的文字');
-  if (CONTROL.test(text)) throw new RpcError('guest_input', '分享窗口一次只能发送一行文字，不能包含换行或控制字符');
-  if (SHELL.test(text)) throw new RpcError('guest_shell', '分享窗口不能输入半角感叹号 !，可以改用全角 ！');
-  if (COMMAND.test(text)) throw new RpcError('guest_command', '分享窗口不能使用 / 开头的命令，请换一种说法');
-  return text;
+  if (CONTROL.test(text)) throw new RpcError('guest_input', '消息里不能包含控制字符');
+  return text.replace(BANG, '！');
 }
 
-/** A pasted message: lines stay in one prompt, so newlines are allowed; the rest is checked like typed text. */
+/** A pasted message, kept as it is except a leading ! (see above). */
 export function guestPaste(text) {
   if (typeof text !== 'string' || !text.trim() || text.length > 32_000) throw new RpcError('invalid_params', '请输入要发送的文字');
-  if (PASTE_CONTROL.test(text)) throw new RpcError('guest_input', '消息里不能包含控制字符');
-  if (SHELL.test(text)) throw new RpcError('guest_shell', '分享窗口不能输入半角感叹号 !，可以改用全角 ！');
-  if (COMMAND.test(text)) throw new RpcError('guest_command', '分享窗口不能使用 / 开头的命令，请换一种说法');
-  return text;
+  if (CONTROL.test(text)) throw new RpcError('guest_input', '消息里不能包含控制字符');
+  return text.replace(/^(\s*)!/, '$1！');
 }
 
-export function guestKey(key) {
-  if (typeof key !== 'string' || !GUEST_KEYS.has(key)) throw new RpcError('guest_key', '分享窗口只支持回车、Esc、方向键、翻页和 Ctrl-C');
+/**
+ * Any key except a !, ⌘ shortcuts (they belong to the terminal app on this
+ * computer) and the Ctrl keys above. `editing` is false for a window opened
+ * before the prompt hook: only keys that keep the typed text then.
+ */
+export function guestKey(key, { editing = true } = {}) {
+  if (typeof key !== 'string' || !key || key.length > 64 || CONTROL.test(key)) throw new RpcError('guest_key', '无效按键');
+  const modifiers = new Set();
+  let rest = key.toLowerCase();
+  for (let match = MODIFIER.exec(rest); match; match = MODIFIER.exec(rest)) {
+    modifiers.add(match[1]);
+    rest = rest.slice(match[0].length);
+  }
+  if ([...modifiers].some((name) => SYSTEM_MODIFIERS.has(name))) throw new RpcError('guest_key', '分享窗口不能用 ⌘ 快捷键：它们由这台电脑上的终端处理');
+  if (rest === '!' || (rest === '1' && modifiers.has('shift'))) throw new RpcError('guest_key', '半角 ! 会让 Claude 进入 shell 模式，请直接输入文字');
+  const ctrl = modifiers.has('ctrl') || modifiers.has('control');
+  if (ctrl && CTRL_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${CTRL_REFUSED[rest]}`);
+  if (modifiers.has('alt') && ALT_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${ALT_REFUSED[rest]}`);
+  if (!editing) {
+    const keeps = modifiers.has('alt') ? false : ctrl ? KEEPS_TEXT_CTRL.has(rest) : KEEPS_TEXT.has(rest);
+    if (!keeps) throw new RpcError('guest_key', '这个分享窗口是旧版创建的，退格、删除等编辑键要等电脑上运行 panecast share reopen 重新打开窗口后才能用');
+  }
   return key;
 }
+
+/** A line typed and submitted with Enter, which a paste delivers whole, keeping a ! inside it. */
+const submittedLine = (items) => items.length === 2 && typeof items[0].text === 'string' && items[0].text.includes('!') && items[1].key === 'enter';
 
 /**
  * A connection that holds a guest key. It sees one source with one
@@ -115,6 +157,7 @@ export class GuestSession extends HubSession {
         if (Number.isFinite(limits.max_message_bytes)) {
           info.max_message_bytes = Math.min(32 * 1024 * 1024, limits.max_message_bytes);
           info.max_upload_bytes = MAX_UPLOAD_BYTES;
+          info.upload_chunk_bytes = UPLOAD_CHUNK_BYTES;
         }
       }
       return info;
@@ -156,6 +199,12 @@ export class GuestSession extends HubSession {
     if (method === 'file.upload') {
       this.check(p, own);
       if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
+      // Any size, in chunks that collect in the gateway's own folder for this share.
+      if (p.upload_id !== undefined) {
+        const saved = await saveUploadChunk(this.uploadParts(share), share.directory, p);
+        if (!saved.filename) return saved;
+        return { path: `./${saved.filename}`, filename: saved.filename, size: saved.size, bytes: saved.size, mime_type: mimeFor(saved.filename) };
+      }
       if (typeof p.data_base64 !== 'string' || p.data_base64.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 || !/^[\w+/]*={0,2}$/.test(p.data_base64)) {
         throw new RpcError('upload_failed', `文件超过 ${MAX_UPLOAD_BYTES / 1024 / 1024} MB 或格式无效`);
       }
@@ -168,18 +217,37 @@ export class GuestSession extends HubSession {
     this.check(p, own);
     if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
     if (method === 'surface.send_text') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestText(p.text) });
-    if (method === 'surface.send_key') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, key: guestKey(p.key) });
+    const editing = share.prompt_hook === true;
+    if (method === 'surface.send_key') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, key: guestKey(p.key, { editing }) });
     if (method === 'surface.input') {
       // The hub sends these straight to the terminal, so every item is checked before any is sent.
       if (typeof relayServer.inputItems !== 'function') throw new RpcError('method_not_found', '统一网关不支持这个操作');
-      const items = relayServer.inputItems(p).map((item) => item.text !== undefined ? { text: guestText(item.text) } : { key: guestKey(item.key) });
-      return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, items });
+      const items = relayServer.inputItems(p);
+      // A whole line keeps its ! when the terminal can take it as one paste.
+      if (submittedLine(items) && await this.pastes(share)) {
+        return super.dispatch('terminal.paste', { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestPaste(items[0].text), submit_key: 'return' });
+      }
+      const checked = items.map((item) => item.text !== undefined ? { text: guestText(item.text) } : { key: guestKey(item.key, { editing }) });
+      return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, items: checked });
     }
     if (method === 'terminal.paste') {
       if (p.submit_key !== 'return') throw new RpcError('invalid_params', '消息或目标无效');
       return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestPaste(p.text), submit_key: 'return' });
     }
     return super.dispatch(method, p);
+  }
+
+  /** Part files of unfinished uploads: the gateway's folder for the share, never the shared directory. */
+  uploadParts(share) {
+    if (!/^[\w-]{1,80}$/.test(share.id)) throw new RpcError('upload_failed', '分享编号无效');
+    return join(sharesDirectory(this.config), share.id, 'uploads');
+  }
+
+  /** Whether the shared terminal takes `terminal.paste`, asked once per connection. */
+  pastes(share) {
+    this.pasteCapability ??= this.client(share.source_id).call('system.capabilities', {})
+      .then((result) => (result.methods ?? []).includes('terminal.paste'), () => false);
+    return this.pasteCapability;
   }
 
   check(p, own) {

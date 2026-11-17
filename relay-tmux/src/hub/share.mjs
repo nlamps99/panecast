@@ -106,9 +106,23 @@ export class BrokerGuests {
   }
 }
 
+/**
+ * Refuses a prompt that starts with a half-width !. Claude would send it to
+ * the model as text, but a refused prompt never reaches the prompt history,
+ * and a ! entry recalled from history (up arrow) starts shell mode, which runs
+ * commands outside the sandbox. With this hook a guest may delete and edit
+ * text freely (see guest-session.mjs).
+ */
+export const PROMPT_HOOK = `/usr/bin/grep -Eq '"prompt"[[:space:]]*:[[:space:]]*"!' && { echo '分享窗口不能发送以半角 ! 开头的消息，请改用全角 ！' >&2; exit 2; }; exit 0`;
+
+/** `settings` with the prompt hook, everything else kept. */
+export function withPromptHook(settings) {
+  return { ...settings, hooks: { ...settings.hooks, UserPromptSubmit: [{ hooks: [{ type: 'command', command: PROMPT_HOOK }] }] } };
+}
+
 /** Claude Code settings for a shared window: the OS sandbox confines Bash to the directory. */
 export function shareSettings(directory, { allowDomains = [], allowRead = [] } = {}) {
-  return {
+  return withPromptHook({
     // A suggestion accepted with a key could put a ! command into the prompt.
     promptSuggestionEnabled: false,
     permissions: {
@@ -123,7 +137,7 @@ export function shareSettings(directory, { allowDomains = [], allowRead = [] } =
       filesystem: { denyRead: ['~/'], allowRead: [directory, ...allowRead] },
       network: { strictAllowlist: true, allowedDomains: allowDomains },
     },
-  };
+  });
 }
 
 const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
@@ -186,6 +200,14 @@ export async function openShareWindow(config, { name, directory, settingsPath, s
   } finally { session.dispose(); registry.close(); }
 }
 
+/** Closes the cmux workspace a share used before. */
+async function closeShareWindow(config, { sourceId, workspaceId }) {
+  const registry = new SourceRegistry(config.sources ?? []);
+  const session = new HubSession(registry, config, () => {}, () => {}, () => {});
+  try { await session.client(sourceId).call('workspace.close', { workspace_id: workspaceId }); }
+  finally { session.dispose(); registry.close(); }
+}
+
 const newId = () => `s${randomBytes(6).toString('hex')}`;
 const flagValues = (args, name) => args.flatMap((arg, index) => arg === name && args[index + 1] ? [args[index + 1]] : []);
 const flag = (args, name) => flagValues(args, name).at(-1);
@@ -222,7 +244,7 @@ export async function shareCLI(args, configPath) {
     await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)) }));
     const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source') });
     const share = { id, name, directory, source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId,
-      created_at: new Date().toISOString(), revoked_at: null, guests: [] };
+      created_at: new Date().toISOString(), revoked_at: null, prompt_hook: true, guests: [] };
     shares.push(share);
     await store.write(shares);
     console.log(`已在 cmux 打开工作区「分享 · ${name}」，目录：${directory}`);
@@ -235,6 +257,20 @@ export async function shareCLI(args, configPath) {
     if (share.revoked_at) throw new Error('这个分享已停止');
     const label = flag(args, '--guest') ?? '';
     printKey(await issueKey(config, store, shares, share, label), label);
+    return;
+  }
+  if (action === 'reopen') {
+    const { shares, share } = await store.find(args[1]);
+    if (share.revoked_at) throw new Error('这个分享已停止');
+    // Same sandbox and network choices; the prompt hook added for windows made before it.
+    const settingsPath = join(sharesDirectory(config), share.id, 'claude-settings.json');
+    await writeJSON(settingsPath, withPromptHook(JSON.parse(await readFile(settingsPath, 'utf8'))));
+    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id });
+    const previous = { sourceId: share.source_id, workspaceId: share.workspace_id };
+    Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, prompt_hook: true });
+    await store.write(shares);
+    const closed = await closeShareWindow(config, previous).then(() => true, () => false);
+    console.log(`已为「${share.name}」打开新窗口，访客的密钥不变，连接后就是新窗口。${closed ? '旧窗口已关闭。' : '旧窗口没能关闭，可以在 cmux 里自己关掉。'}`);
     return;
   }
   if (action === 'list') {
@@ -269,5 +305,5 @@ export async function shareCLI(args, configPath) {
     if (failed.length) console.log(`有 ${failed.length} 个密钥没能在中转服务器上删除；这台电脑已经拒绝它们，网络恢复后再运行一次 revoke 即可清理。`);
     return;
   }
-  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] | key 分享 [--guest 名字] | list | revoke 分享 [--guest 名字或序号]');
+  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] | key 分享 [--guest 名字] | reopen 分享 | list | revoke 分享 [--guest 名字或序号]');
 }
