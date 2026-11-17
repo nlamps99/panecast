@@ -299,6 +299,17 @@ test('a share directory never exposes the home folder or credentials', async (t)
   for (const name of ['', '.hidden', 'a/b', 'x'.repeat(61)]) assert.throws(() => validName(name));
 });
 
+test('a key issued right after a lookup is found without waiting for the cache', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'panecast-store-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const writer = new ShareStore(join(directory, 'shares.json')), reader = new ShareStore(join(directory, 'shares.json'));
+  await writer.write([structuredClone(SHARE)]);
+  assert.ok(await reader.guestShare('s1', 'guest-a'));
+  const shares = await writer.read(); shares[0].guests.push({ device_id: 'guest-b', label: '', created_at: '', revoked_at: null }); await writer.write(shares);
+  assert.ok(await reader.guestShare('s1', 'guest-b'));
+  // A revoke still takes effect within the cache's two seconds at most.
+  assert.equal(await reader.guestShare('s1', 'nobody'), null);
+});
+
 test('guest credentials need an HTTPS broker', () => {
   assert.throws(() => new BrokerGuests({ url: 'http://broker.example', relay_id: 'a', relay_token: 'b' }), /HTTPS/);
   assert.throws(() => new BrokerGuests(undefined), /broker/);

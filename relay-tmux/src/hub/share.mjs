@@ -51,9 +51,13 @@ export class ShareStore {
 
   /** The share a guest connection may use, or null. Throws when the file cannot be read, which refuses the guest. */
   async guestShare(shareId, deviceId) {
-    if (!this.cache || Date.now() - this.cachedAt > 2000) { this.cache = await this.read(); this.cachedAt = Date.now(); }
-    return this.cache.find((share) => share.id === shareId && !share.revoked_at &&
+    const find = () => this.cache.find((share) => share.id === shareId && !share.revoked_at &&
       share.guests?.some((guest) => guest.device_id === deviceId && !guest.revoked_at)) ?? null;
+    const fresh = !this.cache || Date.now() - this.cachedAt > 2000;
+    if (fresh) { this.cache = await this.read(); this.cachedAt = Date.now(); }
+    // A key issued in the last two seconds is not in the cached copy yet.
+    if (!find() && !fresh) { this.cache = await this.read(); this.cachedAt = Date.now(); }
+    return find();
   }
 
   async find(reference) {
