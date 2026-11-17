@@ -185,6 +185,21 @@ test('a window opened before the prompt hook keeps the keys that cannot delete',
   assert.deepEqual(upstream.sent().map((c) => c.params.text ?? c.params.key), [...keys, '/plan 写大纲！']);
 });
 
+test('a full-access guest types anything into the one shared terminal and nowhere else', async (t) => {
+  const { relay, upstream } = await setup(t, [{ ...SHARE, full: true, prompt_hook: false }]);
+  relay.open('g', 'guest-a', { share_id: 's1' });
+  assert.equal((await relay.call('g', 'relay.info')).share.full, true);
+  for (const text of ['!ls ~/.ssh', 'a\u001b[201~']) await relay.call('g', 'surface.send_text', { ...own, text });
+  for (const key of ['ctrl-g', 'ctrl-v', 'ctrl-r', 'ctrl-y', 'backspace', '!']) await relay.call('g', 'surface.send_key', { ...own, key });
+  if (batchedInput) await relay.call('g', 'surface.input', { ...own, items: [{ text: '!pwd' }, { key: 'enter' }] });
+  assert.deepEqual(upstream.sent().map((c) => c.params.text ?? c.params.key), ['!ls ~/.ssh', 'a\u001b[201~', 'ctrl-g', 'ctrl-v', 'ctrl-r', 'ctrl-y', 'backspace', '!',
+    ...(batchedInput ? ['!pwd', 'enter'] : [])]);
+  // Still one terminal: no other surface and no management calls.
+  await assert.rejects(relay.call('g', 'surface.send_text', { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0'), text: 'hi' }), { code: 'forbidden' });
+  await assert.rejects(relay.call('g', 'workspace.create', {}), { code: 'forbidden' });
+  assert.ok(upstream.sent().every((c) => c.params.workspace_id === '$1' && c.params.surface_id === '%1'));
+});
+
 test('a guest line with ! goes as one paste where the terminal takes pastes', { skip: !batchedInput }, async (t) => {
   const { relay, upstream } = await setup(t);
   upstream.methods = ['terminal.paste'];
@@ -267,6 +282,13 @@ test('the shared Claude is confined by its launch flags and settings', () => {
   assert.deepEqual(settings.sandbox.network, { strictAllowlist: true, allowedDomains: ['pypi.org'] });
   assert.equal(settings.promptSuggestionEnabled, false);
   assert.equal(settings.permissions.disableBypassPermissionsMode, 'disable');
+});
+
+test('a full-access share runs the owner\'s Claude without sandbox, restrictions or prompts', async (t) => {
+  const command = shareCommand('/opt/homebrew/bin/claude', '/state/s1/claude-settings.json', { full: true });
+  assert.equal(command, "exec /usr/bin/env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT '/opt/homebrew/bin/claude' --dangerously-skip-permissions");
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'panecast-home-full-'))); t.after(() => rm(home, { recursive: true, force: true }));
+  assert.equal(await shareDirectory(home, 'x', home, { full: true }), home);
 });
 
 test('the prompt hook refuses exactly the prompts that start with !', async () => {

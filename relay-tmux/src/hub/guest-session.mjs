@@ -150,7 +150,7 @@ export class GuestSession extends HubSession {
     const own = this.target(share);
     if (method === 'relay.info') {
       const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id,
-        files: { list: true, links: Boolean(this.fileLinks), upload: true } } };
+        files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}) } };
       if (p.source_id !== undefined || p.workspace_id !== undefined || p.surface_id !== undefined) {
         this.check(p, own);
         const limits = await this.client(share.source_id).call('relay.info', {});
@@ -216,6 +216,8 @@ export class GuestSession extends HubSession {
     if (!TARGETED.has(method)) throw forbidden();
     this.check(p, own);
     if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
+    // A full-access share runs Claude without a sandbox: input goes to the one terminal as typed.
+    if (share.full === true) return super.dispatch(method, p);
     if (method === 'surface.send_text') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestText(p.text) });
     const editing = share.prompt_hook === true;
     if (method === 'surface.send_key') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, key: guestKey(p.key, { editing }) });
