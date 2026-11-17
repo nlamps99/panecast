@@ -9,8 +9,8 @@ import { conversationUserText, visibleUserText } from './conversation-visibility
 const WINDOW = 4 * 1024 * 1024;
 /** Newest pages kept per reader: one per open terminal is the common case. */
 const HEADS_CACHED = 64;
-/** Older pages kept: scrolling back and forth or searching reads them again. */
-const PAGES_CACHED = 64;
+/** Older pages kept, by size: scrolling back or searching a whole conversation reads them again. */
+const PAGES_CACHED_BYTES = 48 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const clipped = (value, limit = 16000) => typeof value === 'string' ? value.slice(0, limit) : '';
 const blocks = value => Array.isArray(value) ? value : typeof value === 'string' ? [{ type: 'text', text: value }] : [];
@@ -137,7 +137,7 @@ export function parseConversation(records, provider, sessionId, options = {}) {
 }
 
 export class TerminalConversationReader {
-  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.files = new Map(); this.heads = new Map(); this.pages = new Map(); }
+  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.files = new Map(); this.heads = new Map(); this.pages = new Map(); this.pageBytes = 0; }
   async find(provider, id) {
     const key = `${provider}:${id}`, cached = this.files.get(key);
     if (cached) { try { if ((await lstat(cached.path)).isFile() && (await realpath(cached.path)).startsWith(cached.root + sep)) return cached.path; } catch {} this.files.delete(key); }
@@ -187,6 +187,7 @@ export class TerminalConversationReader {
       // an older page reads the same until the file is replaced.
       const pageKey = params.cursor ? `${cacheKey}:${params.cursor}` : null, page = pageKey && this.pages.get(pageKey);
       if (page && page.epoch === epoch) { this.pages.delete(pageKey); this.pages.set(pageKey, page); return page.value; }
+      if (page) { this.pages.delete(pageKey); this.pageBytes -= page.bytes; }
       // Validate the file's own identity, not just its filename.
       let first = Buffer.alloc(Math.min(info.size, 65536)); await handle.read(first, 0, first.length, 0);
       if (first.indexOf(10) < 0 && first.length < info.size) { first = Buffer.alloc(Math.min(info.size, 2 * 1024 * 1024)); await handle.read(first, 0, first.length, 0); }
@@ -234,8 +235,12 @@ export class TerminalConversationReader {
         this.heads.delete(cacheKey); this.heads.set(cacheKey, entry);
         while (this.heads.size > HEADS_CACHED) this.heads.delete(this.heads.keys().next().value);
       } else {
-        this.pages.set(pageKey, { epoch, value });
-        while (this.pages.size > PAGES_CACHED) this.pages.delete(this.pages.keys().next().value);
+        const bytes = JSON.stringify(value).length * 2;
+        this.pages.set(pageKey, { epoch, value, bytes }); this.pageBytes += bytes;
+        while (this.pageBytes > PAGES_CACHED_BYTES && this.pages.size > 1) {
+          const [key, oldest] = this.pages.entries().next().value;
+          this.pages.delete(key); this.pageBytes -= oldest.bytes;
+        }
       }
       return reply(entry);
     } finally { await handle.close(); }
