@@ -104,6 +104,8 @@ const SCROLL_BATCH_LINES = 4;
 const SCROLL_IN_FLIGHT = 4;
 /** Items per session-record page. */
 const RECORD_PAGE = 80;
+/** Items per page when reading a whole record for search. */
+const RECORD_WHOLE_PAGE = 150;
 /** Read ahead until the first page holds this many items to show. */
 const RECORD_HEAD_ITEMS = 30;
 /** A prefetched first page this recent is shown at once, then checked by revision. */
@@ -651,8 +653,9 @@ export class TerminalSession {
     this.update({ browse: { ...browse, loading: true } });
     try {
       for (let pages = 0; this.record.cursor && pages < maxPages; pages++) {
+        // The gateway's largest page: each request parses a window of the file, whatever the page size.
         const raw = asObject(await this.channel.call('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
-          limit: RECORD_PAGE, cursor: this.record.cursor }, 15_000));
+          limit: RECORD_WHOLE_PAGE, cursor: this.record.cursor }, 15_000));
         if (token !== this.historyToken || this.disposed || this.state.browse?.kind !== 'application' || !this.record) return false;
         const page = parseRecordPage(raw);
         if (raw.available !== true || page.conversationId !== this.record.conversationId) break;
