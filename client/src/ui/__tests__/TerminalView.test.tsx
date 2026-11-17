@@ -318,6 +318,8 @@ it.each([true, false])('appends application captures without replacing visible c
   // produced another scroll/boundary event yet.
   await act(async () => {
     (mockNative.get('terminal-output-list')?.onContentSizeChange as (w: number, h: number) => void)(390, shown().length * 17 + 4);
+    // Wheel requests to the program are spaced 50 ms apart.
+    await new Promise((resolve) => setTimeout(resolve, 80));
   });
   expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(2);
   await act(async () => {
@@ -332,13 +334,15 @@ it.each([true, false])('appends application captures without replacing visible c
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
   expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(requestsBeforeReverse);
   expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
-  // The first unit moved 7 of 47 rows, so the next step asked for 3 units.
+  // The first unit moved 7 of 47 rows: twice that fits the 21-row target, so the next step is 2 units.
   const sent = channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, p]) => Number(p?.delta_lines));
-  expect(sent.slice(0, 2)).toEqual([1, 3]);
-  await act(async () => callback('terminal-application-newer', 'onPress', undefined));
+  expect(sent.slice(0, 2)).toEqual([1, 2]);
+  await act(async () => { callback('terminal-application-newer', 'onPress', undefined); await session.applicationSettled(); });
   expect(session.getState().browse).toBeNull();
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(-2).map(([, p]) => p?.delta_lines))
-    .toEqual([-sent.reduce((total, delta) => total + delta, 0), -3]);
+  // Each request is mirrored, newest first; the newer-history press follows the return.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(sent.length).map(([, p]) => p?.delta_lines))
+    .toEqual([...sent].reverse().map((delta) => -delta).concat(-3));
 });
 
 it('retries a failed program-history step on the next wheel gesture, not on every event', async () => {

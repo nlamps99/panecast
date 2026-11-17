@@ -94,14 +94,33 @@ const SCROLL_INTERVAL_MS = 32;
 const SCROLL_BATCH_LINES = 4;
 const SCROLL_IN_FLIGHT = 4;
 /**
- * Program history steps. One step aims to reveal about half a screen, so the
- * next screen still overlaps the last one; prefetch beyond the reader waits
- * long enough between steps for the relay's color read (every 150 ms).
+ * Program history steps. Claude Code accelerates the wheel within one
+ * request (1 unit moves 3 rows, 2 move 8, 3 move 16, 4 move 22), so a step
+ * grows one unit at a time while twice what it moved fits in this share of
+ * the screen. On Claude Code that settles at 3 units (16 rows) from a
+ * 35-row screen up, which still leaves rows to align on below its sticky
+ * prompt header and above its input box. Prefetch beyond the reader waits
+ * between steps for the relay's color read (every 150 ms).
  */
-const APPLICATION_STEP_SCREEN = 0.5;
+const APPLICATION_STEP_SCREEN = 0.46;
 const APPLICATION_MAX_STEP = 8;
 const APPLICATION_PREFETCH_INTERVAL_MS = 170;
 const APPLICATION_STEP_TIMEOUT_MS = 1_500;
+const APPLICATION_READ_INTERVAL_MS = 12;
+/** Claude Code animates a scroll over a few frames; a step counts once the screen held still this long. */
+const APPLICATION_SETTLE_MS = 25;
+/**
+ * A redraw can clear the revealed rows and fill them a moment later, so a
+ * step that revealed only blank rows needs the screen to hold still longer.
+ */
+const APPLICATION_BLANK_SETTLE_MS = 250;
+/**
+ * Claude Code also accelerates wheel requests that arrive within ~30 ms of
+ * the last one. Spaced at least this far apart (after the acknowledgement),
+ * each request moves the same rows every time, up or down, so replaying the
+ * requests in reverse returns the program exactly.
+ */
+const APPLICATION_WHEEL_GAP_MS = 50;
 
 /**
  * State for one terminal surface on top of a relay connection: keeps the
@@ -128,10 +147,15 @@ export class TerminalSession {
   private preparedPage: HistoryPage | null = null;
   private preparedPages = new Map<string, Promise<HistoryPage>>();
   private applicationAnchor: readonly string[] | null = null;
-  private applicationTravel = 0;
-  private applicationPage: { accept: (rows: readonly string[]) => void; cancel: () => void } | null = null;
-  /** Rows the program moved per wheel unit on the last step; sizes the next one. */
-  private applicationRowsPerUnit = 0;
+  /** Every wheel request sent while reading program history, replayed in reverse to return. */
+  private applicationTrail: number[] = [];
+  /** The previous return, still replaying; program history waits for it. */
+  private applicationRestoring: Promise<void> | null = null;
+  private applicationPage: { accept: (rows: readonly string[], still?: number) => void; cancel: () => void } | null = null;
+  /** Rows the program moved for a request of N units, as measured. */
+  private applicationMoved = new Map<number, number>();
+  private applicationUnits = 1;
+  private applicationWheelAt = -Infinity;
   private applicationStepAt = -Infinity;
   /** Ends a prefetch pause early when the reader reaches the loaded edge. */
   private applicationWake: (() => void) | null = null;
@@ -531,10 +555,12 @@ export class TerminalSession {
 
   /** Keep captured application history in the same native list as the first screen. */
   startApplicationHistory(): void {
-    if (!this.state.applicationScroll || this.state.browse || !this.state.screen.rows.length) return;
+    // While the last return is replaying, the screen is still moving.
+    if (!this.state.applicationScroll || this.state.browse || !this.state.screen.rows.length || this.applicationRestoring) return;
     this.stopApplicationScroll(true);
     this.applicationAnchor = this.state.screen.rows;
-    this.applicationRowsPerUnit = 0;
+    this.applicationMoved.clear();
+    this.applicationUnits = 1;
     this.applicationStepAt = -Infinity;
     this.applicationColors.clear();
     this.update({ browse: { kind: 'application', frozenRows: this.state.screen.rows, olderRows: [],
@@ -547,14 +573,40 @@ export class TerminalSession {
     this.applicationPage = null;
     this.applicationWake?.();
     this.applicationColors.clear();
-    const travel = this.applicationTravel;
-    this.applicationTravel = 0;
+    const trail = this.applicationTrail;
+    this.applicationTrail = [];
     this.applicationAnchor = null;
     const target = this.state.target, size = this.state.applicationScroll;
-    if (travel && target && size && this.channel.isOpen) {
-      void this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
-        delta_lines: -travel, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000).catch(() => {});
-    }
+    if (!trail.length || !target || !size || !this.channel.isOpen) return;
+    // One request of -sum would accelerate differently from the steps that
+    // were sent. Mirroring each request, spaced apart, lands exactly.
+    const previous = this.applicationRestoring ?? Promise.resolve();
+    const restoring = this.applicationRestoring = previous.then(async () => {
+      for (const delta of trail.reverse()) {
+        if (!this.channel.isOpen) return;
+        await this.applicationWheel(target, size, -delta);
+      }
+    }).catch(() => {}).finally(() => {
+      if (this.applicationRestoring !== restoring) return;
+      this.applicationRestoring = null;
+      this.pumpApplicationScroll();
+    });
+  }
+
+  /** One wheel request to the program, at least APPLICATION_WHEEL_GAP_MS after the last. */
+  private async applicationWheel(target: SurfaceTarget, size: { columns: number; rows: number }, delta: number, before?: () => void): Promise<void> {
+    const wait = this.applicationWheelAt + APPLICATION_WHEEL_GAP_MS - Date.now();
+    if (wait > 0) await delay(wait);
+    before?.();
+    try {
+      await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+        delta_lines: delta, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000);
+    } finally { this.applicationWheelAt = Date.now(); }
+  }
+
+  /** Waits until a return to the live screen has finished moving the program. */
+  async applicationSettled(): Promise<void> {
+    while (this.applicationRestoring) await this.applicationRestoring;
   }
 
   /**
@@ -610,16 +662,15 @@ export class TerminalSession {
     let settled = false;
     let finish!: (page: ApplicationHistoryPage | null) => void;
     const result = new Promise<ApplicationHistoryPage | null>((resolve) => { finish = (page) => { settled = true; resolve(page); }; });
-    let pending: { accept: (rows: readonly string[]) => void; cancel: () => void } | null = null;
+    let pending: { accept: (rows: readonly string[], still?: number) => void; cancel: () => void } | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const currentTarget = () => {
       if (token !== this.historyToken || this.disposed) throw new RpcCallError('history_cancelled', '已取消历史加载');
     };
     const scroll = async (delta: number) => {
       currentTarget();
-      this.applicationTravel += delta;
-      await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
-        delta_lines: delta, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000);
+      // Recorded only once sent: a return replays exactly what reached the program.
+      await this.applicationWheel(target, size, delta, () => { currentTarget(); this.applicationTrail.push(delta); });
       currentTarget();
     };
     const read = async () => {
@@ -637,30 +688,46 @@ export class TerminalSession {
       currentTarget();
       const anchor = this.applicationAnchor;
       if (!anchor) throw new RpcCallError('history_cancelled', '已取消历史加载');
-      let accepted = false;
+      let accepted = false, reading = false;
       pending = this.applicationPage = {
-        accept: (rows) => {
-          if (accepted || settled) return;
+        // Direct reads decide once one succeeds: a pushed frame can catch a
+        // scroll mid-animation. A read counts once the screen held still, and
+        // revealed rows without text need it to hold still longer.
+        accept: (rows, still = Infinity) => {
+          if (accepted || settled || (still === Infinity && reading)) return;
           const page = olderApplicationRows(anchor, rows);
-          if (page && applicationPageHasPayload(anchor, page)) { accepted = true; this.applicationAnchor = rows; finish(page); }
+          if (!page) return;
+          const payload = applicationPageHasPayload(anchor, page);
+          if (still === Infinity ? payload : still >= (payload ? APPLICATION_SETTLE_MS : APPLICATION_BLANK_SETTLE_MS)) {
+            accepted = true; this.applicationAnchor = rows; finish(page);
+          }
         },
         cancel: () => finish(null),
       };
-      // cmux and the program each multiply wheel input, so the first step is
-      // one unit; later steps use what that moved to reveal about half a screen.
-      const units = this.applicationRowsPerUnit > 0
-        ? Math.max(1, Math.min(APPLICATION_MAX_STEP, Math.floor(size.rows * APPLICATION_STEP_SCREEN / this.applicationRowsPerUnit))) : 1;
+      const units = this.applicationUnits;
       await scroll(units);
       this.applicationStepAt = Date.now();
       timer = setTimeout(() => finish(null), APPLICATION_STEP_TIMEOUT_MS);
       // A pushed frame waits for the relay's next poll, up to 200 ms on a quiet
       // screen; reading directly sees the program's redraw within tens of ms.
+      // Reads overlap (up to four in flight) so a slow network costs one
+      // round trip per step, not one per read. Stillness is measured by when
+      // each read was sent; a late answer to an older read is ignored.
       const accept = pending.accept;
       void (async () => {
-        for (let wait = 12; !settled; wait = Math.min(Math.round(wait * 1.5), 100)) {
-          await delay(wait);
-          if (settled) return;
-          try { accept(await read()); } catch { return; }
+        let previous: string | null = null, since = 0, newest = -1, inFlight = 0, failures = 0;
+        for (let reads = 0; !settled && failures < 3; reads++) {
+          await delay(reads < 20 ? APPLICATION_READ_INTERVAL_MS : 60);
+          if (settled || inFlight >= 4) continue;
+          const sequence = reads, sentAt = Date.now();
+          inFlight++;
+          read().then((rows) => {
+            if (settled || sequence < newest) return;
+            newest = sequence; reading = true; failures = 0;
+            const text = rows.join('\n');
+            if (text !== previous) { previous = text; since = sentAt; }
+            accept(rows, sentAt - since);
+          }, () => { failures++; }).finally(() => { inFlight--; });
         }
       })();
       let page = await result;
@@ -669,20 +736,28 @@ export class TerminalSession {
         const rows = await read();
         page = olderApplicationRows(anchor, rows);
         if (page) this.applicationAnchor = rows;
-        else if (!sameViewport(anchor, rows)) {
-          // A multi-unit step moved further than the last one measured. Step
-          // back; when the screen returns, the next step uses single units.
+        // The top of the history: nothing moved. A status line or spinner may
+        // still change, but a scroll moves every transcript row, and the fixed
+        // input box can outnumber a sparse transcript's rows.
+        else if (!nearlyUnchanged(anchor, rows)) {
+          // The larger request moved past the overlap. The program scrolls
+          // back symmetrically, so the same request reversed returns exactly;
+          // then this size is never tried again.
           if (units > 1) {
-            await scroll(-units);
+            // A return that started meanwhile replays this step itself.
+            await this.applicationWheel(target, size, -units, currentTarget);
+            this.applicationTrail.pop();
             for (let attempt = 0; attempt < 20 && !retry; attempt++) { await delay(25); retry = sameViewport(anchor, await read()); }
           }
           if (!retry) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
-          this.applicationRowsPerUnit = 0;
+          this.applicationMoved.set(units, Infinity);
+          this.applicationUnits = units - 1;
         }
       }
       if (page) {
         const moved = page.rows.length - page.replacedRows;
-        if (moved > 0) this.applicationRowsPerUnit = moved / units;
+        if (moved > 0) this.applicationMoved.set(units, moved);
+        this.applicationUnits = nextApplicationUnits(units, this.applicationMoved, Math.max(3, Math.floor(size.rows * APPLICATION_STEP_SCREEN)));
       }
       const current = this.state.browse;
       if (token !== this.historyToken || !current || this.disposed) return;
@@ -777,7 +852,8 @@ export class TerminalSession {
   }
 
   private pumpApplicationScroll(): void {
-    if (this.scrollTimer !== null || this.scrollInFlight >= SCROLL_IN_FLIGHT || !this.queuedScroll) return;
+    // A return to live is still replaying; it calls this again when done.
+    if (this.applicationRestoring || this.scrollTimer !== null || this.scrollInFlight >= SCROLL_IN_FLIGHT || !this.queuedScroll) return;
     const delay = SCROLL_INTERVAL_MS - (Date.now() - this.lastScrollSentAt);
     if (delay > 0) {
       this.scrollTimer = setTimeout(() => { this.scrollTimer = null; this.pumpApplicationScroll(); }, delay);
@@ -1171,6 +1247,28 @@ function sanitizeLines(lines: number, fallback: number): number {
 
 function sameTarget(a: SurfaceTarget | null, b: SurfaceTarget | null): boolean {
   return a?.workspaceId === b?.workspaceId && a?.surfaceId === b?.surfaceId;
+}
+
+/**
+ * The next program-history request size: one unit larger while the current
+ * size moved at most half the target (and the larger size is not known to
+ * overshoot), one smaller once it moved more than the target.
+ */
+/** At most two rows differ: a status line or spinner, not a scroll. */
+function nearlyUnchanged(previous: readonly string[], next: readonly string[]): boolean {
+  const a = plainTerminalRows(previous), b = plainTerminalRows(next);
+  let changed = 0;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? '') !== (b[i] ?? '') && ++changed > 2) return false;
+  return true;
+}
+
+export function nextApplicationUnits(units: number, moved: ReadonlyMap<number, number>, target: number): number {
+  const current = moved.get(units);
+  if (current === undefined) return units;
+  if (current > target && units > 1) return units - 1;
+  const larger = moved.get(units + 1);
+  if (current * 2 <= target && units < APPLICATION_MAX_STEP && (larger === undefined || larger <= target)) return units + 1;
+  return units;
 }
 
 export function describeError(error: unknown): string {

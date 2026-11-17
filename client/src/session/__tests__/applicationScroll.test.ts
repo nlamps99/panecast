@@ -13,8 +13,8 @@ const application = { render_grid: { active_screen: 'alternate', columns: 156, r
   modes: [{ ansi: false, code: 1000, on: true }, { ansi: false, code: 1006, on: true }] } };
 
 type ProgramOptions = {
-  /** Rows one wheel unit moves; a function lets it change between steps. */
-  multiplier?: number | ((step: number) => number);
+  /** Rows one unit moves, or rows moved by a request of N units (an accelerating program). */
+  multiplier?: number | ((units: number) => number);
   stationary?: boolean;
   /** Clear the revealed prefix first and fill it in 100 ms later. */
   partial?: boolean;
@@ -26,7 +26,8 @@ type ProgramOptions = {
 
 /** A full-screen program: 31 transcript rows between a header and an input line. */
 function programFixture({ multiplier = 9, stationary = false, partial = false, push: pushes = true, colors = false }: ProgramOptions = {}) {
-  let listener: (frame: PushFrame) => void = () => {}, position = 1000, revision = 0, steps = 0;
+  let listener: (frame: PushFrame) => void = () => {}, position = 1000, revision = 0;
+  const scrolledAt: number[] = [];
   const rows = () => ['header', 'transcript', ...Array.from({ length: 31 }, (_, i) => `transcript row #${position + i}`), 'input', `status ${revision}`];
   // read_text returns what is on screen right now, like cmux.
   let screen = rows();
@@ -40,9 +41,10 @@ function programFixture({ multiplier = 9, stationary = false, partial = false, p
     if (method === 'terminal.replay') return { render_grid: { ...application.render_grid, rows: 35 } };
     if (method === 'surface.read_text') return { text: screen.join('\n') };
     if (method === 'terminal.scroll') {
+      scrolledAt.push(Date.now());
       const delta = Number(params?.delta_lines);
-      const unit = typeof multiplier === 'function' ? multiplier(steps++) : multiplier;
-      if (!stationary) position = Math.max(0, position - delta * unit);
+      const moved = typeof multiplier === 'function' ? Math.sign(delta) * multiplier(Math.abs(delta)) : delta * multiplier;
+      if (!stationary) position = Math.max(0, position - moved);
       if (partial && delta > 0) {
         const complete = rows(), clearing = [...complete];
         for (let i = 2; i < 11; i++) clearing[i] = '';
@@ -54,7 +56,7 @@ function programFixture({ multiplier = 9, stationary = false, partial = false, p
   });
   const channel: RpcChannel = { isOpen: true, call: call as RpcChannel['call'], onPush: (fn) => { listener = fn; return () => {}; }, onStatus: () => () => {} };
   const session = new TerminalSession(channel); session.setTarget({ workspaceId: 'workspace', surfaceId: 'surface' }); push();
-  return { session, call, push };
+  return { session, call, push, scrolledAt };
 }
 const acceleratedFixture = (stationary = false, multiplier = 9, partial = false) => programFixture({ stationary, multiplier, partial });
 const transcriptOf = (session: TerminalSession) => {
@@ -72,8 +74,8 @@ it.each([9, 30])('joins accelerated program history when wheel input is multipli
   expect(transcript).toEqual(Array.from({ length: 31 + 6 * multiplier }, (_, i) => `transcript row #${1000 - 6 * multiplier + i}`));
   expect(browse.frozenRows).toEqual([...Array.from({ length: 31 }, (_, i) => `transcript row #${1000 + i}`), 'input', 'status 1']);
   expect(call.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, p]) => p?.delta_lines)).toEqual([1, 1, 1, 1, 1, 1]);
-  session.resumeLive();
-  expect(call.mock.calls.filter(([method]) => method === 'terminal.scroll').at(-1)?.[1]?.delta_lines).toBe(-6);
+  session.resumeLive(); await session.applicationSettled();
+  expect(deltas(call).slice(6)).toEqual([-1, -1, -1, -1, -1, -1]);
   session.dispose();
 });
 
@@ -99,15 +101,34 @@ it('waits for a partial redraw to fill its cleared prefix before appending histo
   session.dispose(); jest.useRealTimers();
 });
 
-it('sizes later steps to about half a screen from what the first unit moved', async () => {
+it('grows steps one unit at a time while twice what they move fits in 46% of the screen', async () => {
   const { session, call } = programFixture({ multiplier: 3 }); await session.inspectScrollMode(); session.startApplicationHistory();
   for (let i = 0; i < 4; i++) await session.loadOlder();
   expect(session.getState().browse?.error).toBeNull();
-  // 35 rows: half is 17, one unit moved 3, so later steps send 5 units.
-  expect(deltas(call)).toEqual([1, 5, 5, 5]);
-  expect(transcriptOf(session)).toEqual(Array.from({ length: 31 + 48 }, (_, i) => `transcript row #${1000 - 48 + i}`));
+  // 35 rows: the target is 16; 3 and 6 rows grow the step, 9 rows (twice is over 16) keeps it.
+  expect(deltas(call)).toEqual([1, 2, 3, 3]);
+  expect(transcriptOf(session)).toEqual(Array.from({ length: 31 + 27 }, (_, i) => `transcript row #${1000 - 27 + i}`));
+  session.dispose();
+});
+
+it('returns by mirroring every request, spaced so the program does not merge them', async () => {
+  // Like Claude Code: one request of N units moves more than N single units.
+  const claude = (units: number) => [0, 3, 8, 15, 22][units] ?? units * 6;
+  const { session, call, scrolledAt } = programFixture({ multiplier: claude }); await session.inspectScrollMode(); session.startApplicationHistory();
+  for (let i = 0; i < 4; i++) await session.loadOlder();
+  // 35 rows, target 16: 3 and 8 rows grow the step to 3 units; 15 rows keeps it.
+  expect(deltas(call)).toEqual([1, 2, 3, 3]);
   session.resumeLive();
-  expect(deltas(call).at(-1)).toBe(-16);
+  expect(session.getState().browse).toBeNull();
+  session.startApplicationHistory();
+  expect(session.getState().browse).toBeNull(); // Still returning: the screen is moving.
+  await session.applicationSettled();
+  expect(deltas(call).slice(4)).toEqual([-3, -3, -2, -1]);
+  const gaps = scrolledAt.slice(4).map((at, index, all) => index ? at - all[index - 1] : Infinity);
+  expect(Math.min(...gaps)).toBeGreaterThanOrEqual(20);
+  session.startApplicationHistory();
+  expect(session.getState().browse?.kind).toBe('application');
+  expect(transcriptOf(session)).toEqual(Array.from({ length: 31 }, (_, i) => `transcript row #${1000 + i}`));
   session.dispose();
 });
 
@@ -115,31 +136,52 @@ it('reads the screen directly instead of waiting for the next pushed frame', asy
   jest.useFakeTimers();
   const { session } = programFixture({ push: false }); await session.inspectScrollMode(); session.startApplicationHistory();
   const loading = session.loadOlder();
-  await jest.advanceTimersByTimeAsync(40); await loading;
+  // Read every 12 ms; the screen must hold still 25 ms.
+  await jest.advanceTimersByTimeAsync(80); await loading;
   expect(session.getState().browse).toMatchObject({ loading: false, error: null, exhausted: false });
   expect(transcriptOf(session)).toEqual(Array.from({ length: 40 }, (_, i) => `transcript row #${991 + i}`));
   session.dispose(); jest.useRealTimers();
 });
 
-it('steps back and continues with single units when a sized step overshoots the overlap', async () => {
+it('undoes a request that accelerated past the overlap and keeps the smaller size', async () => {
   jest.useFakeTimers();
-  // The first unit moves 3 rows; later units move 9, so 5 units skip the whole screen.
-  const { session, call } = programFixture({ multiplier: (step) => step === 0 ? 3 : 9 });
+  // 1 unit moves 2 rows and 2 move 4, but 3 jump 40 rows: past the 35-row screen.
+  const { session, call } = programFixture({ multiplier: (units) => [0, 2, 4, 40][units] ?? 40 });
   await session.inspectScrollMode(); session.startApplicationHistory();
-  let loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(20); await loading;
-  loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(2_000); await loading;
-  expect(deltas(call)).toEqual([1, 5, -5]);
+  for (let i = 0; i < 2; i++) { const loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(120); await loading; }
+  const loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(2_200); await loading;
+  expect(deltas(call)).toEqual([1, 2, 3, -3]);
   expect(session.getState().browse).toMatchObject({ error: null, exhausted: false, loading: false });
-  loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(20); await loading;
-  expect(deltas(call).at(-1)).toBe(1);
-  expect(transcriptOf(session)).toEqual(Array.from({ length: 31 + 12 }, (_, i) => `transcript row #${1000 - 12 + i}`));
+  for (let i = 0; i < 2; i++) { const next = session.loadOlder(); await jest.advanceTimersByTimeAsync(120); await next; }
+  expect(deltas(call).slice(4)).toEqual([2, 2]);
+  expect(transcriptOf(session)).toEqual(Array.from({ length: 31 + 14 }, (_, i) => `transcript row #${1000 - 14 + i}`));
+  session.resumeLive(); await jest.advanceTimersByTimeAsync(500); await session.applicationSettled();
+  // The undone request is not replayed.
+  expect(deltas(call).slice(6)).toEqual([-2, -2, -2, -1]);
+  session.dispose(); jest.useRealTimers();
+});
+
+it('takes a step that revealed only blank rows once the screen holds still', async () => {
+  jest.useFakeTimers();
+  const { session, push } = programFixture({ push: false }); await session.inspectScrollMode();
+  // Blank lines above the visible transcript, like gaps between messages.
+  const rows = ['header', 'transcript', ...Array.from({ length: 31 }, (_, i) => `transcript row #${1000 + i}`), 'input', 'status 1'];
+  push(rows); session.startApplicationHistory();
+  const blank = ['header', 'transcript', '', '', '', ...rows.slice(2, -5), 'input', 'status 1'];
+  (session as unknown as { channel: RpcChannel }).channel.call = (async (method: string) => method === 'surface.read_text' ? { text: blank.join('\n') } : {}) as RpcChannel['call'];
+  const loading = session.loadOlder();
+  await jest.advanceTimersByTimeAsync(200);
+  expect(session.getState().browse?.loading).toBe(true);
+  await jest.advanceTimersByTimeAsync(200); await loading;
+  expect(session.getState().browse).toMatchObject({ loading: false, error: null, exhausted: false });
+  expect(session.getState().browse!.olderRows.slice(-3)).toEqual(['', '', '']);
   session.dispose(); jest.useRealTimers();
 });
 
 it('colors rows read as plain text once a pushed frame shows them', async () => {
   jest.useFakeTimers();
   const { session, push } = programFixture({ push: false, colors: true }); await session.inspectScrollMode(); session.startApplicationHistory();
-  const loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(40); await loading;
+  const loading = session.loadOlder(); await jest.advanceTimersByTimeAsync(80); await loading;
   expect(session.getState().browse!.olderRows.filter(row => row.startsWith('transcript row #'))).toHaveLength(9);
   push();
   const older = session.getState().browse!.olderRows.filter(row => row.includes('transcript row #'));

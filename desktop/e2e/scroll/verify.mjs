@@ -6,7 +6,7 @@
 // fixture (`../activity/bridge.js`): no real gateway, credentials or input.
 //
 // The fixture's program (alternate screen, mouse reporting, 9 rows per wheel
-// unit, like Claude Code in cmux) redraws 15 ms after a wheel step, but the
+// unit) redraws 15 ms after a wheel step, but the
 // pushed frame arrives 250 ms later, as from a relay polling a quiet screen.
 // Two swipes of 60 × 40 px must each move the list by the full 2400 px.
 import assert from 'node:assert/strict';
@@ -61,12 +61,14 @@ try {
   assert.ok(visible.length >= 20, `Only ${visible.length} history lines on screen`);
   assert.deepEqual(visible.filter((row, index) => index && row !== visible[index - 1] + 1), [], 'Visible program history has no gaps');
   const steps = await page.evaluate(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll').map(call => call.params.delta_lines));
-  assert.ok(steps.slice(1).some(step => step > 1), `Later steps are sized from the first: ${steps.slice(0, 6)}`);
   await page.screenshot({ path: `${artifact}/scrolled.png` });
   await page.getByRole('button', { name: '回到最新输出' }).click();
-  await page.waitForFunction(() => window.panecastFixture.calls.some(call => call.method === 'terminal.scroll' && call.params.delta_lines < 0));
+  // The return replays each request in reverse, 50 ms apart.
+  await page.waitForFunction(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll')
+    .reduce((total, call) => total + call.params.delta_lines, 0) === 0, undefined, { timeout: 15_000 });
   const sent = await page.evaluate(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll').map(call => call.params.delta_lines));
-  assert.equal(sent.reduce((total, delta) => total + delta, 0), 0, 'Leaving history scrolls the program back by exactly what was sent');
+  const up = sent.filter(delta => delta > 0), down = sent.filter(delta => delta < 0);
+  assert.deepEqual(down, [...up].reverse().map(delta => -delta), 'Leaving history replays each request in reverse');
   assert.deepEqual(errors, []);
   console.log(`WebKit scroll passed: ${first} px and ${second - first} px of 2400 px per swipe, ${steps.length} program steps (${steps.slice(0, 4).join(', ')}, …).`);
 } catch (error) {
