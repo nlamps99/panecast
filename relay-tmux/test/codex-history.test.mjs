@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodexSource } from '../src/hub/codex.mjs';
 import { mobileItem, mobileTurn } from '../src/hub/codex-history.mjs';
+import { RpcError } from '../src/tmux.mjs';
 
 test('a long tool-heavy conversation keeps its messages and sends bounded previews', () => {
   const turn = mobileTurn({ id: 'turn', status: 'completed', items: [
@@ -30,7 +31,10 @@ test('a user can explicitly resume a completed conversation, but viewing does no
     if (method === 'thread/loaded/list') return { data: [...loaded] };
     if (method === 'thread/read') return { thread: { id: p.threadId } };
     if (method === 'thread/turns/list') return { data: [{ id: 'turn', status, items: [] }] };
-    if (method === 'thread/resume') { loaded.add(p.threadId); return { thread: { id: p.threadId } }; }
+    if (method === 'thread/resume') {
+      if (p.threadId === 'other') throw new RpcError('-32600', 'thread other already has an active writer');
+      loaded.add(p.threadId); return { thread: { id: p.threadId } };
+    }
     if (method === 'thread/fork') { loaded.add('fork'); return { thread: { id: 'fork' } }; }
     throw new Error('unexpected call '+method);
   } };
@@ -38,7 +42,7 @@ test('a user can explicitly resume a completed conversation, but viewing does no
   await source.dispatch('agent.subscribe', { thread_id: 'saved' }); assert.equal(calls.includes('thread/resume'), false);
   assert.equal((await source.dispatch('agent.resume', { thread_id: 'saved' })).thread.live, true);
   status = 'inProgress';
-  await assert.rejects(source.dispatch('agent.resume', { thread_id: 'other' }), { code: 'thread_busy_elsewhere' });
+  await assert.rejects(source.dispatch('agent.resume', { thread_id: 'other' }), { code: 'thread_owned_elsewhere' });
   assert.equal((await source.dispatch('agent.fork', { thread_id: 'other' })).thread.id, 'fork');
 });
 

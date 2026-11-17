@@ -6,6 +6,7 @@ import { stat, realpath, readFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { mobileItem, mobileTurn } from './codex-history.mjs';
 import { desktopParent } from './desktop-bridge.mjs';
+import { activeWriterError, inspectThreadWriter } from './codex-writer.mjs';
 
 const APPROVALS = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval']);
 const ACTIONS = new Set(['agent.threads', 'agent.read', 'agent.pending', 'agent.projects', 'agent.subscribe', 'agent.unsubscribe', 'agent.create', 'agent.resume', 'agent.fork', 'agent.rename', 'agent.archive', 'agent.send', 'agent.steer', 'agent.interrupt', 'agent.respond']);
@@ -15,10 +16,11 @@ const text = (value, max = 100_000) => {
 };
 
 export class CodexSource {
-  constructor(config, emit, peerFactory = (options) => new RpcPeer(options)) {
+  constructor(config, emit, peerFactory = (options) => new RpcPeer(options), writerResolver = inspectThreadWriter) {
     this.config = config; this.emit = emit; this.peerFactory = peerFactory;
     this.pending = new Map(); this.subscribed = new Set(); this.freshThreads = new Map();
     this.mode = config.mode === 'history' ? 'managed' : config.mode ?? 'attach';
+    this.writerResolver = writerResolver; this.externalWriters = new Map();
     if (!['attach', 'managed'].includes(this.mode)) throw new Error('Codex mode must be attach or managed');
     if (config.url) localEndpoint(config.url);
   }
@@ -100,6 +102,7 @@ export class CodexSource {
         throw error;
       }
       const live = (await this.loaded(peer)).has(threadId);
+      await this.observeWriter(threadId, live);
       try {
         const limit = Number.isInteger(p.limit) ? Math.max(1, Math.min(20, p.limit)) : 5;
         const page = await peer.call('thread/turns/list', { threadId, limit, sortDirection: 'desc', itemsView: 'full', ...(p.cursor ? { cursor: text(p.cursor, 4096) } : {}) });
@@ -121,19 +124,15 @@ export class CodexSource {
         const { thread } = await peer.call('thread/read', { threadId });
         return { thread: this.thread(thread, false) };
       }
-      const result = await peer.call('thread/resume', { threadId, excludeTurns: true });
+      const result = await this.resume(peer, threadId);
       this.subscribed.add(threadId);
       return { thread: this.thread(result.thread, true) };
     }
     // The source connection is shared by phones; closing a view must not unsubscribe another phone.
     if (method === 'agent.unsubscribe') return {};
     if (method === 'agent.resume' || method === 'agent.fork') {
-      const loaded = (await this.loaded(peer)).has(threadId);
-      if (!loaded && method === 'agent.resume') {
-        const page = await peer.call('thread/turns/list', { threadId, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
-        if (page.data?.[0]?.status === 'inProgress') throw new RpcError('thread_busy_elsewhere', '这条记录可能仍在另一个服务中运行。可从这段历史新建对话，或先在电脑上结束原任务。');
-      }
-      const result = await peer.call(method === 'agent.fork' ? 'thread/fork' : 'thread/resume', { threadId, excludeTurns: true });
+      const result = method === 'agent.fork' ? await peer.call('thread/fork', { threadId, excludeTurns: true }) : await this.resume(peer, threadId);
+      this.externalWriters.delete(result.thread.id);
       this.subscribed.add(result.thread.id);
       return { thread: this.thread(result.thread, true) };
     }
@@ -142,7 +141,7 @@ export class CodexSource {
     if (method === 'agent.archive') return peer.call('thread/archive', { threadId });
     if (method === 'agent.interrupt') return peer.call('turn/interrupt', { threadId, turnId: text(p.turn_id, 200) });
     if (!this.subscribed.has(threadId)) {
-      await peer.call('thread/resume', { threadId, excludeTurns: true });
+      await this.resume(peer, threadId);
       this.subscribed.add(threadId);
     }
     if (method === 'agent.send' || method === 'agent.steer') {
@@ -164,6 +163,33 @@ export class CodexSource {
   }
 
   async loaded(peer) { return new Set((await peer.call('thread/loaded/list')).data ?? []); }
+
+  async observeWriter(threadId, live) {
+    if (live) { this.externalWriters.delete(threadId); return; }
+    try {
+      const writer = await this.writerResolver(this.config, threadId);
+      if (writer) this.externalWriters.set(threadId, writer); else this.externalWriters.delete(threadId);
+    } catch { /* Discovery is optional; native resume still verifies ownership. */ }
+  }
+
+  async resume(peer, threadId) {
+    if (this.subscribed.has(threadId) && (await this.loaded(peer)).has(threadId)) return peer.call('thread/read', { threadId });
+    try {
+      const result = await peer.call('thread/resume', { threadId, excludeTurns: true });
+      this.externalWriters.delete(threadId); return result;
+    } catch (error) {
+      if (!activeWriterError(error)) throw error;
+      // A concurrent request may have loaded it on this very service. Reuse
+      // that session instead of claiming the file through another process.
+      if ((await this.loaded(peer).catch(() => new Set())).has(threadId)) {
+        try { return await peer.call('thread/resume', { threadId, excludeTurns: true }); }
+        catch (retry) { if (!activeWriterError(retry)) throw retry; }
+      }
+      await this.observeWriter(threadId, false);
+      if (!this.externalWriters.has(threadId)) this.externalWriters.set(threadId, { terminal: null });
+      throw new RpcError('thread_owned_elsewhere', '这条对话仍由另一个 Codex 终端或服务打开。请去原终端继续，或关闭原会话后重试；也可以从历史新建。任务已完成时，原终端仍可能持有它。');
+    }
+  }
 
   async projects(peer) {
     const configured = Array.isArray(this.config.projects) ? this.config.projects : [];
@@ -190,6 +216,7 @@ export class CodexSource {
     return { id: thread.id, name: thread.name ?? thread.preview?.slice(0, 100) ?? thread.id,
       cwd: thread.cwd ?? '', updatedAt: thread.updatedAt, status: thread.status,
       live,
+      ...(!live && this.externalWriters.has(thread.id) ? { writerState: 'other_process', writerTarget: this.externalWriters.get(thread.id).terminal } : {}),
       ...(thread.modelProvider ? { modelProvider: thread.modelProvider } : {}) };
   }
 

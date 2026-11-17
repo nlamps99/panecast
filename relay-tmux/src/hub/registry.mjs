@@ -57,7 +57,7 @@ export class SourceRegistry {
   codex(id) {
     const source = this.get(id);
     if (source.config.type !== 'codex') throw new RpcError('invalid_source', '请选择 Codex 来源');
-    source.codex ??= new CodexSource(source.config, (frame) => this.emit(frame), this.options.peerFactory);
+    source.codex ??= new CodexSource(source.config, (frame) => this.emit(frame), this.options.peerFactory, this.options.writerResolver);
     return source.codex;
   }
 

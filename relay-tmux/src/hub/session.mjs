@@ -2,11 +2,12 @@ import { RelaySession, inputItems, sendInputItems } from '../server.mjs';
 import { RpcError } from '../tmux.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scopeResult, scoped, targetParams } from './ids.mjs';
+import { realpath } from 'node:fs/promises';
 import { TERMINAL_TYPES, terminalBackend } from './registry.mjs';
 import { TerminalConversationReader, localConversationSource } from './terminal-conversation.mjs';
 
 const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
-const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'notification.create']);
+const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'terminal.paste', 'notification.create']);
 const MAX_BATCH = 64, BATCH_PARALLEL = 4;
 
 /** A phone keeps one authenticated connection while sources keep independent transports. */
@@ -128,7 +129,10 @@ export class HubSession extends RelaySession {
     if (method.startsWith('agent.')) {
       const source = this.registry.get(p.source_id);
       if (source.config.type !== 'codex') throw new RpcError('invalid_source', '请选择 Codex 来源');
-      return this.registry.codex(p.source_id).dispatch(method, p);
+      const result = await this.registry.codex(p.source_id).dispatch(method, p);
+      if (result?.thread) await this.originalTerminal(result.thread);
+      for (const thread of result?.threads ?? []) delete thread.writerTarget;
+      return result;
     }
     if (method === 'terminal.conversation.batch') return this.conversationBatch(p);
     if (!READS.has(method) && !WRITES.has(method)) throw new RpcError('method_not_found', '统一网关不支持这个操作');
@@ -169,10 +173,18 @@ export class HubSession extends RelaySession {
         throw error;
       }
       source.conversationReader ??= new TerminalConversationReader({ codexHome: source.config.codex_home, claudeHome: source.config.claude_home });
-      try { return await source.conversationReader.read(info.resume_binding, params); }
+      try {
+        const result = await source.conversationReader.read(info.resume_binding, params);
+        if (result.available && source.config.access === 'control') {
+          source.pasteCapability ??= this.client(id).call('system.capabilities', {}).then(r => (r.methods ?? []).includes('terminal.paste')).catch(() => false);
+          if (await source.pasteCapability) result.input_method = 'terminal.paste';
+        }
+        return result;
+      }
       catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('conversation_unavailable', '对话记录暂时不可用，请稍后重试'); }
     }
-    if ((method === 'terminal.replay' || method === 'terminal.scroll') && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持应用内滚动');
+    if (['terminal.replay', 'terminal.scroll', 'terminal.paste'].includes(method) && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持此操作');
+    if (method === 'terminal.paste' && (!params.workspace_id || !params.surface_id || typeof params.text !== 'string' || !params.text.trim() || params.text.length > 64_000 || params.submit_key !== 'return')) throw new RpcError('invalid_params', '消息或目标无效');
     if (method === 'surface.input') {
       // Runs on the hub, next to the terminal: the phone or desktop pays one
       // network round trip for everything typed meanwhile, in order.
@@ -213,4 +225,29 @@ export class HubSession extends RelaySession {
   }
 
   terminals() { return [...this.registry.sources.values()].filter((s) => s.config.type !== 'codex'); }
+  async originalTerminal(thread) {
+    const target = thread.writerTarget;
+    delete thread.writerTarget;
+    if (!target) return;
+    for (const source of this.terminals()) {
+      const c = source.config;
+      if (c.type !== target.backend || c.access !== 'control') continue;
+      try {
+        let workspaceId = target.workspaceId, surfaceId = target.surfaceId;
+        if (target.backend === 'tmux') {
+          const backend = terminalBackend(c);
+          const info = (await backend.tmux(['display-message', '-p', '-t', target.paneId, '#{socket_path}\t#{session_id}'])).trim().split('\t');
+          const [actual, expected] = await Promise.all([realpath(info[0]), realpath(target.socketPath)]);
+          if (actual !== expected) continue;
+          workspaceId = info[1]; surfaceId = target.paneId;
+          await backend.surface({ workspace_id: workspaceId, surface_id: surfaceId });
+        } else {
+          const result = await this.client(c.id).call('surface.list', { workspace_id: workspaceId });
+          if (!(result.surfaces ?? []).some((surface) => surface.id === surfaceId)) continue;
+        }
+        thread.originalTerminal = { workspaceId: scoped(c.id, workspaceId), surfaceId: scoped(c.id, surfaceId), sourceName: c.name };
+        return;
+      } catch { /* Offer navigation only after verifying the authorized target. */ }
+    }
+  }
 }

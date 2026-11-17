@@ -1,3 +1,4 @@
+import { conversationUserText } from './conversation-visibility.mjs';
 const text = (value, limit) => typeof value === 'string' && limit > 0 ? value.slice(-limit) : '';
 const visibleTypes = new Set(['userMessage', 'agentMessage', 'plan', 'commandExecution', 'fileChange', 'mcpToolCall']);
 const messages = new Set(['userMessage', 'agentMessage', 'plan']);
@@ -10,9 +11,11 @@ export function mobileItem(item) {
   let truncated = false;
   const take = (value, limit) => { if (typeof value === 'string' && value.length > limit) truncated = true; return text(value, limit); };
   if (item.type === 'userMessage') {
+    const visible = conversationUserText(item);
+    if (visible === null) return null;
     const parts = (Array.isArray(item.content) ? item.content : []).filter((c) => c?.type === 'text');
     if (parts.length > 8) truncated = true;
-    result.content = [{ type: 'text', text: take(parts.slice(-8).map((c) => take(c.text, 16_000)).join('\n'), 16_000) }];
+    result.content = [{ type: 'text', text: take(visible, 16_000) }];
   } else if (messages.has(item.type)) result.text = take(item.text, 16_000);
   else if (item.type === 'commandExecution') { result.command = take(item.command, 2000); result.aggregatedOutput = take(item.aggregatedOutput, 6000); }
   else if (item.type === 'fileChange') {

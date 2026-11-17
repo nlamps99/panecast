@@ -18,7 +18,7 @@ async function upstream(t, codex = false) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(server, 'listening');
   t.after(async () => { for (const ws of server.clients) ws.terminate(); await new Promise((resolve) => server.close(resolve)); });
-  const calls = [], responses = [], bindings = new Map();
+  const calls = [], responses = [], bindings = new Map(); let loaded = ['thread-1'];
   const limits = { max_message_bytes: 24 * 1024 * 1024, max_upload_bytes: 12 * 1024 * 1024 };
   server.on('connection', (ws) => ws.on('message', (raw) => {
     const m = JSON.parse(raw); if (!m.method) { if ('result' in m) responses.push(m); return; }
@@ -26,12 +26,13 @@ async function upstream(t, codex = false) {
     if (m.id == null) return;
     let result = {};
     if (m.method === 'relay.info') result = limits;
+    if (m.method === 'system.capabilities') result = { methods: ['terminal.paste'] };
     if (m.method === 'window.list') result = { windows: [{ id: 'window', ref: 'window:1', key: true }] };
     if (m.method === 'workspace.list') result = { window_id: 'window', workspaces: [{ id: '$0', title: 'cmux workspace', selected: true }] };
     if (m.method === 'surface.list') result = { surfaces: [{ id: '%0', title: 'cmux shell', type: 'terminal' }] };
     if (m.method === 'surface.resume.get') result = { resume_binding: bindings.get(m.params.surface_id) ?? null };
     if (m.method === 'surface.subscribe') ws.send(JSON.stringify({ type: 'screen.full', surface_id: m.params.surface_id, rev: 1, rows: ['cmux output'], cols: 80, rowsCount: 1, cursor: { x: 0, y: 0 } }));
-    if (m.method === 'thread/loaded/list') result = { data: ['thread-1'] };
+    if (m.method === 'thread/loaded/list') result = { data: loaded };
     const thread = { id: 'thread-1', name: 'Desktop conversation', cwd: '/project', status: { type: 'idle' } };
     if (m.method === 'thread/list') result = { data: [thread], nextCursor: null };
     if (['thread/read', 'thread/resume', 'thread/start'].includes(m.method)) result = { thread };
@@ -39,7 +40,7 @@ async function upstream(t, codex = false) {
     if (m.method === 'turn/start') result = { turn: { id: 'turn-2', status: 'inProgress', items: [] } };
     ws.send(JSON.stringify({ id: m.id, ...(codex ? {} : { ok: true }), result }));
   }));
-  return { server, calls, responses, bindings, limits, url: `ws://127.0.0.1:${server.address().port}`, emit(message) { for (const ws of server.clients) ws.send(JSON.stringify(message)); } };
+  return { server, calls, responses, bindings, limits, url: `ws://127.0.0.1:${server.address().port}`, setLoaded(ids) { loaded = ids; }, emit(message) { for (const ws of server.clients) ws.send(JSON.stringify(message)); } };
 }
 
 async function fixture(t) {
@@ -58,8 +59,8 @@ async function fixture(t) {
   return { directory, tmux, workspace_id, surface, cmux, codex, sources };
 }
 
-async function connect(t, config) {
-  const hub = await createHub(config);
+async function connect(t, config, options) {
+  const hub = await createHub(config, options);
   const address = await hub.start(); t.after(() => hub.close());
   const base = `http://127.0.0.1:${address.port}`;
   const response = await fetch(base + '/v1/devices/me/register', { method: 'POST', body: JSON.stringify({ pairing_code: 'pair-secret', client_id: 'phone', device_name: 'Phone' }) });
@@ -77,6 +78,9 @@ test('cmux application history forwards replay and scrolling with target checks'
   assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', anchor: 'screen', max_scrollback_rows: 0 });
   await peer.call('terminal.scroll', { ...target, delta_lines: 10, col: 40, row: 10 });
   assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', delta_lines: 10, col: 40, row: 10 });
+  await peer.call('terminal.paste', { ...target, text: 'multi\nline', submit_key: 'return' });
+  assert.deepEqual(fx.cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0', text: 'multi\nline', submit_key: 'return' });
+  await assert.rejects(peer.call('terminal.paste', { ...target, text: 'bad', submit_key: 'none' }), { code: 'invalid_params' });
   await assert.rejects(peer.call('terminal.scroll', { ...target, surface_id: scoped('tmux', fx.surface.id), delta_lines: 10 }), { code: 'invalid_target' });
   await assert.rejects(peer.call('terminal.replay', { workspace_id: scoped('tmux', fx.workspace_id), surface_id: scoped('tmux', fx.surface.id) }), { code: 'method_not_found' });
 });
@@ -111,12 +115,13 @@ test('terminal chat reads only the selected binding and honors source scope and 
   const target = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
   const page = await peer.call('terminal.conversation', target);
   assert.equal(page.available, true); assert.equal(page.conversation_id, id); assert.equal(page.items[0].content[0].text, 'selected answer');
-  assert.deepEqual(cmux.calls.at(-1).params, { workspace_id: '$0', surface_id: '%0' });
+  assert.deepEqual(cmux.calls.filter((call) => call.method === 'surface.resume.get').at(-1).params, { workspace_id: '$0', surface_id: '%0' });
   const second = await peer.call('terminal.conversation', { ...target, surface_id: scoped('cmux', '%1') });
   assert.equal(second.conversation_id, other); assert.equal(second.items[0].content[0].text, 'different terminal');
   assert.equal((await peer.call('terminal.conversation', { ...target, surface_id: scoped('cmux', '%2') })).available, false);
   await assert.rejects(peer.call('terminal.conversation', { ...target, surface_id: scoped('different', '%0') }), { code: 'invalid_target' });
   assert.equal(cmux.calls.some(call => /send|resume$|turn\/start/.test(call.method)), false);
+  assert.equal((await peer.call('terminal.conversation', target)).input_method, 'terminal.paste');
   hub.reloadSources([]);
   await assert.rejects(peer.call('terminal.conversation', target), { code: 'source_revoked' });
 });
@@ -200,6 +205,29 @@ test('every configured source has full control regardless of legacy grant fields
   assert.equal(registry.info(registry.get('codex')).mode, 'managed');
   assert.equal(new CodexSource({ id: 'codex', mode: 'history' }, () => {}).mode, 'managed');
   registry.close();
+});
+
+test('original terminal navigation offers only a verified terminal and scopes native IDs', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'panecast-owner-link-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const cmux = await upstream(t), codex = await upstream(t, true); codex.setLoaded([]);
+  const sources = [
+    { id: 'cmux', type: 'cmux', url: cmux.url, token: 'cmux-test-token', device_id: 'hub' },
+    { id: 'codex', type: 'codex', mode: 'attach', url: codex.url },
+  ];
+  let target = { backend: 'cmux', workspaceId: '$0', surfaceId: '%0' };
+  const { hub, peer } = await connect(t, { state_directory: directory, port: 0, lan: { pairing_code: 'pair-secret' }, sources }, { writerResolver: async () => ({ pid: 123, terminal: target }) });
+  const read = () => peer.call('agent.read', { source_id: 'codex', thread_id: 'thread-1' });
+  let result = await read();
+  assert.equal(result.thread.writerState, 'other_process'); assert.equal(result.thread.writerTarget, undefined);
+  assert.deepEqual(result.thread.originalTerminal, { workspaceId: scoped('cmux', '$0'), surfaceId: scoped('cmux', '%0'), sourceName: 'cmux' });
+  // A writer in a terminal the source does not list is not offered.
+  target = { backend: 'cmux', workspaceId: '$0', surfaceId: '%9' };
+  result = await read();
+  assert.equal(result.thread.writerState, 'other_process'); assert.equal(result.thread.originalTerminal, undefined);
+  // Removing the terminal source from the config withdraws navigation.
+  target = { backend: 'cmux', workspaceId: '$0', surfaceId: '%0' };
+  hub.reloadSources(sources.filter((s) => s.id !== 'cmux'));
+  assert.equal((await read()).thread.originalTerminal, undefined);
 });
 
 test('opening persisted history never starts another copy of a desktop task', async () => {

@@ -4,13 +4,13 @@ import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { RpcError } from '../tmux.mjs';
+import { conversationUserText, visibleUserText } from './conversation-visibility.mjs';
 
 const WINDOW = 4 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const clipped = (value, limit = 16000) => typeof value === 'string' ? value.slice(0, limit) : '';
 const blocks = value => Array.isArray(value) ? value : typeof value === 'string' ? [{ type: 'text', text: value }] : [];
 const body = value => clipped(blocks(value).filter(p => ['text', 'input_text', 'output_text'].includes(String(p?.type).toLowerCase())).map(p => clipped(p.text)).join('\n'));
-const safeUser = text => !/^\s*(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<system-reminder>|<local-command-caveat>)/.test(text);
 const display = value => value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value);
 const command = value => Array.isArray(value) ? value.length >= 3 && ['-lc', '-c'].includes(value[1]) ? clipped(value.slice(2).join(' '), 2000) : clipped(value.join(' '), 2000) : clipped(value, 2000);
 const state = value => /fail|error|denied/i.test(value ?? '') ? 'failed' : /progress|running/i.test(value ?? '') ? 'inProgress' : 'completed';
@@ -18,7 +18,7 @@ const state = value => /fail|error|denied/i.test(value ?? '') ? 'failed' : /prog
 function question(input) {
   const questions = input?.questions;
   if (!Array.isArray(questions)) return '';
-  return questions.map(q => [q.question, ...(q.options ?? []).map(o => `${o.label}${o.description ? `：${o.description}` : ''}`)].filter(Boolean).join('\n')).join('\n\n');
+  return questions.map(q => [q.question ?? q.title, ...(q.options ?? []).map(o => typeof o === 'string' ? o : `${o.label}${o.description ? `：${o.description}` : ''}`)].filter(Boolean).join('\n')).join('\n\n');
 }
 
 /** Only public messages and tool details leave the host; reasoning/auth records are ignored. */
@@ -34,6 +34,14 @@ export function parseConversation(records, provider, sessionId, options = {}) {
       updatedSequence: sequence, timestamp: Date.parse(record.value.timestamp ?? '') || 0 });
   };
   if (provider === 'codex') {
+    // Child-thread events can appear in a parent rollout. Filter before
+    // choosing the canonical format or deriving task activity.
+    records = records.filter(({ value: r }) => {
+      const p = r.payload ?? {}, item = p.item ?? {};
+      return [p.thread_id, p.threadId, item.thread_id, item.threadId].every(id => !id || id === sessionId);
+    });
+    const rawUsers = new Map(records.filter(r => r.value.type === 'response_item' && r.value.payload?.role === 'user' && r.value.payload.id)
+      .map(r => [r.value.payload.id, r.value.payload]));
     const canonical = records.some(r => r.value.type === 'event_msg' && r.value.payload?.type === 'item_completed');
     const eventUsers = records.some(r => r.value.type === 'event_msg' && r.value.payload?.type === 'user_message');
     for (const record of records) {
@@ -46,26 +54,31 @@ export function parseConversation(records, provider, sessionId, options = {}) {
         const item = p.item ?? {}, type = String(item.type).toLowerCase();
         const id = `${p.turn_id ?? 'turn'}:${typeof item.id === 'string' ? item.id : record.offset}`;
         if (type === 'usermessage') {
-          const text = body(item.content); if (text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record);
+          const text = conversationUserText(rawUsers.get(item.id) ?? item);
+          if (text) put(id, 'userMessage', { content: [{ type: 'text', text: clipped(text) }], ...(item.client_id ? { clientId: item.client_id } : {}) }, record);
         } else if (type === 'agentmessage' && item.phase !== 'analysis') {
           const text = body(item.content); if (text) put(id, 'agentMessage', { text, phase: ['final', 'final_answer'].includes(item.phase) ? 'final' : 'commentary' }, record);
-          if (item.phase === 'final') active = false;
+          if (['final', 'final_answer'].includes(item.phase)) active = false;
         } else if (type === 'commandexecution') put(id, 'commandExecution', { command: command(item.command), aggregatedOutput: clipped(item.aggregated_output, 6000), status: item.exit_code ? 'failed' : state(item.status) }, record);
         else if (type === 'filechange') put(id, 'fileChange', { status: state(item.status), changes: Object.entries(item.changes ?? {}).slice(0, 20).map(([path, change]) => ({ path: clipped(path, 500), diff: clipped(change?.unified_diff, 2000) })) }, record);
         else if (/tool|websearch|collab|imagegeneration/.test(type) && type !== 'reasoning') put(id, 'toolExecution', { tool: clipped(item.tool ?? item.name ?? item.type, 100), text: clipped(display(item.output ?? item.result), 4000), status: state(item.status) }, record);
       }
-      if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && p.name === 'request_user_input') {
+      const asksUser = /(?:^|[./])request_user_input(?:_async)?$/.test(p.name ?? '');
+      if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && asksUser) {
         let input; try { input = JSON.parse(p.arguments ?? p.input); } catch {}
         const text = question(input); if (text) put(`${p.call_id}:question`, 'agentMessage', { text, needsInput: true }, record);
       }
       if (canonical) continue;
       if (r.type === 'event_msg' && p.type === 'user_message') {
-        const text = clipped(p.message); if (text && safeUser(text)) put(`user:${record.offset}`, 'userMessage', { content: [{ type: 'text', text }] }, record);
+        const text = visibleUserText(p.message ?? ''); if (text) put(`user:${record.offset}`, 'userMessage', { content: [{ type: 'text', text: clipped(text) }] }, record);
       } else if (r.type === 'response_item' && p.type === 'message') {
         const text = body(p.content), id = p.id ?? `message:${record.offset}`;
-        if (p.role === 'assistant' && p.channel !== 'analysis' && text) put(id, 'agentMessage', { text, phase: ['final', 'final_answer'].includes(p.phase ?? p.channel) ? 'final' : 'commentary' }, record);
-        else if (p.role === 'user' && !eventUsers && text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record);
-      } else if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && p.name !== 'request_user_input') {
+        if (p.role === 'assistant' && p.channel !== 'analysis' && (!p.recipient || p.recipient === 'all') && text) put(id, 'agentMessage', { text, phase: ['final', 'final_answer'].includes(p.phase ?? p.channel) ? 'final' : 'commentary' }, record);
+        else if (p.role === 'user' && !eventUsers) {
+          const userText = conversationUserText(p);
+          if (userText) put(id, 'userMessage', { content: [{ type: 'text', text: clipped(userText) }] }, record);
+        }
+      } else if (r.type === 'response_item' && ['function_call', 'custom_tool_call'].includes(p.type) && !asksUser) {
         let input; try { input = JSON.parse(p.arguments ?? p.input); } catch { input = {}; }
         put(p.call_id ?? p.id, /exec|shell/.test(p.name) ? 'commandExecution' : 'toolExecution', {
           command: command(input.cmd ?? input.command), tool: clipped(p.name, 100), text: clipped(display(input), 2000), status: 'inProgress',
@@ -94,8 +107,8 @@ export function parseConversation(records, provider, sessionId, options = {}) {
       const content = blocks(message.content);
       for (let i = 0; i < Math.min(content.length, 128); i++) {
         const b = content[i], id = `${r.uuid}:${i}`;
-        if (b.type === 'text' && r.type === 'user' && !r.isMeta) {
-          const text = clipped(b.text); if (text && safeUser(text)) put(id, 'userMessage', { content: [{ type: 'text', text }] }, record, i);
+        if (b.type === 'text' && r.type === 'user' && !r.isMeta && !r.isCompactSummary) {
+          const text = visibleUserText(b.text ?? ''); if (text) put(id, 'userMessage', { content: [{ type: 'text', text: clipped(text) }] }, record, i);
         } else if (b.type === 'text' && r.type === 'assistant' && b.text) put(id, 'agentMessage', { text: clipped(b.text), phase: message.stop_reason === 'end_turn' ? 'final' : 'commentary' }, record, i);
         else if (b.type === 'image' && r.type === 'user') put(id, 'userMessage', { content: [{ type: 'text', text: '[图片]' }] }, record, i);
         else if (b.type === 'tool_use') {

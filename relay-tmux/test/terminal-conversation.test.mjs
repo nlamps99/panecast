@@ -51,6 +51,11 @@ test('legacy Codex calls retain visible questions and late results', () => {
   assert.match(p.items.at(-1).text, /选择环境？\n测试/);
 });
 
+test('namespaced asynchronous questions keep their title and text options', () => {
+  const parsed = parseConversation(records([{ type: 'response_item', payload: { type: 'function_call', call_id: 'q', name: 'functions.request_user_input_async', arguments: JSON.stringify({ questions: [{ title: '选择环境？', options: ['测试', '生产'] }] }) } }]), 'codex', id);
+  assert.equal(parsed.items[0].text, '选择环境？\n测试\n生产');
+});
+
 test('Claude follows the current parent chain, combines tool results and excludes sidechains/thinking', () => {
   const p = parseConversation(records([
     claude('u', null, 'user', 'hello'),
@@ -105,7 +110,8 @@ test('Claude compaction context and metadata do not start a new user turn', asyn
   const fx = await fixture(t, 'claude', values);
   const page = await fx.reader.read(fx.binding);
   assert.equal(page.active, false);
-  assert.ok(page.items.some(item => item.content?.[0]?.text === 'Previous work summary'));
+  // The summary is compaction context, not something the user typed.
+  assert.equal(page.items.some(item => item.content?.[0]?.text === 'Previous work summary'), false);
   const cached = await fx.reader.read(fx.binding, { revision: page.revision });
   assert.equal(cached.unchanged, true); assert.equal(cached.active, false);
   await appendFile(fx.file, jsonl([claude('meta', 'summary', 'user', 'Context update', { isMeta: true })]));

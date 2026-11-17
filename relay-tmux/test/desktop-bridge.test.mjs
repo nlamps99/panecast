@@ -111,4 +111,16 @@ test('desktop and phone share one real running Codex turn: steer and interrupt',
   assert.equal(created.thread.name, '手机新建对话');
   assert.equal((await phone.dispatch('agent.subscribe', { thread_id: created.thread.id })).thread.live, true);
   assert.deepEqual((await phone.dispatch('agent.read', { thread_id: created.thread.id })).turns, []);
+  const independent = new RpcPeer({ command: executable, args: desktop.options.args.slice(1), env: { CODEX_HOME: codexHome }, codex: true });
+  t.after(() => independent.close());
+  const otherService = new CodexSource({ id: 'independent', mode: 'attach', access: 'control', codex_home: codexHome }, () => {}, () => independent);
+  await assert.rejects(otherService.dispatch('agent.resume', { thread_id: thread.id }), { code: 'thread_owned_elsewhere' });
+  const occupied = await otherService.dispatch('agent.read', { thread_id: thread.id });
+  assert.equal(occupied.thread.writerState, 'other_process'); assert.equal(occupied.thread.live, false);
+  assert.ok((await desktop.call('thread/loaded/list')).data.includes(thread.id), 'the original writer remains loaded and is never terminated or unlocked');
+  phone.close(); desktop.close();
+  for (let i = 0; i < 60 && desktop.child?.exitCode === null && desktop.child?.signalCode === null; i++) await delay(50);
+  const recovered = await otherService.dispatch('agent.resume', { thread_id: thread.id });
+  assert.equal(recovered.thread.live, true, 'the same conversation can resume once the original writer normally releases it');
+  assert.equal(recovered.thread.writerState, undefined);
 });
