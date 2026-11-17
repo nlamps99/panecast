@@ -30,6 +30,9 @@ async function main() {
   panecast weixin status | logout        查看微信通道或停用
   panecast supervisor start              创建 cmux「监工」并接入微信
   panecast supervisor status | pause | resume
+  panecast share create 名称 [--dir 目录]  在 cmux 新开一个受限的 Claude 窗口，并生成给别人的分享密钥
+  panecast share key 分享 [--guest 名字]   给同一个窗口再发一把密钥
+  panecast share list | revoke 分享 [--guest 名字或序号]
 
 cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；
 也可以在 cmux 设置中把「套接字控制模式」改为「自动化模式」。
@@ -43,6 +46,7 @@ cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次
   }
   const path = configPath(args);
   if (command === 'supervisor') { const { supervisorCLI } = await import('../src/hub/supervisor.mjs'); await supervisorCLI(args.slice(1).filter((arg, index, all) => arg !== '--config' && all[index - 1] !== '--config'), path); return; }
+  if (command === 'share') { const { shareCLI } = await import('../src/hub/share.mjs'); await shareCLI(args.slice(1).filter((arg, index, all) => arg !== '--config' && all[index - 1] !== '--config'), path); return; }
   if (command === 'weixin') { const { weixinCLI } = await import('../src/weixin/cli.mjs'); await weixinCLI(args.slice(1), path); return; }
   if (['setup', 'start', 'restart'].includes(command)) {
     // Inside a cmux terminal, cmux hands out a capability that lets the gateway's relay connect.

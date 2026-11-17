@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { createTmuxRelay } from '../server.mjs';
 import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
+import { GuestSession } from './guest-session.mjs';
+import { ShareStore, sharesFile } from './share.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scoped, scopeResult } from './ids.mjs';
 import { WeixinRuntime } from '../weixin/runtime.mjs';
@@ -11,10 +13,13 @@ import { SupervisorRuntime } from './supervisor.mjs';
 export async function createHub(config, options = {}) {
   const registry = new SourceRegistry(config.sources ?? [], options);
   const effective = { ...config, hub_event_monitor: true, port: config.port ?? 4400, state_directory: config.state_directory ?? join(homedir(), '.cmuxremote', 'hub') };
-  const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub',
+  const shares = options.shares ?? new ShareStore(sharesFile(effective));
+  const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub', guestSessions: true,
     localGateway: options.localGateway ?? join(effective.state_directory, 'local-gateway.json'),
     allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.has(frame.payload.source_id),
-    createSession: ({ send, close, notify }) => new HubSession(registry, effective, send, close, notify) });
+    createSession: ({ send, close, notify, meta = {} }) => meta.guest
+      ? new GuestSession(registry, effective, send, close, notify, { shares, deviceId: meta.deviceId, shareId: meta.guest.shareId })
+      : new HubSession(registry, effective, send, close, notify) });
   const supervisor = new SupervisorRuntime(registry, effective, options.supervisor);
   const weixin = new WeixinRuntime(registry, effective, relay.journal, { ...options.weixin, supervisor });
   const monitors = new Map();

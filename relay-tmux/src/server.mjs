@@ -205,7 +205,8 @@ export async function createTmuxRelay(config, options = {}) {
       const retained = await journal.append(frame);
       const events = retained && retained.category !== frame.category ? [frame, retained]
         : [retained ? { ...frame, payload: { ...frame.payload, ...retained.payload } } : frame];
-      for (const event of events) for (const session of sessions.values()) if (session.hello) session.send(event);
+      // A guest of a shared window never sees the computer's notifications.
+      for (const event of events) for (const session of sessions.values()) if (session.hello && !session.guest) session.send(event);
       return retained;
     });
     publishing = publish.then(() => {});
@@ -214,12 +215,14 @@ export async function createTmuxRelay(config, options = {}) {
   function notify(payload) {
     return ingestEvent({ type: 'event', category: payload.category ?? 'notification', name: payload.name ?? 'notification.created', payload });
   }
-  function createSession(id, send, close) {
+  function createSession(id, send, close, meta = {}) {
     sessions.get(id)?.dispose();
-    const session = options.createSession
-      ? options.createSession({ send, close, notify })
-      : new RelaySession(backend, config, send, close, notify);
-    session.inboxSync = (params) => journal.page(params, options.allowInboxEvent);
+    // Only a host that knows its shared windows may accept a guest; anything else refuses it.
+    const session = meta.guest
+      ? options.createSession?.({ send, close, notify, meta }) ?? null
+      : options.createSession ? options.createSession({ send, close, notify, meta }) : new RelaySession(backend, config, send, close, notify);
+    if (!session || (meta.guest && !session.guest)) { session?.dispose(); close(); return null; }
+    session.inboxSync = (params) => journal.page(params, meta.guest ? () => false : options.allowInboxEvent);
     sessions.set(id, session); return session;
   }
   function remove(id) { sessions.get(id)?.dispose(); sessions.delete(id); }
@@ -230,6 +233,8 @@ export async function createTmuxRelay(config, options = {}) {
     if (url.username || url.password || url.hash || url.search || !config.broker.relay_token || !config.broker.relay_id) throw new Error('invalid broker configuration');
     url.protocol = ['https:', 'wss:'].includes(url.protocol) ? 'wss:' : 'ws:';
     url.pathname = url.pathname.replace(/\/$/, '') + '/v1/relay/ws'; url.searchParams.set('relay_id', config.broker.relay_id);
+    // Only a host that confines guests to their shared window asks the broker for them.
+    if (options.guestSessions) url.searchParams.set('features', 'guest-sessions');
     const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${config.broker.relay_token}` }, maxPayload: MAX_MESSAGE, handshakeTimeout: 10_000 });
     tunnel = socket; let openedAt = 0, alive = true;
     const send = (envelope) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope)); };
@@ -237,7 +242,12 @@ export async function createTmuxRelay(config, options = {}) {
     const heartbeat = setInterval(() => { if (socket.readyState !== WebSocket.OPEN) return; if (!alive) { socket.terminate(); return; } alive = false; socket.ping(); }, 20_000);
     socket.on('message', (data) => {
       let e; try { e = JSON.parse(data.toString()); } catch { socket.close(); return; }
-      if (e.type === 'session.open' && typeof e.device_id === 'string') createSession(`broker:${e.session_id}`, (frame) => send({ type: 'session.text', session_id: e.session_id, text: JSON.stringify(frame) }), () => { send({ type: 'session.close', session_id: e.session_id }); remove(`broker:${e.session_id}`); });
+      if (e.type === 'session.open' && typeof e.device_id === 'string') {
+        // The broker marks credentials it issued for a shared window.
+        const guest = e.guest === undefined ? null : { shareId: typeof e.guest?.share_id === 'string' ? e.guest.share_id : '' };
+        createSession(`broker:${e.session_id}`, (frame) => send({ type: 'session.text', session_id: e.session_id, text: JSON.stringify(frame) }), () => { send({ type: 'session.close', session_id: e.session_id }); remove(`broker:${e.session_id}`); },
+          { deviceId: e.device_id, guest });
+      }
       else if (e.type === 'session.text' && typeof e.text === 'string') sessions.get(`broker:${e.session_id}`)?.receive(e.text);
       else if (e.type === 'session.close') remove(`broker:${e.session_id}`);
       else if (['push.sync', 'push.register', 'push.test'].includes(e.type)) {
