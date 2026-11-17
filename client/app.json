@@ -9,7 +9,7 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "bundleIdentifier": "com.nzx.panecast",
-      "buildNumber": "17",
+      "buildNumber": "18",
       "supportsTablet": true,
       "icon": "./assets/panecast.icon",
       "config": {
