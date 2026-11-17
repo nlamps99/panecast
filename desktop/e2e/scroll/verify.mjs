@@ -32,12 +32,12 @@ const server = createServer(async (req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const browser = await webkit.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
-await page.addInitScript(() => { window.__fixtureInitialTarget = 'b'; window.__fixtureFrameDelay = 250; window.__fixtureApplicationStart = 6000; });
+await page.addInitScript(() => { window.__fixtureInitialTarget = 'b'; window.__fixtureRecordItems = 600; });
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.getByTestId('terminal-application-scroll').waitFor();
+  await page.getByText('向上滑动查看会话记录').waitFor();
   await page.waitForTimeout(1000);
   const list = page.getByTestId('terminal-output-list');
   const top = () => list.evaluate(node => Math.round(node.scrollTop));
@@ -52,25 +52,21 @@ try {
   // The list keeps only some lines in the DOM; check the ones on screen.
   const rows = await list.evaluate(node => {
     const box = node.getBoundingClientRect();
-    return [...node.querySelectorAll('div')].filter(el => el.children.length === 0 || !el.querySelector('div'))
-      .map(el => ({ rect: el.getBoundingClientRect(), match: /APP_HISTORY_(\d{4})/.exec(el.textContent ?? '') }))
+    return [...node.querySelectorAll('div')].filter(el => !el.querySelector('div'))
+      .map(el => ({ rect: el.getBoundingClientRect(), match: /RECORD_ITEM_(\d{4})/.exec(el.textContent ?? '') }))
       .filter(({ rect, match }) => match && rect.height > 0 && rect.top >= box.top && rect.bottom <= box.bottom)
       .map(({ match }) => Number(match[1]));
   });
   const visible = [...new Set(rows)].sort((a, b) => a - b);
-  assert.ok(visible.length >= 20, `Only ${visible.length} history lines on screen`);
-  assert.deepEqual(visible.filter((row, index) => index && row !== visible[index - 1] + 1), [], 'Visible program history has no gaps');
-  const steps = await page.evaluate(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll').map(call => call.params.delta_lines));
+  assert.ok(visible.length >= 10, `Only ${visible.length} record items on screen`);
+  assert.deepEqual(visible.filter((row, index) => index && row !== visible[index - 1] + 1), [], 'Visible record items have no gaps');
   await page.screenshot({ path: `${artifact}/scrolled.png` });
   await page.getByRole('button', { name: '回到最新输出' }).click();
-  // The return replays each request in reverse, 50 ms apart.
-  await page.waitForFunction(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll')
-    .reduce((total, call) => total + call.params.delta_lines, 0) === 0, undefined, { timeout: 15_000 });
-  const sent = await page.evaluate(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll').map(call => call.params.delta_lines));
-  const up = sent.filter(delta => delta > 0), down = sent.filter(delta => delta < 0);
-  assert.deepEqual(down, [...up].reverse().map(delta => -delta), 'Leaving history replays each request in reverse');
+  await page.waitForFunction(() => !document.querySelector('[aria-label="回到最新输出"]'));
+  const sent = await page.evaluate(() => window.panecastFixture.calls.filter(call => call.method === 'terminal.scroll').length);
+  assert.equal(sent, 0, 'Nothing is sent to the program while reading its history or returning');
   assert.deepEqual(errors, []);
-  console.log(`WebKit scroll passed: ${first} px and ${second - first} px of 2400 px per swipe, ${steps.length} program steps (${steps.slice(0, 4).join(', ')}, …).`);
+  console.log(`WebKit scroll passed: ${first} px and ${second - first} px of 2400 px per swipe from the session record, items ${visible[0]}-${visible.at(-1)} on screen, no input to the program.`);
 } catch (error) {
   await page.screenshot({ path: `${artifact}/failure.png` });
   console.error('Page errors:', errors);

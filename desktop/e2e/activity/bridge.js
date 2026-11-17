@@ -42,10 +42,17 @@
       return { rows: history.slice(start, end), next_cursor: start ? String(start) : null, ...(!params.cursor ? { anchor_rows: history.slice(end) } : {}) };
     }
     if (method === 'terminal.conversation.batch') return { results: params.requests.map(request => ({ ok: true, result: conversation(request) })) };
+    if (method === 'terminal.conversation' && params.surface_id === 'b' && window.__fixtureRecordItems) return recordPage(params);
     if (method === 'terminal.conversation') return conversation(params);
     if (method === 'inbox.sync') return { events: [], cursor: '0', head: '0', more: false };
     if (method === 'source.list') return { sources: [] };
     return {};
+  }
+  // The full-screen program's session record: RECORD_ITEM_0000 … newest last, 80 per page.
+  function recordPage(params) {
+    const total = window.__fixtureRecordItems, end = params.cursor ? Number(params.cursor) : total, start = Math.max(0, end - (params.limit ?? 80));
+    const items = Array.from({ length: end - start }, (_, i) => ({ id: `rec-${start + i}`, type: 'agentMessage', sequence: start + i, text: `RECORD_ITEM_${String(start + i).padStart(4, '0')} from the session record` }));
+    return { available: true, provider: 'claude', conversation_id: 'record-b', generation: 'g', revision: `r${total}`, active: false, items, next_cursor: start ? String(start) : null };
   }
   function conversation(params) {
     {

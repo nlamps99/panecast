@@ -5,6 +5,7 @@ import { describeError, type RpcChannel, type SendReceipt, type SurfaceTarget, t
 import { plainTerminalRows } from '../terminal/textTools';
 import { terminalKey, type TerminalHead, type TerminalRepository } from './terminalRepository';
 import { terminalDecision } from './terminalPrompt';
+import { mergeTerminalItems } from './terminalMerge';
 
 export type TerminalChatSubmission = { id: string; text: string; status: 'sending' | SendReceipt['status']; at: number; base: number; message?: string };
 export type TerminalConversationState = {
@@ -23,22 +24,7 @@ const clean = (value: string) => value.replace(/\r\n/g, '\n').trim();
 const initial = (target: SurfaceTarget | null): TerminalConversationState => ({ target, conversationId: null, generation: '', provider: 'terminal', name: '终端输出', available: null,
   items: [], revision: null, cursor: null, headSequence: 0, loading: false, loadingOlder: false, active: false, error: null, historyError: null, blocked: false, branch: null, submissions: [], output: '' });
 
-/** Merge snapshots and older pages by stable record IDs, preserving late tool results. */
-export function mergeTerminalItems(previous: readonly AgentItem[], incoming: readonly AgentItem[]): AgentItem[] {
-  const map = new Map(previous.map(item => [item.id, item]));
-  for (const item of incoming) {
-    const old = map.get(item.id);
-    if (!old) { map.set(item.id, item); continue; }
-    const newest = (item.updatedSequence ?? item.sequence ?? 0) >= (old.updatedSequence ?? old.sequence ?? 0) ? item : old;
-    const older = newest === item ? old : item;
-    map.set(item.id, { ...older, ...newest, type: newest.type === 'toolExecution' && older.type !== 'toolExecution' ? older.type : newest.type,
-      command: newest.command || older.command, tool: newest.tool || older.tool,
-      changes: newest.changes?.length ? newest.changes : older.changes,
-      aggregatedOutput: newest.aggregatedOutput || older.aggregatedOutput,
-      sequence: Math.min(old.sequence ?? 0, item.sequence ?? 0) });
-  }
-  return [...map.values()].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
-}
+export { mergeTerminalItems } from './terminalMerge';
 
 export class TerminalConversationStore {
   private state: TerminalConversationState;

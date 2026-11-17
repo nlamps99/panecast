@@ -91,6 +91,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const requestedOffset = useRef<number | null>(null);
   const dragging = useRef(false);
   const wheeling = useRef(false);
+  const wheelCarry = useRef(0);
   const scrollRange = useRef(0);
   const historyRunway = useRef(0);
   const lastScrollSample = useRef({ at: 0, offset: 0 });
@@ -110,7 +111,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     if (active && state.subscription === 'live') void session.inspectScrollMode().then(() => session.prepareHistory());
   }, [session, state.subscription, active]);
   useEffect(() => {
-    if (active && state.subscription === 'live' && !applicationEnabled) session.prepareHistory();
+    if (active && state.subscription === 'live') session.prepareHistory();
   }, [session, state.subscription, state.screen.rows, applicationEnabled, browse, active]);
   const rows = browse ? browse.frozenRows : state.screen.rows;
   const olderRows = browse?.olderRows;
@@ -209,8 +210,10 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     requestedOffset.current = null;
     if (toolsOpen || state.restoringReading) return;
     void session.inspectScrollMode();
-    if (session.getState().applicationScroll) {
-      if (!readOnly) { session.startApplicationHistory(); retryApplicationHistory(); ensureHistoryRunway(); }
+    const program = session.getState().applicationScroll;
+    if (program) {
+      // Reading the record changes nothing on the computer, so read-only viewers can too.
+      if (program.record !== false) { session.startApplicationHistory(); retryApplicationHistory(); ensureHistoryRunway(); }
       return;
     }
     if (!session.getState().browse) {
@@ -237,12 +240,11 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const ensureHistoryRunway = useCallback(() => {
     const current = session.getState();
     if (toolsOpen || !active || current.restoringReading || !current.browse
-      || (current.browse.kind === 'application' && readOnly)
       || (current.applicationScroll && current.browse.kind !== 'application')) return;
     const range = Math.max(scrollRange.current, lines.length * lineHeight - viewportHeight);
     const distance = range - Math.max(0, lastFromBottom.current);
-    if (distance < Math.max(viewportHeight * 6, historyRunway.current)) void session.loadOlder({ prefetch: distance > viewportHeight * 2 });
-  }, [session, toolsOpen, active, readOnly, viewportHeight, lines.length, lineHeight]);
+    if (distance < Math.max(viewportHeight * 6, historyRunway.current)) void session.loadOlder();
+  }, [session, toolsOpen, active, viewportHeight, lines.length, lineHeight]);
   useEffect(ensureHistoryRunway, [ensureHistoryRunway, rows, olderRows]);
 
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -281,7 +283,6 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       return;
     }
     if (browse && fromBottom <= 2) {
-      if (browse.kind === 'application') return;
       // Replacing/retrying a snapshot can reset the native offset to zero.
       // Only a user drag/momentum is an instruction to leave history mode.
       if (shortHistory.current || !dragging.current) return;
@@ -300,16 +301,15 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     session.resumeLive();
   };
 
-  const moveApplication = (lines: number) => {
-    if (session.getState().browse?.kind === 'application') {
-      if (lines < 0 && lastFromBottom.current <= 2) {
-        session.resumeLive();
-        session.scrollApplication(lines);
-        return;
-      }
-      const offset = Math.max(0, Math.min(scrollRange.current, lastFromBottom.current + lines * lineHeight));
-      list.current?.scrollToOffset({ offset, animated: true });
-    } else session.scrollApplication(lines);
+  /** A program without a session record scrolls itself, as in any terminal. */
+  const moveApplication = (lines: number) => session.scrollApplication(lines);
+  const passWheel = (pixels: number) => {
+    // About one wheel unit (three of the program's rows) per three rows of wheel travel.
+    wheelCarry.current += pixels / (lineHeight * 3);
+    const units = Math.trunc(wheelCarry.current);
+    if (!units) return;
+    wheelCarry.current -= units;
+    moveApplication(units);
   };
 
   const reachedHistoryEdge = () => {
@@ -324,7 +324,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     lineHeight, pageHeight: viewportHeight,
     move: pixels => {
       const current = session.getState();
-      if (current.applicationScroll && readOnly) return;
+      if (current.applicationScroll?.record === false) { if (!readOnly) passWheel(pixels); return; }
       dragging.current = true;
       requestedOffset.current = null;
       if (!wheeling.current) {
@@ -363,17 +363,19 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const statusText = compact ? styles.floatingStatusText : styles.historyStatusText;
   const status = <>
     {state.restoringReading || state.readingNotice ? <Text style={[styles.readingNotice, compact && styles.floatingNotice]}>{state.restoringReading ? '正在恢复上次阅读的位置…' : state.readingNotice}</Text> : null}
-    {applicationScroll && historyStatus ? <View testID="terminal-application-scroll" style={[styles.historyStatus, compact && styles.floatingStatus]}>
-      <Text style={statusText}>{readOnly ? '程序内历史需要终端控制权限' : '连续滑动查看程序内历史'}</Text>
+    {applicationScroll?.record === false && historyStatus ? <View testID="terminal-application-scroll" style={[styles.historyStatus, compact && styles.floatingStatus]}>
+      <Text style={statusText}>{readOnly ? '这个程序的滚动需要终端控制权限' : '滚轮直接滚动程序（没有可读取的会话记录）'}</Text>
       {!readOnly ? <>
         <Pressable testID="terminal-application-older" style={styles.historyLoad} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
         <Pressable testID="terminal-application-newer" style={styles.historyLoad} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
       </> : null}
     </View> : null}
     {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError, compact && styles.floatingNotice]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
-    {!applicationScroll && historyStatus ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, compact ? styles.floatingStatus : styles.stableHistoryStatus]}>
+    {applicationScroll?.record !== false && historyStatus ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, compact ? styles.floatingStatus : styles.stableHistoryStatus]}>
       <Text style={statusText}>
-        {!browse ? '向上滑动查看历史' : browse.exhausted && browse.olderRows.length === 0
+        {!browse ? (applicationScroll ? '向上滑动查看会话记录' : '向上滑动查看历史')
+          : browse.kind === 'application' ? `已读取会话记录 ${browse.olderRows.length} 行${browse.exhausted ? ' · 已到会话开头' : ''}`
+          : browse.exhausted && browse.olderRows.length === 0
           ? `电脑只返回当前 ${browse.frozenRows.length} 行，未提供更早历史`
           : `已加载 ${browse.olderRows.length} 行历史${browse.exhausted ? ' · 已到本次起点' : ''}`}
       </Text>

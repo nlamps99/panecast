@@ -4,9 +4,11 @@ import { encodeKey, Keys, type Key } from '../protocol/keys';
 import { applyDiff, applyFull, EMPTY_SCREEN, screenHash, type ScreenState } from '../protocol/screen';
 import { locateReadingPosition, type ReadingPosition } from './readingPosition';
 import { alignHistory, sameVisibleRows } from './historyAlignment';
-import { applicationPageHasPayload, olderApplicationRows, sameApplicationViewport, type ApplicationHistoryPage } from './applicationHistory';
+import { agentItem } from './agentData';
+import { itemsOnScreen, recordRows, RECORD_WRITING_NOTICE } from './recordHistory';
+import type { AgentItem } from './sourceStore';
+import { mergeTerminalItems } from './terminalMerge';
 import type { SnapshotCache } from './snapshotCache';
-import { plainTerminalRows } from '../terminal/textTools';
 
 /** Anything with a connection status: `RelayConnection`, or the demo channel. */
 export type StatusSource = {
@@ -31,6 +33,7 @@ export type SurfaceTarget = { workspaceId: string; surfaceId: string };
  * `olderRows` are pages from `surface.history`, oldest first.
  */
 export type Browse = {
+  /** A full-screen program's history, read from its session record (see recordHistory.ts). */
   kind?: 'application';
   frozenRows: readonly string[];
   olderRows: readonly string[];
@@ -60,8 +63,12 @@ export type TerminalState = {
   restoredReading?: ReadingPosition | null;
   restoringReading?: boolean;
   readingNotice?: string | null;
-  /** Alternate-screen programs own their history and consume mouse-wheel input. */
-  applicationScroll?: { columns: number; rows: number; busy: boolean; error: string | null } | null;
+  /**
+   * Alternate-screen programs own their history and consume mouse-wheel input.
+   * `record`: whether the program's session record can be read (null until
+   * known); without one, the wheel goes straight to the program.
+   */
+  applicationScroll?: { columns: number; rows: number; busy: boolean; error: string | null; record?: boolean | null } | null;
   /** The terminal's real column count on the computer, when the relay reports its grid. */
   terminalColumns?: number | null;
   fromCache?: boolean;
@@ -93,34 +100,14 @@ const HISTORY_ALIGNMENT_TIMEOUT_MS = 10_000;
 const SCROLL_INTERVAL_MS = 32;
 const SCROLL_BATCH_LINES = 4;
 const SCROLL_IN_FLIGHT = 4;
-/**
- * Program history steps. Claude Code accelerates the wheel within one
- * request (1 unit moves 3 rows, 2 move 8, 3 move 16, 4 move 22), so a step
- * grows one unit at a time while twice what it moved fits in this share of
- * the screen. On Claude Code that settles at 3 units (16 rows) from a
- * 35-row screen up, which still leaves rows to align on below its sticky
- * prompt header and above its input box. Prefetch beyond the reader waits
- * between steps for the relay's color read (every 150 ms).
- */
-const APPLICATION_STEP_SCREEN = 0.46;
-const APPLICATION_MAX_STEP = 8;
-const APPLICATION_PREFETCH_INTERVAL_MS = 170;
-const APPLICATION_STEP_TIMEOUT_MS = 1_500;
-const APPLICATION_READ_INTERVAL_MS = 12;
-/** Claude Code animates a scroll over a few frames; a step counts once the screen held still this long. */
-const APPLICATION_SETTLE_MS = 25;
-/**
- * A redraw can clear the revealed rows and fill them a moment later, so a
- * step that revealed only blank rows needs the screen to hold still longer.
- */
-const APPLICATION_BLANK_SETTLE_MS = 250;
-/**
- * Claude Code also accelerates wheel requests that arrive within ~30 ms of
- * the last one. Spaced at least this far apart (after the acknowledgement),
- * each request moves the same rows every time, up or down, so replaying the
- * requests in reverse returns the program exactly.
- */
-const APPLICATION_WHEEL_GAP_MS = 50;
+/** Items per session-record page. */
+const RECORD_PAGE = 80;
+/** Read ahead until the first page holds this many items to show. */
+const RECORD_HEAD_ITEMS = 30;
+/** A prefetched first page this recent is shown at once, then checked by revision. */
+const RECORD_FRESH_MS = 60_000;
+
+type RecordPage = { items: AgentItem[]; cursor: string | null; conversationId: string | null; generation: string; revision: string | null; branch: string | null; active: boolean; at: number };
 
 /**
  * State for one terminal surface on top of a relay connection: keeps the
@@ -146,21 +133,11 @@ export class TerminalSession {
   private preparedHistory: Promise<HistoryPage | null> | null = null;
   private preparedPage: HistoryPage | null = null;
   private preparedPages = new Map<string, Promise<HistoryPage>>();
-  private applicationAnchor: readonly string[] | null = null;
-  /** Every wheel request sent while reading program history, replayed in reverse to return. */
-  private applicationTrail: number[] = [];
-  /** The previous return, still replaying; program history waits for it. */
-  private applicationRestoring: Promise<void> | null = null;
-  private applicationPage: { accept: (rows: readonly string[], still?: number) => void; cancel: () => void } | null = null;
-  /** Rows the program moved for a request of N units, as measured. */
-  private applicationMoved = new Map<number, number>();
-  private applicationUnits = 1;
-  private applicationWheelAt = -Infinity;
-  private applicationStepAt = -Infinity;
-  /** Ends a prefetch pause early when the reader reaches the loaded edge. */
-  private applicationWake: (() => void) | null = null;
-  /** Colored rows from pushed frames, by text, for rows first read as plain text. */
-  private applicationColors = new Map<string, string>();
+  /** The newest record page, read ahead so browsing shows history at once. */
+  private recordHead: RecordPage | null = null;
+  private recordHeadTask: Promise<RecordPage | null> | null = null;
+  /** The record being browsed: merged items, the newest ones the live screen already shows, the next older page. */
+  private record: { items: AgentItem[]; hidden: Set<string>; cursor: string | null; conversationId: string | null; generation: string; active: boolean; verified: boolean } | null = null;
   /** An unsubscribe + subscribe is in flight (resync or a live-lines change). Only one at a time. */
   private replacing = false;
   private lastResyncAt = 0;
@@ -227,7 +204,7 @@ export class TerminalSession {
   dispose(): void {
     void this.options.screenCache?.flush();
     this.disposed = true;
-    this.restoreApplicationViewport();
+    this.record = null;
     for (const dispose of this.disposers) dispose();
     this.disposers = [];
     this.subscribeToken++;
@@ -246,7 +223,7 @@ export class TerminalSession {
     this.selectionIntent++;
     const previous = this.state.target;
     if (sameTarget(previous, target)) return;
-    this.restoreApplicationViewport();
+    this.record = null; this.recordHead = null; this.recordHeadTask = null;
     if (previous && this.channel.isOpen) {
       this.channel.call('surface.unsubscribe', { surface_id: previous.surfaceId }).catch(() => {});
     }
@@ -462,8 +439,6 @@ export class TerminalSession {
       this.screens.delete(key); this.screens.set(key, screen); this.options.screenCache?.set(key, screen);
       while (this.screens.size > 24) this.screens.delete(this.screens.keys().next().value!);
     }
-    this.applicationPage?.accept(screen.rows);
-    if (this.state.browse?.kind === 'application') this.colorApplicationHistory(screen.rows);
     const browse = this.state.browse;
     const rowsChanged = screen.rows !== this.state.screen.rows;
     if (browse && browse.kind !== 'application' && rowsChanged && !browse.liveChanged) {
@@ -511,6 +486,8 @@ export class TerminalSession {
 
   /** Fetch the first immutable page while the current screen is being read. */
   prepareHistory(): void {
+    // Full-screen programs: read their session record ahead instead.
+    if (this.state.applicationScroll) { if (!this.state.browse && !this.state.fromCache) void this.prepareRecord(); return; }
     const target = this.state.target, rows = this.state.screen.rows;
     if (this.state.fromCache || !this.scrollModeChecked || this.preparedHistory || this.state.browse || this.state.applicationScroll || !rows.length
       || !target || !this.channel.isOpen || this.disposed) return;
@@ -553,224 +530,118 @@ export class TerminalSession {
     }
   }
 
-  /** Keep captured application history in the same native list as the first screen. */
+  /**
+   * Browse a full-screen program's history from its session record, above
+   * the frozen screen. Nothing is sent to the program, so its window on the
+   * computer and every other viewer stay as they are.
+   */
   startApplicationHistory(): void {
-    // While the last return is replaying, the screen is still moving.
-    if (!this.state.applicationScroll || this.state.browse || !this.state.screen.rows.length || this.applicationRestoring) return;
+    const scroll = this.state.applicationScroll;
+    if (!scroll || scroll.record === false || this.state.browse || !this.state.screen.rows.length) return;
     this.stopApplicationScroll(true);
-    this.applicationAnchor = this.state.screen.rows;
-    this.applicationMoved.clear();
-    this.applicationUnits = 1;
-    this.applicationStepAt = -Infinity;
-    this.applicationColors.clear();
+    this.record = null;
     this.update({ browse: { kind: 'application', frozenRows: this.state.screen.rows, olderRows: [],
       cursor: null, started: false, exhausted: false, loading: false, error: null, liveChanged: false } });
-    this.colorApplicationHistory(this.state.screen.rows);
-  }
-
-  private restoreApplicationViewport(): void {
-    this.applicationPage?.cancel();
-    this.applicationPage = null;
-    this.applicationWake?.();
-    this.applicationColors.clear();
-    const trail = this.applicationTrail;
-    this.applicationTrail = [];
-    this.applicationAnchor = null;
-    const target = this.state.target, size = this.state.applicationScroll;
-    if (!trail.length || !target || !size || !this.channel.isOpen) return;
-    // One request of -sum would accelerate differently from the steps that
-    // were sent. Mirroring each request, spaced apart, lands exactly.
-    const previous = this.applicationRestoring ?? Promise.resolve();
-    const restoring = this.applicationRestoring = previous.then(async () => {
-      for (const delta of trail.reverse()) {
-        if (!this.channel.isOpen) return;
-        await this.applicationWheel(target, size, -delta);
-      }
-    }).catch(() => {}).finally(() => {
-      if (this.applicationRestoring !== restoring) return;
-      this.applicationRestoring = null;
-      this.pumpApplicationScroll();
-    });
-  }
-
-  /** One wheel request to the program, at least APPLICATION_WHEEL_GAP_MS after the last. */
-  private async applicationWheel(target: SurfaceTarget, size: { columns: number; rows: number }, delta: number, before?: () => void): Promise<void> {
-    const wait = this.applicationWheelAt + APPLICATION_WHEEL_GAP_MS - Date.now();
-    if (wait > 0) await delay(wait);
-    before?.();
-    try {
-      await this.channel.call('terminal.scroll', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
-        delta_lines: delta, col: Math.floor(size.columns / 2), row: Math.floor(size.rows / 2) }, 5000);
-    } finally { this.applicationWheelAt = Date.now(); }
-  }
-
-  /** Waits until a return to the live screen has finished moving the program. */
-  async applicationSettled(): Promise<void> {
-    while (this.applicationRestoring) await this.applicationRestoring;
+    // A page read ahead shows at once; the first load checks that it is still current.
+    const head = this.recordHead;
+    if (head && Date.now() - head.at < RECORD_FRESH_MS) this.showRecord(head, false);
   }
 
   /**
-   * History rows read straight from the screen are plain text. The relay's
-   * frames color rows a little later; give loaded rows those colors by text.
+   * Reads the newest record page ahead of browsing. With a revision, an
+   * unchanged record costs one small answer. Resolves null when there is no
+   * record or the read failed.
    */
-  private colorApplicationHistory(rows: readonly string[]): void {
-    let added = false;
-    for (const row of rows) {
-      if (!row.includes('\u001b')) continue;
-      const plain = plainTerminalRows([row])[0];
-      if (!plain || this.applicationColors.get(plain) === row) continue;
-      this.applicationColors.delete(plain);
-      this.applicationColors.set(plain, row);
-      added = true;
-    }
-    while (this.applicationColors.size > 4_000) this.applicationColors.delete(this.applicationColors.keys().next().value!);
+  prepareRecord(force = false): Promise<RecordPage | null> {
+    const target = this.state.target, scroll = this.state.applicationScroll;
+    if (!target || !scroll || scroll.record === false || !this.channel.isOpen || this.disposed) return Promise.resolve(null);
+    if (this.recordHeadTask) return this.recordHeadTask;
+    const previous = this.recordHead;
+    if (!force && previous && Date.now() - previous.at < RECORD_FRESH_MS) return Promise.resolve(previous);
+    const read = (params: Record<string, unknown>) => this.channel.call('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId, limit: RECORD_PAGE, ...params }, 15_000);
+    const task: Promise<RecordPage | null> = read({ ...(previous?.revision ? { revision: previous.revision } : {}), ...(previous?.branch ? { branch: previous.branch } : {}) }).then(async (value) => {
+      if (!sameTarget(target, this.state.target) || this.disposed) return null;
+      const raw = asObject(value);
+      if (raw.available !== true) { this.recordHead = null; this.markRecord(false); return null; }
+      let fresh = parseRecordPage(raw);
+      const unchanged = previous && fresh.conversationId === previous.conversationId && (raw.unchanged === true || (fresh.revision !== null && fresh.revision === previous.revision));
+      // The newest entries can all be internal ones; read on until there is something to show.
+      for (let pages = 1; !unchanged && fresh.items.length < RECORD_HEAD_ITEMS && fresh.cursor && pages < 4; pages++) {
+        const older = parseRecordPage(asObject(await read({ cursor: fresh.cursor })));
+        if (!sameTarget(target, this.state.target) || this.disposed) return null;
+        if (older.conversationId !== fresh.conversationId) break;
+        fresh = { ...fresh, items: mergeTerminalItems(older.items, fresh.items), cursor: older.cursor };
+      }
+      const page = unchanged ? { ...previous, active: fresh.active, at: fresh.at } : fresh;
+      this.recordHead = page;
+      this.markRecord(true);
+      return page;
+    }, (error: unknown) => {
+      if (error instanceof RpcCallError && ['method_not_found', '-32601'].includes(error.code)) this.markRecord(false);
+      return null;
+    }).finally(() => { if (this.recordHeadTask === task) this.recordHeadTask = null; });
+    this.recordHeadTask = task;
+    return task;
+  }
+
+  /** Without a record, history browsing ends and the wheel goes to the program. */
+  private markRecord(available: boolean): void {
+    const scroll = this.state.applicationScroll;
+    if (scroll && scroll.record !== available) this.update({ applicationScroll: { ...scroll, record: available } });
+    if (!available && this.state.browse?.kind === 'application') { this.record = null; this.update({ browse: null }); }
+  }
+
+  /**
+   * Lays the record out above the frozen screen. The newest items the screen
+   * already shows are left out (`itemsOnScreen`), so the two meet without
+   * repeating. `verified`: read after browsing began, so nothing newer is missing.
+   */
+  private showRecord(page: RecordPage, verified: boolean, older = false): void {
     const browse = this.state.browse;
-    if (!added || browse?.kind !== 'application') return;
-    let changed = false;
-    const olderRows = browse.olderRows.map((row) => {
-      const colored = this.applicationColor(row);
-      if (colored !== row) changed = true;
-      return colored;
-    });
-    if (changed) this.update({ browse: { ...browse, olderRows } });
+    if (!browse || browse.kind !== 'application') return;
+    if (!older || !this.record) {
+      const shown = itemsOnScreen(page.items, browse.frozenRows);
+      this.record = { items: page.items, hidden: new Set(page.items.slice(page.items.length - shown).map((item) => item.id)), cursor: page.cursor,
+        conversationId: page.conversationId, generation: page.generation, active: page.active, verified };
+    } else {
+      this.record = { ...this.record, items: mergeTerminalItems(this.record.items, page.items), cursor: page.cursor };
+    }
+    const record = this.record;
+    const columns = this.state.terminalColumns ?? this.state.applicationScroll?.columns ?? 100;
+    const rows = recordRows(record.items.filter((item) => !record.hidden.has(item.id)), columns);
+    // The reply being written fills the screen; its start reaches the record when it is done.
+    const writing = record.active && record.hidden.size === 0 ? [...(rows.length ? [''] : []), RECORD_WRITING_NOTICE] : [];
+    this.update({ browse: { ...browse, olderRows: [...rows, ...writing], cursor: record.cursor, started: true, loading: false, error: null, exhausted: record.verified && record.cursor === null } });
   }
 
-  private applicationColor(row: string): string {
-    return row.includes('\u001b') ? row : this.applicationColors.get(row.trimEnd()) ?? row;
-  }
-
-  /** Wait out the prefetch interval; `applicationWake` ends it early. */
-  private applicationPause(): Promise<void> {
-    const wait = this.applicationStepAt + APPLICATION_PREFETCH_INTERVAL_MS - Date.now();
-    if (wait <= 0) return Promise.resolve();
-    return new Promise((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        if (this.applicationWake === done) this.applicationWake = null;
-        resolve();
-      };
-      const timer = setTimeout(done, wait);
-      this.applicationWake = done;
-    });
-  }
-
-  private async loadApplicationOlder(prefetch: boolean): Promise<void> {
-    const target = this.state.target, browse = this.state.browse, size = this.state.applicationScroll;
-    if (!target || !size || !browse || browse.loading || browse.exhausted || browse.error || !this.applicationAnchor || !this.channel.isOpen) return;
+  private async loadRecordOlder(): Promise<void> {
+    const target = this.state.target, browse = this.state.browse;
+    if (!target || !browse || browse.loading || browse.exhausted || browse.error || !this.channel.isOpen) return;
     const token = ++this.historyToken;
     this.update({ browse: { ...browse, loading: true } });
-    let settled = false;
-    let finish!: (page: ApplicationHistoryPage | null) => void;
-    const result = new Promise<ApplicationHistoryPage | null>((resolve) => { finish = (page) => { settled = true; resolve(page); }; });
-    let pending: { accept: (rows: readonly string[], still?: number) => void; cancel: () => void } | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const currentTarget = () => {
-      if (token !== this.historyToken || this.disposed) throw new RpcCallError('history_cancelled', '已取消历史加载');
-    };
-    const scroll = async (delta: number) => {
-      currentTarget();
-      // Recorded only once sent: a return replays exactly what reached the program.
-      await this.applicationWheel(target, size, delta, () => { currentTarget(); this.applicationTrail.push(delta); });
-      currentTarget();
-    };
-    const read = async () => {
-      currentTarget();
-      const fresh = await this.channel.call<{ text?: string }>('surface.read_text', {
-        workspace_id: target.workspaceId, surface_id: target.surfaceId, lines: size.rows,
-      }, 5000);
-      currentTarget();
-      if (typeof fresh.text !== 'string') throw new Error('无法读取程序的历史画面');
-      return fresh.text.split('\n');
-    };
-    const sameViewport = (anchor: readonly string[], rows: readonly string[]) => sameVisibleRows(anchor, rows) || sameApplicationViewport(anchor, rows);
     try {
-      if (prefetch) await this.applicationPause();
-      currentTarget();
-      const anchor = this.applicationAnchor;
-      if (!anchor) throw new RpcCallError('history_cancelled', '已取消历史加载');
-      let accepted = false, reading = false;
-      pending = this.applicationPage = {
-        // Direct reads decide once one succeeds: a pushed frame can catch a
-        // scroll mid-animation. A read counts once the screen held still, and
-        // revealed rows without text need it to hold still longer.
-        accept: (rows, still = Infinity) => {
-          if (accepted || settled || (still === Infinity && reading)) return;
-          const page = olderApplicationRows(anchor, rows);
-          if (!page) return;
-          const payload = applicationPageHasPayload(anchor, page);
-          if (still === Infinity ? payload : still >= (payload ? APPLICATION_SETTLE_MS : APPLICATION_BLANK_SETTLE_MS)) {
-            accepted = true; this.applicationAnchor = rows; finish(page);
-          }
-        },
-        cancel: () => finish(null),
-      };
-      const units = this.applicationUnits;
-      await scroll(units);
-      this.applicationStepAt = Date.now();
-      timer = setTimeout(() => finish(null), APPLICATION_STEP_TIMEOUT_MS);
-      // A pushed frame waits for the relay's next poll, up to 200 ms on a quiet
-      // screen; reading directly sees the program's redraw within tens of ms.
-      // Reads overlap (up to four in flight) so a slow network costs one
-      // round trip per step, not one per read. Stillness is measured by when
-      // each read was sent; a late answer to an older read is ignored.
-      const accept = pending.accept;
-      void (async () => {
-        let previous: string | null = null, since = 0, newest = -1, inFlight = 0, failures = 0;
-        for (let reads = 0; !settled && failures < 3; reads++) {
-          await delay(reads < 20 ? APPLICATION_READ_INTERVAL_MS : 60);
-          if (settled || inFlight >= 4) continue;
-          const sequence = reads, sentAt = Date.now();
-          inFlight++;
-          read().then((rows) => {
-            if (settled || sequence < newest) return;
-            newest = sequence; reading = true; failures = 0;
-            const text = rows.join('\n');
-            if (text !== previous) { previous = text; since = sentAt; }
-            accept(rows, sentAt - since);
-          }, () => { failures++; }).finally(() => { inFlight--; });
+      const record = this.record;
+      if (!record?.verified) {
+        // The first page, read (or confirmed by revision) after browsing began.
+        const page = await this.prepareRecord(true);
+        if (token !== this.historyToken || this.disposed || this.state.browse?.kind !== 'application') return;
+        if (!page) {
+          if (this.state.applicationScroll?.record === false) return;
+          throw new Error('暂时读不到会话记录');
         }
-      })();
-      let page = await result;
-      let retry = false;
-      if (!page && token === this.historyToken) {
-        const rows = await read();
-        page = olderApplicationRows(anchor, rows);
-        if (page) this.applicationAnchor = rows;
-        // The top of the history: nothing moved. A status line or spinner may
-        // still change, but a scroll moves every transcript row, and the fixed
-        // input box can outnumber a sparse transcript's rows.
-        else if (!nearlyUnchanged(anchor, rows)) {
-          // The larger request moved past the overlap. The program scrolls
-          // back symmetrically, so the same request reversed returns exactly;
-          // then this size is never tried again.
-          if (units > 1) {
-            // A return that started meanwhile replays this step itself.
-            await this.applicationWheel(target, size, -units, currentTarget);
-            this.applicationTrail.pop();
-            for (let attempt = 0; attempt < 20 && !retry; attempt++) { await delay(25); retry = sameViewport(anchor, await read()); }
-          }
-          if (!retry) throw new Error('程序画面变化，历史暂时无法衔接；已保留当前阅读内容');
-          this.applicationMoved.set(units, Infinity);
-          this.applicationUnits = units - 1;
-        }
+        this.showRecord(page, true);
+        return;
       }
-      if (page) {
-        const moved = page.rows.length - page.replacedRows;
-        if (moved > 0) this.applicationMoved.set(units, moved);
-        this.applicationUnits = nextApplicationUnits(units, this.applicationMoved, Math.max(3, Math.floor(size.rows * APPLICATION_STEP_SCREEN)));
-      }
-      const current = this.state.browse;
-      if (token !== this.historyToken || !current || this.disposed) return;
-      this.update({ browse: { ...current,
-        frozenRows: page ? current.frozenRows.slice(Math.max(0, page.replacedRows - current.olderRows.length)) : current.frozenRows,
-        olderRows: page ? [...page.rows.map((row) => this.applicationColor(row)), ...current.olderRows.slice(page.replacedRows)] : current.olderRows,
-        started: true, loading: false, exhausted: page === null && !retry } });
+      if (!record.cursor) { this.update({ browse: { ...this.state.browse!, loading: false, exhausted: true } }); return; }
+      const raw = asObject(await this.channel.call('terminal.conversation', { workspace_id: target.workspaceId, surface_id: target.surfaceId,
+        limit: RECORD_PAGE, cursor: record.cursor }, 15_000));
+      if (token !== this.historyToken || this.disposed || this.state.browse?.kind !== 'application') return;
+      if (raw.available !== true) { this.markRecord(false); return; }
+      const page = parseRecordPage(raw);
+      if (page.conversationId !== record.conversationId || page.generation !== record.generation) throw new Error('会话记录已更换，请回到底部后重新查看');
+      this.showRecord(page, true, true);
     } catch (error) {
       if (token === this.historyToken && this.state.browse) this.update({ browse: { ...this.state.browse, loading: false, error: describeError(error) } });
-    } finally {
-      settled = true;
-      if (timer !== null) clearTimeout(timer);
-      if (pending && this.applicationPage === pending) this.applicationPage = null;
     }
   }
 
@@ -830,7 +701,7 @@ export class TerminalSession {
       const size = applicationScrollSize(raw);
       if (size) {
         if (!this.state.applicationScroll) this.resumeLive();
-        this.update({ applicationScroll: { ...size, busy: this.scrollingApplication, error: this.state.applicationScroll?.error ?? null } });
+        this.update({ applicationScroll: { ...size, busy: this.scrollingApplication, error: this.state.applicationScroll?.error ?? null, record: this.state.applicationScroll?.record ?? null } });
       } else if (this.state.applicationScroll) {
         this.cancelApplicationScroll();
         this.update({ applicationScroll: null });
@@ -852,8 +723,7 @@ export class TerminalSession {
   }
 
   private pumpApplicationScroll(): void {
-    // A return to live is still replaying; it calls this again when done.
-    if (this.applicationRestoring || this.scrollTimer !== null || this.scrollInFlight >= SCROLL_IN_FLIGHT || !this.queuedScroll) return;
+    if (this.scrollTimer !== null || this.scrollInFlight >= SCROLL_IN_FLIGHT || !this.queuedScroll) return;
     const delay = SCROLL_INTERVAL_MS - (Date.now() - this.lastScrollSentAt);
     if (delay > 0) {
       this.scrollTimer = setTimeout(() => { this.scrollTimer = null; this.pumpApplicationScroll(); }, delay);
@@ -893,7 +763,7 @@ export class TerminalSession {
   /** Back to the live screen; drops loaded history so the next browse starts from a fresh snapshot. */
   resumeLive(): void {
     if (!this.state.browse && !this.pendingReading && !this.state.restoringReading) return;
-    this.restoreApplicationViewport();
+    this.record = null;
     this.historyToken++;
     this.readingTask++;
     this.pendingReading = null;
@@ -902,15 +772,11 @@ export class TerminalSession {
     this.update({ browse: null, restoringReading: false, restoredReading: null, readingNotice: null });
   }
 
-  /**
-   * Loads the page above what is shown. No-op while loading, after the start of history, or after an error.
-   * `prefetch`: the reader is still far from the loaded edge, so program history may pace its steps.
-   */
-  async loadOlder(options: { retry?: boolean; prefetch?: boolean } = {}): Promise<void> {
+  /** Loads the page above what is shown. No-op while loading, after the start of history, or after an error. */
+  async loadOlder(options: { retry?: boolean } = {}): Promise<void> {
     if (this.state.browse?.kind === 'application') {
-      if (!options.prefetch) this.applicationWake?.();
       if (options.retry && this.state.browse.error) this.update({ browse: { ...this.state.browse, error: null } });
-      return this.loadApplicationOlder(options.prefetch === true);
+      return this.loadRecordOlder();
     }
     const target = this.state.target;
     let browse = this.state.browse;
@@ -1254,21 +1120,13 @@ function sameTarget(a: SurfaceTarget | null, b: SurfaceTarget | null): boolean {
  * size moved at most half the target (and the larger size is not known to
  * overshoot), one smaller once it moved more than the target.
  */
-/** At most two rows differ: a status line or spinner, not a scroll. */
-function nearlyUnchanged(previous: readonly string[], next: readonly string[]): boolean {
-  const a = plainTerminalRows(previous), b = plainTerminalRows(next);
-  let changed = 0;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? '') !== (b[i] ?? '') && ++changed > 2) return false;
-  return true;
-}
+const asObject = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const optionalString = (value: unknown): string | null => typeof value === 'string' && value ? value : null;
 
-export function nextApplicationUnits(units: number, moved: ReadonlyMap<number, number>, target: number): number {
-  const current = moved.get(units);
-  if (current === undefined) return units;
-  if (current > target && units > 1) return units - 1;
-  const larger = moved.get(units + 1);
-  if (current * 2 <= target && units < APPLICATION_MAX_STEP && (larger === undefined || larger <= target)) return units + 1;
-  return units;
+function parseRecordPage(raw: Record<string, unknown>): RecordPage {
+  const items = Array.isArray(raw.items) ? raw.items.map(agentItem).filter((item): item is AgentItem => item !== null) : [];
+  return { items: mergeTerminalItems([], items), cursor: optionalString(raw.next_cursor), conversationId: optionalString(raw.conversation_id),
+    generation: optionalString(raw.generation) ?? '', revision: optionalString(raw.revision), branch: optionalString(raw.branch), active: raw.active === true, at: Date.now() };
 }
 
 export function describeError(error: unknown): string {

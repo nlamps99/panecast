@@ -286,75 +286,73 @@ it('distinguishes a server with no scrollback without requiring repeated manual 
 
 const application = { render_grid: { active_screen: 'alternate', columns: 156, rows: 47,
   modes: [{ ansi: false, code: 1000, on: true }] } };
-const applicationRows = (start: number) => Array.from({ length: 47 }, (_, i) => `history ${start + i}`);
-
-it.each([true, false])('appends application captures without replacing visible cells or stopping native momentum (wrapped=%s)', async (wrap) => {
-  mockWrap = wrap;
-  let acknowledge!: () => void;
+/** A Claude-like session record: item N is "reply number N"; the live screen shows the newest ones. */
+const recordItem = (n: number) => ({ id: `item-${n}`, type: 'agentMessage', text: `reply number ${n} with some words`, sequence: n });
+const recordPage = (from: number, to: number, cursor: string | null) => ({ available: true, provider: 'claude', conversation_id: 'c', generation: 'g', revision: `r${to}`,
+  active: false, items: Array.from({ length: to - from }, (_, i) => recordItem(from + i)), next_cursor: cursor });
+const recordScreen = (from: number, to: number) => [...Array.from({ length: to - from }, (_, i) => `⏺ reply number ${from + i} with some words`), '❯ ', '  ? for shortcuts'];
+const plainRows = (rows: readonly string[]) => rows.map((row) => row.replace(/\u001b\[[0-9;]*m/g, ''));
+const scrolls = () => channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, params]) => params?.delta_lines);
+function serveRecord() {
   channel.rpc.mockImplementation(async (method, params) => {
     if (method === 'terminal.replay') return application;
-    if (method === 'terminal.scroll' && Number(params?.delta_lines) < 0) return {};
-    if (method === 'terminal.scroll') return new Promise<void>((resolve) => { acknowledge = resolve; });
+    if (method === 'terminal.conversation') return params?.cursor === 'older' ? recordPage(0, 80, null) : recordPage(80, 160, 'older');
     return {};
   });
-  await mount(applicationRows(1000));
-  const shown = () => (mockNative.get('terminal-output-list')?.data as { plain: string }[]).map(line => line.plain);
-  const original = shown();
-  expect(session.getState().browse).toBeNull();
+}
+
+it.each([true, false])('reads a full-screen program\'s history from its session record without ever scrolling it (wrapped=%s)', async (wrap) => {
+  mockWrap = wrap;
+  serveRecord();
+  await mount(recordScreen(150, 160));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  // The newest page is read ahead while the live screen is shown.
+  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.conversation')).toHaveLength(1);
   await act(async () => {
     callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803));
     callback('terminal-output-list', 'onMomentumScrollBegin', undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  expect(session.getState().browse?.kind).toBe('application');
-  mockScrollToOffset.mockClear();
-  await act(async () => {
-    channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: applicationRows(993), cols: 156, rowsCount: 47, cursor: { x: 0, y: 46 } });
-    acknowledge();
-  });
-  expect(shown().slice(0, original.length)).toEqual(original);
-  expect(shown()).toHaveLength(original.length + 7);
-  expect(mockScrollToOffset).not.toHaveBeenCalled();
-  // Filling the runway must continue after layout, even when native hasn't
-  // produced another scroll/boundary event yet.
-  await act(async () => {
-    (mockNative.get('terminal-output-list')?.onContentSizeChange as (w: number, h: number) => void)(390, shown().length * 17 + 4);
-    // Wheel requests to the program are spaced 50 ms apart.
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  });
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(2);
-  await act(async () => {
-    channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 3, rows: applicationRows(986), cols: 156, rowsCount: 47, cursor: { x: 0, y: 46 } });
-    acknowledge();
-  });
-  expect(shown().slice(0, original.length)).toEqual(original);
-  expect(shown()).toHaveLength(original.length + 14);
-  expect(mockScrollToOffset).not.toHaveBeenCalled();
-  // Reverse through the loaded region without moving the remote program.
-  const requestsBeforeReverse = channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').length;
+  const browse = session.getState().browse!;
+  expect(browse.kind).toBe('application');
+  const older = plainRows(browse.olderRows).filter(Boolean);
+  // Items 150-159 are on the live screen; the record continues right above them, down to item 0.
+  expect(older.at(-1)).toBe('⏺ reply number 149 with some words');
+  expect(older.some((row) => row.includes('reply number 150'))).toBe(false);
+  expect(older[0]).toBe('⏺ reply number 0 with some words');
+  expect(older).toHaveLength(150);
+  expect(browse.exhausted).toBe(true);
+  expect(container.querySelector('[data-testid="terminal-history-status"]')?.textContent).toContain('会话记录');
+  // Back at the bottom: live again, and the program was never touched.
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll')).toHaveLength(requestsBeforeReverse);
-  expect(channel.rpc.mock.calls.some(([method]) => method === 'surface.history')).toBe(false);
-  // The first unit moved 7 of 47 rows: twice that fits the 21-row target, so the next step is 2 units.
-  const sent = channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, p]) => Number(p?.delta_lines));
-  expect(sent.slice(0, 2)).toEqual([1, 2]);
-  await act(async () => { callback('terminal-application-newer', 'onPress', undefined); await session.applicationSettled(); });
   expect(session.getState().browse).toBeNull();
-  // Each request is mirrored, newest first; the newer-history press follows the return.
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').slice(sent.length).map(([, p]) => p?.delta_lines))
-    .toEqual([...sent].reverse().map((delta) => -delta).concat(-3));
+  expect(scrolls()).toEqual([]);
 });
 
-it('retries a failed program-history step on the next wheel gesture, not on every event', async () => {
+it('passes the wheel straight to a full-screen program that has no session record', async () => {
   mockOS = 'web';
-  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : {});
-  await mount(applicationRows(1000));
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : method === 'terminal.conversation' ? { available: false, provider: 'terminal' } : {});
+  await mount(Array.from({ length: 47 }, (_, i) => `vim ${i}`));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(session.getState().applicationScroll?.record).toBe(false);
+  await wheel(-80); await wheel(-80);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+  // 17-px rows: one unit per 51 px of wheel travel, the remainder carried over.
+  expect(scrolls()).toEqual([1, 2]);
+  expect(session.getState().browse).toBeNull();
+  expect(container.querySelector('[data-testid="terminal-application-scroll"]')?.textContent).toContain('滚轮直接滚动程序');
+});
+
+it('retries a failed record read on the next wheel gesture, not on every event', async () => {
+  mockOS = 'web';
+  serveRecord();
+  await mount(recordScreen(150, 160));
   await session.inspectScrollMode();
   await wheel(-40);
   expect(session.getState().browse?.kind).toBe('application');
-  const fail = () => (session as unknown as { update(patch: object): void }).update({ browse: { ...session.getState().browse!, loading: false, error: '程序画面变化' } });
+  const fail = () => (session as unknown as { update(patch: object): void }).update({ browse: { ...session.getState().browse!, loading: false, error: '暂时读不到会话记录' } });
   const retry = jest.spyOn(session, 'loadOlder');
-  // The step fails while the same gesture continues: no retry yet.
+  // The read fails while the same gesture continues: no retry yet.
   await act(async () => fail());
   await wheel(-40);
   expect(retry.mock.calls.filter(([options]) => options?.retry)).toHaveLength(0);
@@ -364,27 +362,28 @@ it('retries a failed program-history step on the next wheel gesture, not on ever
   retry.mockRestore();
 });
 
-it('drops application prefetch and restores its viewport when an explicit key is sent', async () => {
-  channel.rpc.mockImplementation(async (method, params) => {
-    if (method === 'terminal.replay') return application;
-    if (method === 'terminal.scroll' && Number(params?.delta_lines) > 0) return new Promise(() => {});
-    return {};
-  });
-  await mount(applicationRows(1000));
+it('ends record browsing when an explicit key is sent, without scrolling the program', async () => {
+  serveRecord();
+  await mount(recordScreen(150, 160));
   await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803)));
+  expect(session.getState().browse?.kind).toBe('application');
   await act(async () => session.sendKey({ name: 'up' }));
   expect(session.getState().browse).toBeNull();
-  expect(channel.rpc.mock.calls.filter(([method]) => method === 'terminal.scroll').map(([, params]) => params?.delta_lines)).toEqual([1, -1]);
+  expect(scrolls()).toEqual([]);
   expect(sentKeys(channel)).toHaveLength(1);
 });
 
-it('does not prefetch or send application scroll input for a read-only source', async () => {
-  mockReadOnly = true;
-  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : {});
-  await mount();
-  expect(session.getState().browse).toBeNull();
-  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(1520)));
-  await act(async () => callback('terminal-output-list', 'onScroll', scroll(1600)));
+it('lets a read-only viewer read the record but never scroll a program', async () => {
+  mockReadOnly = true; mockOS = 'web';
+  serveRecord();
+  await mount(recordScreen(150, 160));
+  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(60, 803)));
+  expect(session.getState().browse?.kind).toBe('application');
+  await act(async () => session.resumeLive());
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : method === 'terminal.conversation' ? { available: false } : {});
+  (session as unknown as { recordHead: unknown }).recordHead = null;
+  await act(async () => { await session.prepareRecord(true); });
+  await wheel(-200);
   expect(container.querySelector('[data-testid="terminal-application-older"]')).toBeNull();
-  expect(channel.rpc.mock.calls.some(([method]) => method === 'terminal.scroll')).toBe(false);
+  expect(scrolls()).toEqual([]);
 });
