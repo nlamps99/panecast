@@ -19,7 +19,7 @@ import { isShareKey, parseShareKey } from '../../protocol/shareKey';
 import { canManage, listWorkspaces } from '../../session/surfaces';
 import type { RpcChannel } from '../../session/terminalSession';
 import { upsertComputer, type ComputerList, type StoredComputer } from '../computers';
-import { PairingError, sharedWindow } from '../connect';
+import { localGatewayFor, PairingError, sharedWindow } from '../connect';
 
 /** What `panecast share` prints: pcs1. and base64url JSON. */
 function key(fields: Record<string, unknown>): string {
@@ -64,6 +64,12 @@ describe('a shared window', () => {
     expect(again.list.computers.map((c) => c.broker.token)).toEqual(['owner-token', 'rotated']);
     const repaired = upsertComputer(again.list, { ...paired, id: 'new', broker: { ...paired.broker, token: 'fresh' } });
     expect(repaired.list.computers.map((c) => c.broker.token)).toEqual(['fresh', 'rotated']);
+  });
+
+  it('stays a guest on the computer that shares it', () => {
+    const gateway = { webSocketUrl: 'ws://127.0.0.1:4400/v1/ws', healthUrl: 'http://127.0.0.1:4400/v1/health', token: 'local', deviceId: 'local', relayId: 'home-mac', brokerUrl: 'https://broker.example/cmux-remote' };
+    expect(localGatewayFor(sharedWindow(key(valid)), gateway)).toBeNull();
+    expect(localGatewayFor({ broker: { serverUrl: 'https://broker.example/cmux-remote', relayId: 'home-mac', deviceId: 'owner', token: 't' } }, gateway)).toBe(gateway);
   });
 
   it('never registers for push', () => {

@@ -157,7 +157,7 @@ export function createComputerChannel(
   const stored = storedLan(computer);
   // The desktop app on the computer it controls talks to that computer's
   // gateway over loopback instead of a round trip through the server.
-  const desktop = desktopBridge()?.localGateway !== undefined;
+  const desktop = desktopBridge()?.localGateway !== undefined && !computer.share;
   const local = () => (desktop ? localGatewayFor(computer) : null);
   const direct = () => local() ?? stored;
   return new AutoChannel({
@@ -212,8 +212,13 @@ export async function refreshLocalGateway(): Promise<LocalGateway | null> {
   return localGateway;
 }
 
-/** The local gateway, if it is the one this stored computer was paired with. */
-export function localGatewayFor(computer: Pick<StoredComputer, 'broker'>, gateway: LocalGateway | null = localGateway): LocalGateway | null {
+/**
+ * The local gateway, if it is the one this stored computer was paired with.
+ * Never for a shared window: its key must stay a guest even on the computer
+ * that shares it, where the local credential has full access.
+ */
+export function localGatewayFor(computer: Pick<StoredComputer, 'broker' | 'share'>, gateway: LocalGateway | null = localGateway): LocalGateway | null {
+  if (computer.share) return null;
   if (!gateway?.relayId || !gateway.brokerUrl || gateway.relayId !== computer.broker.relayId) return null;
   const same = (a: string, b: string) => a.replace(/\/+$/, '').toLowerCase() === b.replace(/\/+$/, '').toLowerCase();
   return same(gateway.brokerUrl, computer.broker.serverUrl) ? gateway : null;

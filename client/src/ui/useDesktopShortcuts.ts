@@ -46,7 +46,8 @@ export function runDesktopCommand(machine: Machine, command: DesktopCommand): bo
     }
     case 'new': {
       const { target } = around;
-      if (!target || !machine.channel.isOpen) return false;
+      // A shared window holds exactly one terminal; its computer refuses new ones.
+      if (!target || !machine.channel.isOpen || machine.computer?.share) return false;
       void new SurfaceActions(machine).create(target.workspaceId);
       return true;
     }

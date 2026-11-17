@@ -1,4 +1,5 @@
 import { RpcError } from '../tmux.mjs';
+import { inputItems } from '../server.mjs';
 import { HubSession } from './session.mjs';
 import { scoped, scopeResult } from './ids.mjs';
 
@@ -11,7 +12,7 @@ import { scoped, scopeResult } from './ids.mjs';
 export const GUEST_KEYS = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'pgup', 'pgdn', 'ctrl-c']);
 /** Methods a guest may call, always for the shared terminal only. */
 const TARGETED = new Set(['surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text',
-  'terminal.replay', 'terminal.scroll', 'terminal.conversation', 'surface.focus', 'surface.send_text', 'surface.send_key']);
+  'terminal.replay', 'terminal.scroll', 'terminal.conversation', 'surface.focus', 'surface.send_text', 'surface.send_key', 'surface.input']);
 // C0 and C1 controls except tab. A newline or escape sequence typed into the
 // terminal could submit, or end a paste, outside the hub's checks.
 const CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
@@ -124,11 +125,18 @@ export class GuestSession extends HubSession {
       const { surfaces = [] } = await this.client(share.source_id).call('surface.list', { workspace_id: share.workspace_id });
       return { surfaces: surfaces.filter((surface) => surface.id === share.surface_id).map((surface) => scopeResult(share.source_id, surface, true)) };
     }
+    // Each entry goes back through this dispatch, so each is checked on its own.
+    if (method === 'terminal.conversation.batch') return this.conversationBatch(p);
     if (!TARGETED.has(method)) throw forbidden();
     this.check(p, own);
     if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
     if (method === 'surface.send_text') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestText(p.text) });
     if (method === 'surface.send_key') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, key: guestKey(p.key) });
+    if (method === 'surface.input') {
+      // The hub sends these straight to the terminal, so every item is checked before any is sent.
+      const items = inputItems(p).map((item) => item.text !== undefined ? { text: guestText(item.text) } : { key: guestKey(item.key) });
+      return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, items });
+    }
     return super.dispatch(method, p);
   }
 

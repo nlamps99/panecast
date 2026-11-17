@@ -108,6 +108,8 @@ test('a guest sees one source, one workspace and one terminal', async (t) => {
   const { surfaces } = await relay.call('g', 'surface.list', { workspace_id: own.workspace_id });
   assert.deepEqual(surfaces.map((s) => s.id), [own.surface_id]);
   assert.deepEqual((await relay.call('g', 'relay.snippets')).snippets, []);
+  const batch = await relay.call('g', 'terminal.conversation.batch', { requests: [own, { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') }] });
+  assert.deepEqual(batch.results.map((r) => r.ok ? 'ok' : r.error.code), ['ok', 'forbidden']);
   await relay.call('g', 'surface.subscribe', own);
   assert.ok(relay.texts('g').some((m) => m.type === 'screen.full' && m.surface_id === own.surface_id));
 });
@@ -140,7 +142,12 @@ test('guest input is limited to plain lines and safe keys', async (t) => {
   for (const key of ['backspace', 'delete', 'tab', 'shift-tab', 'home', 'ctrl-u', 'ctrl-r', 'ctrl-z', 'alt-b', 'cmd-v']) {
     await assert.rejects(relay.call('g', 'surface.send_key', { ...own, key }), { code: 'guest_key' }, key);
   }
-  assert.deepEqual(upstream.sent().map((c) => c.params.text ?? c.params.key), ['把第三章改得简洁一些，引用 src/paper.tex', '谢谢！', 'enter', 'ctrl-c']);
+  await relay.call('g', 'surface.input', { ...own, items: [{ text: '再改一下结论' }, { key: 'enter' }] });
+  for (const items of [[{ text: 'ok' }, { text: '!ls' }], [{ text: '/login' }], [{ text: 'a' }, { key: 'backspace' }], [{ text: 'x\n' }]]) {
+    await assert.rejects(relay.call('g', 'surface.input', { ...own, items }), (error) => /guest_/.test(error.code), JSON.stringify(items));
+  }
+  await assert.rejects(relay.call('g', 'surface.input', { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0'), items: [{ text: 'hi' }] }), { code: 'forbidden' });
+  assert.deepEqual(upstream.sent().map((c) => c.params.text ?? c.params.key), ['把第三章改得简洁一些，引用 src/paper.tex', '谢谢！', 'enter', 'ctrl-c', '再改一下结论', 'enter']);
   assert.ok(upstream.sent().every((c) => c.params.workspace_id === '$1' && c.params.surface_id === '%1'));
 });
 
