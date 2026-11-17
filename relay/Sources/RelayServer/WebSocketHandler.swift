@@ -66,10 +66,14 @@ public actor WSProtocolMachine {
             return [relayAction]
         }
 
-        if ["terminal.scroll", "surface.send_key", "surface.send_text"].contains(req.method),
+        if ["terminal.scroll", "surface.send_key", "surface.send_text", "surface.input"].contains(req.method),
            case .object(let params) = req.params,
            case .string(let surfaceId)? = params["surface_id"] {
             await noteUserInput?(surfaceId)
+        }
+
+        if req.method == "surface.input" {
+            return [.sendText(Self.encode(await input(req)))]
         }
 
         do {
@@ -82,6 +86,58 @@ public actor WSProtocolMachine {
             let resp = RPCResponse(id: req.id, ok: false, result: nil, error: err)
             return [.sendText(Self.encode(resp))]
         }
+    }
+
+    /// Everything typed while the previous request was in flight, sent to
+    /// the named terminal in order: one network round trip instead of one
+    /// per key. A failure reports how many items already arrived.
+    private func input(_ req: RPCRequest) async -> RPCResponse {
+        guard case .object(let params) = req.params,
+              case .string(let workspaceId)? = params["workspace_id"],
+              case .string(let surfaceId)? = params["surface_id"],
+              case .array(let items)? = params["items"],
+              let parsed = Self.inputItems(items) else {
+            return Self.errorResponse(id: req.id, code: "invalid_params", message: "surface.input requires a terminal and 1–512 items")
+        }
+        var sent: Int64 = 0
+        for item in parsed {
+            var call: [String: JSONValue] = ["workspace_id": .string(workspaceId), "surface_id": .string(surfaceId)]
+            let method: String
+            switch item {
+            case .text(let text): method = "surface.send_text"; call["text"] = .string(text)
+            case .key(let key): method = "surface.send_key"; call["key"] = .string(key)
+            }
+            do {
+                _ = try await cmux.dispatch(method: method, params: .object(call))
+            } catch {
+                return RPCResponse(id: req.id, ok: false, result: nil,
+                                   error: RPCError(code: "internal_error", message: String(describing: error), data: .object(["sent": .int(sent)])))
+            }
+            sent += 1
+        }
+        return RPCResponse(id: req.id, ok: true, result: .object(["sent": .int(sent)]), error: nil)
+    }
+
+    enum InputItem: Equatable { case text(String), key(String) }
+
+    static func inputItems(_ items: [JSONValue]) -> [InputItem]? {
+        guard !items.isEmpty, items.count <= 512 else { return nil }
+        var size = 0
+        var parsed: [InputItem] = []
+        for item in items {
+            guard case .object(let fields) = item else { return nil }
+            switch (fields["text"], fields["key"]) {
+            case (.string(let text)?, nil) where !text.isEmpty:
+                size += text.utf16.count
+                guard size <= 256 * 1024 else { return nil }
+                parsed.append(.text(text))
+            case (nil, .string(let key)?) where (1...48).contains(key.count) && key.unicodeScalars.allSatisfy({ (0x20...0x7E).contains($0.value) }):
+                parsed.append(.key(key))
+            default:
+                return nil
+            }
+        }
+        return parsed
     }
 
     /// The 100ms hello timer fired. Returns `[.close]` if the peer never

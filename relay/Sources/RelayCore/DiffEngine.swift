@@ -26,6 +26,7 @@ public actor DiffEngine {
     private let clock: Clock
     private var state = RowState()
     private var lastInput: TimeInterval
+    private var lastChange: TimeInterval = -.infinity
     private var lastChecksumAt: TimeInterval = 0
     private var onDiff: (@Sendable (Int, [DiffOp]) -> Void)?
     private var onChecksum: (@Sendable (String, Int) -> Void)?
@@ -61,12 +62,16 @@ public actor DiffEngine {
 
     /// Run one polling tick. In production wired to a NIO TimerTask at 1/currentFps.
     public func tick() async throws {
-        if clock.now - lastInput > idleAfter { currentFps = idleFps }
+        // Streaming output (an agent writing, a build log) keeps the active
+        // rate just like typing does; only a quiet screen slows down.
+        if clock.now - max(lastInput, lastChange) > idleAfter { currentFps = idleFps }
         let snapshot = try await reader.read(workspaceId: workspaceId,
                                              surfaceId: surfaceId, lines: lines)
         let ops = state.ingest(snapshot: snapshot)
         if !ops.isEmpty {
             rev &+= 1
+            lastChange = clock.now
+            currentFps = activeFps
             onDiff?(rev, ops)
         }
         if clock.now - lastChecksumAt >= 5.0 {

@@ -63,4 +63,24 @@ final class DiffEngineBehaviorTests: XCTestCase {
         let fpsAfterInput = await engine.currentFps
         XCTAssertEqual(fpsAfterInput, 30)
     }
+
+    /// An agent writing for minutes without any input keeps the active rate.
+    func testStreamingOutputKeepsActiveRateWithoutInput() async throws {
+        let reader = StaticReader((0..<5).map { Screen(rev: $0, rows: ["line \($0)"], cols: 6, cursor: .init(x: 0, y: 0)) }
+            + [Screen(rev: 9, rows: ["line 4"], cols: 6, cursor: .init(x: 0, y: 0))])
+        let clock = FakeClock()
+        let engine = DiffEngine(reader: reader, fps: 30, idleFps: 5,
+                                workspaceId: "w", surfaceId: "s", lines: 1,
+                                clock: clock)
+        for _ in 0..<5 {
+            clock.advance(by: 1.0)
+            try await engine.tick()
+            let fps = await engine.currentFps
+            XCTAssertEqual(fps, 30, "changing output stays at the active rate")
+        }
+        clock.advance(by: 2.0)
+        try await engine.tick()
+        let quiet = await engine.currentFps
+        XCTAssertEqual(quiet, 5, "a quiet screen slows down")
+    }
 }
