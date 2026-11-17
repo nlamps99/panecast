@@ -144,6 +144,8 @@ describe('layoutRow', () => {
     ]);
     expect(plain('  1. first step of many', 14)).toEqual(['  1. first ', '     step of ', '     many']);
     expect(plain('      10 -  const size = Math.round(width);', 30)).toEqual(['      10 -  const size = ', '            Math.round(width);']);
+    // The relay paints a diff row's background from its first cell.
+    expect(plain('\u001b[48;2;61;1;8m      10 -  const size = Math.round(width);\u001b[0m', 30)).toEqual(['      10 -  const size = ', '            Math.round(width);']);
   });
 
   it('keeps plain indentation for wrapped code', () => {

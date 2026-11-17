@@ -94,8 +94,10 @@ const MAX_INDENT_SHARE = 0.4;
 function hangingIndent(cells: Cell[], columns: number): number {
   let index = 0;
   let width = 0;
+  // Colored spaces count too: a diff row paints its whole indentation, and
+  // its continuation still belongs under the code.
   const skipSpaces = () => {
-    while (index < cells.length && cells[index].text === ' ' && !hasVisibleBackground(cells[index].attr)) {
+    while (index < cells.length && cells[index].text === ' ') {
       index++;
       width++;
     }
