@@ -221,32 +221,37 @@
     }
   ],
   "desktop": {
-    "version": "0.2.9",
+    "version": "0.2.10",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.9-mac-arm64.dmg",
-    "size": 3763900,
-    "sha256": "11474d3673ccd6e6307563b7a13b85af9052474ce43724c698c41b4fe86d7228",
+    "file": "panecast-desktop-0.2.10-mac-arm64.dmg",
+    "size": 4587028,
+    "sha256": "f8a40e6fb273a80c257f5fd48f96021b374f91f54731d0ca49cc0b48c816b4c8",
     "archive": {
-      "file": "panecast-desktop-0.2.9-mac-arm64.zip",
-      "size": 3538514,
-      "sha256": "5e11a0ba386b810d51600fbe976f32c3cd6cb31814d6603ff50d0896b89d6ab6"
+      "file": "panecast-desktop-0.2.10-mac-arm64.zip",
+      "size": 4318374,
+      "sha256": "ff29b4e2e502dcf497ab1637596c61cf6978f496ba137b051dffc1981f4ef108"
     },
     "installer": {
-      "file": "install-desktop-0.2.9-mac-arm64.sh",
-      "size": 5630,
-      "sha256": "aa620c9ddba9c307e240cef7dfd7252d27ec87c3a40d9a83f34a0d78fa369d3f"
+      "file": "install-desktop-0.2.10-mac-arm64.sh",
+      "size": 5632,
+      "sha256": "8f5f7e36341e9c91520f9fb7e06bc2bdcccacfa441a8f6fcc1d0caecb7dc4d06"
+    },
+    "update": {
+      "file": "panecast-desktop-0.2.10-mac-arm64.app.tar.gz",
+      "size": 4399780,
+      "sha256": "aba72f309f6e60daf7273a11dcb0dd24379922f87c59a07a4f548f99c5e3aa32",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ1E4Sy9iaXJtQTJmK2tGVm9HN3cvMFl5YmJiSTdwdEhvTWFJdDZ4R2U4bkx3TWoyRHFHNUt0cmpVTjdHc1lVNkgyNkw5VFk1eTQrZE9PVFljeW1USWdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0ODkyNzQxCWZpbGU6UGFuZWNhc3QuYXBwLnRhci5negl2ZXJzaW9uOjAuMi4xMAo1NWcwUlFOUjl6M0MvOHFHTUY0YU1jQkc4YUtQUjBQdVdHbVpMU3UwYlpMNi9iLy9JNjVWNDR5ZzRaazVxVU83b3ByZVNlODZqNjI1N2NoWXdVOGVCdz09Cg=="
     },
     "minimumMacOS": "13.0",
     "date": "2026-11-16",
     "notarized": false,
-    "sourceCommit": "0c53484fde359b66cd2c0cc48660f38dabf5bd48",
+    "sourceCommit": "646b9d34ff73aa975592c9a908aedd5f14be1b5f",
     "notes": [
-      "按桌面应用重新设计：左侧常驻电脑、工作区和终端列表，去掉手机的底部标签栏和返回按钮，并增加 ⌘ 快捷键",
-      "在运行网关的同一台电脑上直接连接本机网关，按键和画面不经过服务器；连续输入合并成一次发送",
-      "终端使用等宽字体，显示颜色和真实光标（需更新 Mac 上的 cmux relay），默认按电脑上的原始列宽显示",
-      "可以粘贴别人分享的窗口密钥（pcs1. 开头）直接连接，不用配对，只能看到并操作这一个窗口"
+      "自动更新：以后的新版本在后台自动下载安装，左侧栏提示后重启即可；也可以在「设置 → 应用更新」或菜单「Panecast → 检查更新…」手动检查",
+      "附件不再有大小限制：拖入、粘贴或选择的文件按原始内容分块上传并显示进度（需更新电脑上的网关；旧网关仍为 12 MB）",
+      "上传的文档保留原文件名，不再被改成 .jpg"
     ]
   },
   "windows": {

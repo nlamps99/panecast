@@ -33,7 +33,8 @@ export function desktopUpdateManifest(desktop, downloadBase) {
   return {
     version: desktop.version,
     notes: (desktop.notes ?? []).join('\n'),
-    pub_date: `${desktop.date}T00:00:00Z`,
+    // RFC 3339, or left out: the updater rejects a malformed date.
+    ...(/^\d{4}-\d{2}-\d{2}$/.test(desktop.date ?? '') ? { pub_date: `${desktop.date}T00:00:00Z` } : {}),
     platforms: { [platform]: { signature: desktop.update.signature, url: `${downloadBase.replace(/\/$/, '')}/${desktop.update.file}` } },
   };
 }
