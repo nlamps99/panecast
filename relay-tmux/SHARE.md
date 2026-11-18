@@ -44,6 +44,36 @@ panecast share create 自己用 --full          # 不受限的 Claude，给自�
 - **拿到密钥的人等于坐在这台电脑前**：能读写你所有文件（包括 `~/.ssh`、钥匙串里能读到的东西）、联网、运行任何命令。只给自己或完全信任的人，不用时 `panecast share revoke 名称`。
 - `reopen` 保持完整权限。下面「访客能做什么」和「安全设计」说的是默认的受限分享。
 
+## 任务接口（`--full --tasks`）
+
+```sh
+panecast share create 任务 --full --tasks   # 完整权限窗口，再加一个给程序用的任务接口
+panecast share tasks 任务                    # 最近的任务和状态
+```
+
+程序拿分享密钥（`pcs1.…`）当 Bearer 令牌调用 broker 上的 HTTP 接口；任务排队，一个一个送进这个分享的第一个终端，Claude 回答完，它最后的回复就是结果。你在 cmux 和 Panecast 里看得到每个任务在跑，也可以插手。
+
+| 请求 | 作用 |
+|---|---|
+| `POST /v1/tasks[?wait=秒]`，body `{"text": "…", "attachments": [{"name": "图.png", "data_base64": "…"}]}` | 提交任务，返回 201 `{task}`；带 `wait` 时在同一个请求里等结果（最多 300 秒） |
+| `GET /v1/tasks/<编号>[?wait=秒]` | 查询任务；带 `wait` 时等到做完或超时再返回 |
+| `GET /v1/tasks[?limit=20]` | 最近的任务，新的在前 |
+| `POST /v1/tasks/<编号>/cancel` | 排队的移出队列；正在做的在窗口里按 Esc 打断 |
+
+```sh
+curl -s 'https://panecast.drinklake.com/cmux-remote/v1/tasks?wait=300' -H "Authorization: Bearer $PANECAST_KEY" \
+  -H 'content-type: application/json' -d '{"text":"总结一下附件","attachments":[{"name":"a.png","data_base64":"…"}]}'
+```
+
+- 任务：`id`、`status`（`queued` 排队 → `sending` 送进窗口 → `running` 在做 → `done` / `failed` / `canceled`）、`result`（Claude 这一轮最后的回复）、`files`（Claude 存进 `tasks/<编号>/out/` 的文件，带 1 小时内有效的下载链接）、`attachments`、`position`（排队时第几个）、`error`。
+- 附件也可以写成 data URL（`{"data": "data:image/png;base64,…"}`），每个任务最多 10 个、合计 20 MB，存进分享目录的 `tasks/<编号>/`；任务文字里会列出路径，Claude 用 Read 工具看图片和 PDF。文字最多 32,000 字。
+- 同一个窗口一次只做一个任务，任务之间是同一段对话（上下文会累积，Claude 自己压缩）。你自己在窗口里提问时，任务等你这一轮结束再送。
+- 窗口里的 Claude 用 `--disallowedTools=AskUserQuestion` 启动，不会停下来等人回答选择题。
+- 任务窗口被关掉、或者 Claude 退出了，下一个任务来时网关在同一个工作区重新开一个（工作区也没了就新开一个工作区），等 Claude 启动后再送。
+- 判断做完靠 Claude 的钩子：每个终端把 SessionStart、UserPromptSubmit、Stop、SessionEnd 追加到 `~/.cmuxremote/hub/shares/<编号>/events/<终端>.jsonl`，Stop 带着这一轮的 `prompt_id` 和最后一条回复。按 Esc 打断没有 Stop，网关从 Claude 的对话记录里看到「[Request interrupted by user]」后把任务标为失败，接着做下一个。任务记录在同一目录的 `tasks.json`（保留最近 200 个）。
+- 送进窗口：先粘贴，停 0.4 秒再单独按回车（多行粘贴时随粘贴一起到的回车会被 Claude 吞掉）；10 秒和 25 秒时没看到 Claude 接收就再按一次回车，不会重复粘贴；60 秒还没开始就标为失败（之后 Claude 又接收了，任务会恢复）。
+- 密钥就是完整权限分享的密钥：拿到它的程序能让这台电脑做任何事。broker 每个请求开一个访客连接、调一次方法就关，不保存任务；电脑离线时返回 503。
+
 ## 访客能做什么
 
 对方的连接只能访问这个分享的终端：

@@ -9,6 +9,7 @@ import { CloudIdentity } from "./cloud-identity.mjs";
 import { accountRoute } from "./account-routes.mjs";
 import { GuestStore } from "./guests.mjs";
 import { fileLinksFromEnvironment, issueTransfer, validSha256 } from "./file-links.mjs";
+import { taskRoute } from "./task-routes.mjs";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024;
 export const MAX_WS_PAYLOAD_BYTES = 32 * 1024 * 1024;
@@ -373,6 +374,7 @@ export async function createBrokerServer(options) {
   const pushLimiter = new SlidingWindowRateLimiter(12, 60_000);
   const guestLimiter = new SlidingWindowRateLimiter(config.guestLimit ?? 60, 60_000);
   const fileLimiter = new SlidingWindowRateLimiter(config.fileLinkLimit ?? 120, 600_000);
+  const taskLimiter = new SlidingWindowRateLimiter(config.taskLimit ?? 300, 60_000);
 
   async function syncPushDevices(relayId) {
     await store.load();
@@ -475,6 +477,11 @@ export async function createBrokerServer(options) {
       })) return;
       if (await guestRoute(request, response, url)) return;
       if (await fileRoute(request, response, url)) return;
+      if (await taskRoute(request, response, url, {
+        authenticateGuest: (token, relayId) => relayAccess.has(relayId) ? guests.authenticate(token, relayId) : null,
+        openRelaySession, sendJSON, bearerToken,
+        limit: (relayId) => taskLimiter.allow(`${relayId}\0${remoteIP(request, config.trustProxy, config.trustedHops)}`),
+      })) return;
       if (request.method === "GET" && url.pathname === "/v1/health") {
         const relayId = url.searchParams.has("relay_id") ? url.searchParams.get("relay_id") : defaultRelayId;
         if (url.searchParams.has("relay_id") && !await authenticatePhone(request, relayId)) {
@@ -491,6 +498,7 @@ export async function createBrokerServer(options) {
           shared_accounts: Boolean(accounts.cloud),
           relay_enrollment: enrollment.enabled,
           window_sharing: true,
+          share_tasks: true,
           file_links: Boolean(config.files),
           ...(config.publicURL ? { server_url: config.publicURL } : {}),
         });
@@ -588,6 +596,56 @@ export async function createBrokerServer(options) {
     if (relay?.readyState !== WebSocket.OPEN) return false;
     relay.send(JSON.stringify(envelope));
     return true;
+  }
+
+  /**
+   * A guest session the broker holds itself for one HTTP request (task-routes.mjs).
+   * The relay sees exactly what the Panecast app sends with the same key.
+   */
+  function openRelaySession(relayId, device) {
+    const relay = relayConnections.get(relayId);
+    if (relay?.readyState !== WebSocket.OPEN) throw Object.assign(new Error("computer_offline"), { statusCode: 503 });
+    if (device.guest && !relay.features?.has(GUEST_FEATURE)) throw Object.assign(new Error("computer_does_not_support_shared_windows"), { statusCode: 503 });
+    const sessionId = randomUUID(), pending = new Map();
+    let next = 0;
+    const offline = () => Object.assign(new Error("computer_offline"), { statusCode: 503 });
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send(text) {
+        let message;
+        try { message = JSON.parse(text); } catch { return; }
+        const waiting = typeof message?.id === "string" ? pending.get(message.id) : null;
+        if (!waiting) return;
+        pending.delete(message.id);
+        clearTimeout(waiting.timer);
+        if (message.ok) waiting.resolve(message.result ?? {});
+        else waiting.reject(Object.assign(new Error(String(message.error?.message ?? "request failed")), { code: String(message.error?.code ?? "failed") }));
+      },
+      close() {
+        if (socket.readyState === WebSocket.CLOSED) return;
+        socket.readyState = WebSocket.CLOSED;
+        for (const waiting of pending.values()) { clearTimeout(waiting.timer); waiting.reject(offline()); }
+        pending.clear();
+        closePhoneSession(sessionId);
+      },
+    };
+    phoneSessions.set(sessionId, { socket, relayId, relay, deviceId: device.device_id });
+    sendToRelay(relayId, { type: "session.open", session_id: sessionId, device_id: device.device_id, ...(device.guest ? { guest: { share_id: device.share_id } } : {}) });
+    sendToRelay(relayId, { type: "session.text", session_id: sessionId, text: JSON.stringify({ deviceId: device.device_id, appVersion: "panecast-task-api", protocolVersion: 1 }) });
+    return {
+      call(method, params, timeoutMs) {
+        if (socket.readyState !== WebSocket.OPEN) return Promise.reject(offline());
+        const id = `api-${++next}`;
+        return new Promise((resolveCall, rejectCall) => {
+          const timer = setTimeout(() => { pending.delete(id); rejectCall(Object.assign(new Error("computer_timeout"), { statusCode: 504 })); }, timeoutMs);
+          pending.set(id, { resolve: resolveCall, reject: rejectCall, timer });
+          if (relayConnections.get(relayId) !== relay || !sendToRelay(relayId, { type: "session.text", session_id: sessionId, text: JSON.stringify({ id, method, params }) })) {
+            clearTimeout(timer); pending.delete(id); rejectCall(offline());
+          }
+        });
+      },
+      close: () => socket.close(),
+    };
   }
 
   function closePhoneSession(sessionId, notifyRelay = true) {

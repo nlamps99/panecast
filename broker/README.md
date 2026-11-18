@@ -347,6 +347,20 @@ POST /v1/relay/files?relay_id=…   {name, type, size, sha256} → 201 {upload_u
 - 单个文件最大 50 MB（`CMUX_FILES_MAX_BYTES` / `PANECAST_FILES_MAX_BYTES`），每台电脑每 10 分钟最多 120 个链接。
 - 当前部署：中转服务在 nzx2 的 `/srv/panecast-files`（容器 `panecast-files`），由 Caddy 把 `https://panecast.drinklake.com/panecast-files/` 转过去。
 
+### 分享窗口的任务接口
+
+`panecast share create 名称 --full --tasks` 的分享可以由程序提交任务（见 `relay-tmux/SHARE.md`）。令牌是分享密钥本身（`pcs1.…`），或者其中的访客令牌加 `?relay_id=`：
+
+```
+POST /v1/tasks[?wait=秒]                {text, attachments:[{name, data_base64}]} → 201 {task}
+GET  /v1/tasks?limit=20                 → {tasks}
+GET  /v1/tasks/<编号>[?wait=秒]          → {task}
+POST /v1/tasks/<编号>/cancel            → {task}
+```
+
+- 每个请求在 relay 隧道上开一个访客会话（和 Panecast 用同一把密钥连接时一样），调一个 `task.*` 方法后关闭；broker 不保存任务。`wait` 最多 300 秒。
+- 请求体最大 28 MB；电脑离线返回 503，电脑没回应返回 504。只有访客密钥能用，配对设备和 relay 令牌都返回 401。每个 relay 每个来源地址每分钟最多 300 个请求。
+
 ### 当前部署（2026-11-17 起）
 
 - broker 在 nzx2 的 `/srv/panecast-broker`（compose，容器 `panecast-broker` 和 `panecast-broker-air`），地址 `https://panecast.drinklake.com/cmux-remote` 和 `/cmux-remote-air`。设置 `CMUX_PUBLIC_URL` 后 `/v1/health` 返回 `server_url`，新版客户端据此自动改用新地址。

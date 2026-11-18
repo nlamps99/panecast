@@ -9,6 +9,7 @@ import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { localConversationSource } from './terminal-conversation.mjs';
 import { sharesDirectory, sharesFile, shareTerminals } from './share-binding.mjs';
+import { taskEventsDirectory, withTaskHooks } from './share-tasks.mjs';
 
 export { sharesDirectory, sharesFile, shareTerminals };
 
@@ -186,11 +187,13 @@ const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
  * The shell command cmux runs in the new terminal. `exec` leaves no shell behind when Claude exits.
  * `full`: the owner's own Claude with every tool, command and setting, no sandbox and no permission prompts.
  * `web`: the confined Claude may also fetch web pages without asking (WebFetch never reaches private addresses).
+ * `tasks`: the settings file holds the hooks that report each turn to the gateway (share-tasks.mjs), and
+ * Claude may not stop a task to ask a question nobody is there to answer.
  */
-export function shareCommand(binary, settingsPath, { full = false, web = false, sessionId = null } = {}) {
+export function shareCommand(binary, settingsPath, { full = false, web = false, sessionId = null, tasks = false } = {}) {
   // A known session id lets the gateway read the window's history from its record (share-binding.mjs).
   const start = ['exec', '/usr/bin/env', '-u', 'CLAUDECODE', '-u', 'CLAUDE_CODE_ENTRYPOINT', quote(binary), ...(sessionId ? ['--session-id', quote(sessionId)] : [])];
-  if (full) return [...start, '--dangerously-skip-permissions'].join(' ');
+  if (full) return [...start, '--dangerously-skip-permissions', ...(tasks ? ['--settings', quote(settingsPath), '--disallowedTools=AskUserQuestion'] : [])].join(' ');
   return [...start,
     '--restricted', '--disable-slash-commands', '--strict-mcp-config',
     '--tools', quote(web ? `${SHARE_TOOLS},WebFetch` : SHARE_TOOLS), '--settings', quote(settingsPath),
@@ -232,12 +235,12 @@ export const shareSettingsPath = (config, share) => join(sharesDirectory(config)
  * does for a new workspace.
  */
 export async function shareTerminalCommand(config, share, sessionId) {
-  const full = share.full === true, settingsPath = shareSettingsPath(config, share);
-  if (!full) {
+  const full = share.full === true, tasks = share.tasks === true, settingsPath = shareSettingsPath(config, share);
+  if (!full || tasks) {
     try { await stat(settingsPath); }
     catch { throw new Error('这个分享的 Claude 设置文件不见了，请在电脑上运行 panecast share reopen 重新打开'); }
   }
-  return `/bin/zsh -lc ${quote(shareCommand(await claudeBinary(), settingsPath, { full, web: share.network === 'open', sessionId }))}`;
+  return `/bin/zsh -lc ${quote(shareCommand(await claudeBinary(), settingsPath, { full, web: share.network === 'open', sessionId, tasks }))}`;
 }
 
 async function claudeBinary() {
@@ -249,15 +252,15 @@ async function claudeBinary() {
 }
 
 /** Opens a visible cmux workspace in the directory and starts the shared Claude in it. */
-export async function openShareWindow(config, { name, directory, settingsPath, sourceId, full = false, web = false, sessionId = null }) {
+export async function openShareWindow(config, { name, directory, settingsPath, sourceId, full = false, web = false, sessionId = null, tasks = false }) {
   const registry = new SourceRegistry(config.sources ?? []);
   const session = new HubSession(registry, config, () => {}, () => {}, () => {});
   try {
     const source = sourceId ? registry.get(sourceId) : [...registry.sources.values()].find((s) => s.config.type === 'cmux' && localConversationSource(s.config.url));
     if (!source || source.config.type !== 'cmux' || !localConversationSource(source.config.url)) throw new Error('需要本机的 cmux 来源，请先打开 cmux 并运行 panecast restart');
     const client = session.client(source.config.id);
-    const command = shareCommand(await claudeBinary(), settingsPath, { full, web, sessionId });
-    const created = await client.call('workspace.create', { title: `${full ? '完整权限分享' : '分享'} · ${name}`, cwd: directory, initial_command: command, focus: false });
+    const command = shareCommand(await claudeBinary(), settingsPath, { full, web, sessionId, tasks });
+    const created = await client.call('workspace.create', { title: shareTitle({ name, full, tasks }), cwd: directory, initial_command: command, focus: false });
     const workspaceId = created.workspace_id ?? created.workspace?.id;
     if (!workspaceId) throw new Error('cmux 没有返回新工作区');
     let surfaceId = created.surface_id;
@@ -265,6 +268,19 @@ export async function openShareWindow(config, { name, directory, settingsPath, s
     if (!surfaceId) throw new Error('工作区已创建，但没有找到终端');
     return { sourceId: source.config.id, workspaceId, surfaceId };
   } finally { session.dispose(); registry.close(); }
+}
+
+export const shareTitle = ({ name, full, tasks }) => `${tasks ? '任务接口' : full ? '完整权限分享' : '分享'} · ${name}`;
+
+/** The address programs send a task share's tasks to, on the broker the key names. */
+export function taskEndpoint(config) { return `${String(config.broker?.url ?? '').replace(/\/$/, '')}/v1/tasks`; }
+
+function printTaskUsage(config) {
+  const url = taskEndpoint(config);
+  console.log('任务接口：把上面的密钥当作 Bearer 令牌。');
+  console.log(`  提交任务并等结果（最多等 300 秒）：\n    curl -s '${url}?wait=300' -H "Authorization: Bearer $PANECAST_KEY" -H 'content-type: application/json' -d '{"text":"任务内容","attachments":[{"name":"图.png","data_base64":"..."}]}'`);
+  console.log(`  查询任务：curl -s '${url}/任务编号?wait=60' -H "Authorization: Bearer $PANECAST_KEY"`);
+  console.log(`  最近的任务：curl -s '${url}' -H "Authorization: Bearer $PANECAST_KEY"；取消：POST ${url}/任务编号/cancel`);
 }
 
 /** Closes the cmux workspace a share used before. */
@@ -303,25 +319,29 @@ export async function shareCLI(args, configPath) {
     const name = validName(args[1]);
     const shares = await store.read();
     if (shares.some((share) => share.name === name && !share.revoked_at)) throw new Error('已有同名的分享，请换一个名称');
-    const full = args.includes('--full'), web = !full && args.includes('--net');
+    const full = args.includes('--full'), web = !full && args.includes('--net'), tasks = args.includes('--tasks');
+    if (tasks && !full) throw new Error('任务接口目前只用于完整权限分享，请加上 --full');
     // Fail before opening a window when the broker cannot issue keys.
     await new BrokerGuests(config.broker).list();
     const directory = await shareDirectory(flag(args, '--dir'), name, homedir(), { full });
     const id = newId();
     const settingsPath = join(sharesDirectory(config), id, 'claude-settings.json');
     if (!full) await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)), openNetwork: web }));
+    if (tasks) await writeJSON(settingsPath, withTaskHooks({}, taskEventsDirectory(config, { id })));
     const sessionId = randomUUID();
-    const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web, sessionId });
+    const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web, sessionId, tasks });
     const createdAt = new Date().toISOString();
     const share = { id, name, directory, source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId,
-      terminals: [{ surface_id: target.surfaceId, session_id: sessionId, created_at: createdAt }], created_at: createdAt, revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), ...(web ? { network: 'open' } : {}), guests: [] };
+      terminals: [{ surface_id: target.surfaceId, session_id: sessionId, created_at: createdAt }], created_at: createdAt, revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), ...(web ? { network: 'open' } : {}), ...(tasks ? { tasks: true } : {}), guests: [] };
     shares.push(share);
     await store.write(shares);
-    console.log(`已在 cmux 打开工作区「${full ? '完整权限分享' : '分享'} · ${name}」，目录：${directory}`);
+    console.log(`已在 cmux 打开工作区「${shareTitle({ name, full, tasks })}」，目录：${directory}`);
     if (full) console.log('完整权限：没有沙箱，不需要确认权限，按键和文字原样送达。拿到密钥的人等于坐在这台电脑前，能读写所有文件、运行任何命令。');
     if (web) console.log('联网：文件仍只能读写这个目录；GitHub、PyPI、npm 等常用站点直接可用，其他网站第一次访问时在窗口里确认一次，这台电脑上的本机服务访问不到。');
+    if (tasks) console.log('任务接口：程序用这个密钥提交的任务会排队，一个一个送进这个窗口；Claude 回答完，最后的回复就是结果。');
     console.log('第一次使用时，请在这个窗口里确认「信任这个文件夹」。');
     printKey(await issueKey(config, store, shares, share, flag(args, '--guest') ?? ''), flag(args, '--guest'));
+    if (tasks) printTaskUsage(config);
     return;
   }
   if (action === 'key') {
@@ -329,6 +349,7 @@ export async function shareCLI(args, configPath) {
     if (share.revoked_at) throw new Error('这个分享已停止');
     const label = flag(args, '--guest') ?? '';
     printKey(await issueKey(config, store, shares, share, label), label);
+    if (share.tasks === true) printTaskUsage(config);
     return;
   }
   if (action === 'reopen') {
@@ -338,9 +359,10 @@ export async function shareCLI(args, configPath) {
     const full = share.full === true;
     const settingsPath = shareSettingsPath(config, share);
     if (!full) await writeJSON(settingsPath, withPromptHook(JSON.parse(await readFile(settingsPath, 'utf8'))));
+    if (share.tasks === true) await writeJSON(settingsPath, withTaskHooks({}, taskEventsDirectory(config, share)));
     // A fresh conversation, as before; its new session id replaces the old one.
     const sessionId = randomUUID();
-    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open', sessionId });
+    const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open', sessionId, tasks: share.tasks === true });
     const previous = { sourceId: share.source_id, workspaceId: share.workspace_id };
     // Terminals guests added went with the old workspace.
     Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId, prompt_hook: !full,
@@ -355,10 +377,23 @@ export async function shareCLI(args, configPath) {
     if (!shares.length) { console.log('还没有分享的窗口。运行 panecast share create 名称 来创建。'); return; }
     for (const share of shares) {
       const terminals = shareTerminals(share).length;
-      console.log(`${share.id}\t${share.name}\t${share.revoked_at ? '已停止' : '分享中'}${share.full ? '（完整权限）' : share.network === 'open' ? '（联网）' : ''}${terminals > 1 ? ` · ${terminals} 个终端` : ''}\t${share.directory}`);
+      console.log(`${share.id}\t${share.name}\t${share.revoked_at ? '已停止' : '分享中'}${share.tasks ? '（任务接口）' : share.full ? '（完整权限）' : share.network === 'open' ? '（联网）' : ''}${terminals > 1 ? ` · ${terminals} 个终端` : ''}\t${share.directory}`);
       for (const [index, guest] of share.guests.entries()) {
         console.log(`  ${index + 1}. ${guest.label || '未命名'}\t${guest.revoked_at ? '已撤销' : '有效'}\t${guest.created_at.slice(0, 16).replace('T', ' ')}`);
       }
+    }
+    return;
+  }
+  if (action === 'tasks') {
+    const { share } = await store.find(args[1]);
+    if (share.tasks !== true) throw new Error('这个分享没有开启任务接口（创建时加 --full --tasks）');
+    let tasks = [];
+    try { tasks = JSON.parse(await readFile(join(sharesDirectory(config), share.id, 'tasks.json'), 'utf8')).tasks ?? []; } catch { /* none yet */ }
+    if (!tasks.length) { console.log('还没有任务。'); printTaskUsage(config); return; }
+    const labels = { queued: '排队', sending: '发送中', running: '进行中', done: '完成', failed: '失败', canceled: '已取消' };
+    for (const task of tasks.slice(-Number(flag(args, '--limit') ?? 20)).reverse()) {
+      const line = task.text.replace(/\s+/g, ' ').slice(0, 40);
+      console.log(`${task.id}\t${labels[task.status] ?? task.status}\t${task.created_at.slice(0, 16).replace('T', ' ')}\t${line}${task.error ? `\t${task.error}` : ''}`);
     }
     return;
   }
@@ -383,5 +418,5 @@ export async function shareCLI(args, configPath) {
     if (failed.length) console.log(`有 ${failed.length} 个密钥没能在中转服务器上删除；这台电脑已经拒绝它们，网络恢复后再运行一次 revoke 即可清理。`);
     return;
   }
-  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full] | key 分享 [--guest 名字] | reopen 分享 | list | revoke 分享 [--guest 名字或序号]');
+  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full [--tasks]] | key 分享 [--guest 名字] | reopen 分享 | list | tasks 分享 | revoke 分享 [--guest 名字或序号]');
 }

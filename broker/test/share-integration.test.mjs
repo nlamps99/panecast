@@ -64,9 +64,10 @@ test("a share key reaches exactly one window through the real broker and stops o
   const own = { workspace_id: scoped("cmux", "$1"), surface_id: scoped("cmux", "%1") };
   assert.deepEqual((await guest.call("workspace.list", {})).workspaces.map((w) => w.id), [own.workspace_id]);
   await assert.rejects(guest.call("surface.list", { workspace_id: scoped("cmux", "$0") }), { code: "forbidden" });
-  await assert.rejects(guest.call("surface.send_text", { ...own, text: "!cat ~/.ssh/id_rsa" }), { code: "guest_shell" });
+  // A half-width ! would start Claude's shell mode: it arrives full-width.
+  await guest.call("surface.send_text", { ...own, text: "!cat ~/.ssh/id_rsa" });
   await guest.call("surface.send_text", { ...own, text: "请润色摘要" });
-  assert.deepEqual(upstream.calls.filter((c) => c.method === "surface.send_text").map((c) => [c.params.surface_id, c.params.text]), [["%1", "请润色摘要"]]);
+  assert.deepEqual(upstream.calls.filter((c) => c.method === "surface.send_text").map((c) => [c.params.surface_id, c.params.text]), [["%1", "！cat ~/.ssh/id_rsa"], ["%1", "请润色摘要"]]);
 
   // The owner's own pairing keeps full access on the same relay.
   const owner = await (await fetch(`${baseURL}/v1/devices/me/register`, { method: "POST", headers: { "content-type": "application/json" },

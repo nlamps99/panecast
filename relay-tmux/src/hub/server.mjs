@@ -4,7 +4,8 @@ import { createTmuxRelay } from '../server.mjs';
 import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { GuestSession } from './guest-session.mjs';
-import { ShareStore, sharesFile } from './share.mjs';
+import { ShareStore, sharesFile, shareTerminalCommand, shareTitle } from './share.mjs';
+import { ShareTasks } from './share-tasks.mjs';
 import { ShareFileLinks } from './share-files.mjs';
 import { RpcPeer, localEndpoint } from './rpc.mjs';
 import { scoped, scopeResult } from './ids.mjs';
@@ -17,11 +18,22 @@ export async function createHub(config, options = {}) {
   const shares = options.shares ?? new ShareStore(sharesFile(effective));
   // One link cache for all guests: a file that did not change is uploaded once.
   const fileLinks = options.fileLinks ?? (effective.broker?.url && effective.broker.relay_id && effective.broker.relay_token ? new ShareFileLinks(effective.broker) : null);
+  // Tasks of shares made with --tasks; one cmux connection of its own.
+  const taskSession = new HubSession(registry, effective, () => {}, () => {}, () => {});
+  const tasks = options.tasks ?? new ShareTasks({ config: effective, shares, fileLinks, client: (id) => taskSession.client(id), shareTerminalCommand,
+    async openShareWorkspace(share, command) {
+      const client = taskSession.client(share.source_id);
+      const created = await client.call('workspace.create', { title: shareTitle({ name: share.name, full: share.full === true, tasks: true }), cwd: share.directory, initial_command: command, focus: false });
+      const workspaceId = created.workspace_id ?? created.workspace?.id;
+      const surfaceId = created.surface_id ?? ((await client.call('surface.list', { workspace_id: workspaceId })).surfaces ?? []).find((s) => s.type === 'terminal')?.id;
+      if (!workspaceId || !surfaceId) throw new Error('cmux 没有返回新工作区');
+      return { workspaceId, surfaceId };
+    } });
   const relay = await createTmuxRelay(effective, { backend: registry, backendName: 'hub', guestSessions: true,
     localGateway: options.localGateway ?? join(effective.state_directory, 'local-gateway.json'),
     allowInboxEvent: (frame) => !frame.payload?.source_id || registry.sources.has(frame.payload.source_id),
     createSession: ({ send, close, notify, meta = {} }) => meta.guest
-      ? new GuestSession(registry, effective, send, close, notify, { shares, fileLinks, deviceId: meta.deviceId, shareId: meta.guest.shareId })
+      ? new GuestSession(registry, effective, send, close, notify, { shares, fileLinks, tasks, deviceId: meta.deviceId, shareId: meta.guest.shareId })
       : new HubSession(registry, effective, send, close, notify) });
   const supervisor = new SupervisorRuntime(registry, effective, options.supervisor);
   const weixin = new WeixinRuntime(registry, effective, relay.journal, { ...options.weixin, supervisor });
@@ -66,8 +78,8 @@ export async function createHub(config, options = {}) {
     } finally { monitoring = false; }
   }
   return { ...relay, registry,
-    async start() { const address = await relay.start(); await monitor(); timer = setInterval(() => void monitor(), 5000); timer.unref(); await supervisor.start(); weixin.start(); return address; },
-    async close() { clearInterval(timer); unlisten(); await weixin.close(); await supervisor.close(); for (const peer of monitors.values()) peer.close(); monitors.clear(); registry.close(); await relay.close(); },
+    async start() { const address = await relay.start(); await monitor(); timer = setInterval(() => void monitor(), 5000); timer.unref(); await supervisor.start(); weixin.start(); tasks.start(); return address; },
+    async close() { clearInterval(timer); unlisten(); tasks.close(); taskSession.dispose(); await weixin.close(); await supervisor.close(); for (const peer of monitors.values()) peer.close(); monitors.clear(); registry.close(); await relay.close(); },
     reloadSources(sources) { registry.reload(sources); void monitor(); },
   };
 }

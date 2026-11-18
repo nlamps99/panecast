@@ -33,9 +33,10 @@ async function main() {
   panecast share create 名称 [--dir 目录]  在 cmux 新开一个受限的 Claude 窗口，并生成给别人的分享密钥
   panecast share create 名称 --net        文件只限分享目录，网络放开（新网站第一次访问时确认）
   panecast share create 名称 --full       完整权限：不受限、无沙箱的 Claude（拿到密钥的人能操作整台电脑）
+  panecast share create 名称 --full --tasks  再加任务接口：程序用密钥提交任务，排队送进窗口，回答完返回结果
   panecast share key 分享 [--guest 名字]   给同一个窗口再发一把密钥
   panecast share reopen 分享               重新打开分享窗口（旧窗口打开后才能用退格等编辑键）
-  panecast share list | revoke 分享 [--guest 名字或序号]
+  panecast share list | tasks 分享 | revoke 分享 [--guest 名字或序号]
 
 cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；
 也可以在 cmux 设置中把「套接字控制模式」改为「自动化模式」。

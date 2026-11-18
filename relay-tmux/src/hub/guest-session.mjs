@@ -120,9 +120,9 @@ const submittedLine = (items) => items.length === 2 && typeof items[0].text === 
  * the connection; a share that cannot be read refuses everything.
  */
 export class GuestSession extends HubSession {
-  constructor(registry, config, send, close, notify, { shares, deviceId, shareId, fileLinks = null }) {
+  constructor(registry, config, send, close, notify, { shares, deviceId, shareId, fileLinks = null, tasks = null }) {
     super(registry, config, send, close, notify);
-    Object.assign(this, { shares, deviceId, shareId, fileLinks, guest: true, checkedAt: Date.now() });
+    Object.assign(this, { shares, deviceId, shareId, fileLinks, tasks, guest: true, checkedAt: Date.now() });
     void this.current().catch(() => {});
   }
 
@@ -236,7 +236,8 @@ export class GuestSession extends HubSession {
     const own = this.target(share);
     if (method === 'relay.info') {
       const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id,
-        max_terminals: SHARE_MAX_TERMINALS, files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}), ...(share.network === 'open' ? { network: 'open' } : {}) } };
+        max_terminals: SHARE_MAX_TERMINALS, files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}), ...(share.network === 'open' ? { network: 'open' } : {}),
+        ...(share.tasks === true && this.tasks ? { tasks: true } : {}) } };
       if (p.source_id !== undefined || p.workspace_id !== undefined || p.surface_id !== undefined) {
         this.check(p, own);
         const limits = await this.client(share.source_id).call('relay.info', {});
@@ -284,6 +285,16 @@ export class GuestSession extends HubSession {
     if (method === 'share.file.link') {
       if (!this.fileLinks) throw new RpcError('file_links_unavailable', '这台电脑没有配置中转服务器，不能发送文件');
       return this.fileLinks.link(share.directory, p.path);
+    }
+    // A share created with --tasks takes tasks for its first terminal (share-tasks.mjs).
+    if (method.startsWith('task.')) {
+      if (share.tasks !== true || !this.tasks) throw new RpcError('tasks_disabled', '这个分享没有开启任务接口');
+      if (method === 'task.submit') return { task: await this.tasks.submit(share, p) };
+      if (typeof p.task_id !== 'string' && method !== 'task.list') throw new RpcError('invalid_params', '缺少任务编号');
+      if (method === 'task.get') return { task: await this.tasks.get(share, p.task_id, p.wait_s) };
+      if (method === 'task.cancel') return { task: await this.tasks.cancel(share, p.task_id) };
+      if (method === 'task.list') return { tasks: await this.tasks.list(share, p.limit) };
+      throw forbidden();
     }
     if (method === 'file.upload') {
       this.check(p, own);
