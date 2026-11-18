@@ -352,7 +352,7 @@ POST /v1/relay/files?relay_id=…   {name, type, size, sha256} → 201 {upload_u
 `panecast share create 名称 --full --tasks` 的分享可以由程序提交任务（见 `relay-tmux/SHARE.md`）。令牌是分享密钥本身（`pcs1.…`），或者其中的访客令牌加 `?relay_id=`：
 
 ```
-POST /v1/tasks[?wait=秒]                {text, attachments:[{name, data_base64}], continue?} → 201 {task}
+POST /v1/tasks[?wait=秒]                {text, attachments:[{name, data_base64}], agent?, continue?} → 201 {task}
 GET  /v1/tasks?limit=20                 → {tasks}
 GET  /v1/tasks/<编号>[?wait=秒]          → {task}
 POST /v1/tasks/<编号>/cancel            → {task}

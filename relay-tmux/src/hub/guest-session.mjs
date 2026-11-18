@@ -8,6 +8,7 @@ import { HubSession } from './session.mjs';
 import { scoped, scopeResult } from './ids.mjs';
 import { SHARE_MAX_TERMINALS, sharesDirectory, shareTerminalCommand, shareTerminals } from './share.mjs';
 import { listShareFiles, MAX_UPLOAD_BYTES, mimeFor, saveUpload, saveUploadChunk } from './share-files.mjs';
+import { TASK_AGENTS } from './share-tasks.mjs';
 
 /**
  * Adding and closing a share's terminals, one change at a time per share
@@ -237,7 +238,7 @@ export class GuestSession extends HubSession {
     if (method === 'relay.info') {
       const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id,
         max_terminals: SHARE_MAX_TERMINALS, files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}), ...(share.network === 'open' ? { network: 'open' } : {}),
-        ...(share.tasks === true && this.tasks ? { tasks: true } : {}) } };
+        ...(share.tasks === true && this.tasks ? { tasks: true, task_agents: TASK_AGENTS } : {}) } };
       if (p.source_id !== undefined || p.workspace_id !== undefined || p.surface_id !== undefined) {
         this.check(p, own);
         const limits = await this.client(share.source_id).call('relay.info', {});

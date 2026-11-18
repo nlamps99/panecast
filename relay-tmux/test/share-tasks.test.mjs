@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocketServer } from 'ws';
 import { createHub } from '../src/hub/server.mjs';
 import { ShareStore, shareCommand } from '../src/hub/share.mjs';
-import { ShareTasks, readHookEvents, surfaceFileName, taskAttachment, taskEventsDirectory, taskHookCommand, taskPrompt, taskWindowSettings, withTaskHooks } from '../src/hub/share-tasks.mjs';
+import { ShareTasks, agentCommand, agyHooks, readHookEvents, surfaceFileName, taskAgent, taskAttachment, taskEventsDirectory, taskHookCommand, taskPrompt, taskWindowSettings, withTaskHooks, ENV_HOOK_COMMAND } from '../src/hub/share-tasks.mjs';
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
@@ -24,22 +24,24 @@ async function fixture(t, { surfaces = ['S-1'] } = {}) {
     created_at: '', revoked_at: null, prompt_hook: false, full: true, tasks: true, guests: [{ device_id: 'guest-a', label: '', created_at: '', revoked_at: null }] };
   const shares = new ShareStore(join(config.state_directory, 'shares', 'shares.json'));
   await shares.write([share]);
-  const live = new Set(surfaces), calls = [];
+  const live = new Set(surfaces), calls = [], screens = {};
   let created = 0, clock = Date.parse('2026-11-18T10:00:00Z');
   const cmux = {
     async call(method, params) {
       calls.push({ method, params });
       if (method === 'surface.list') return { surfaces: [...live].map((id) => ({ id, type: 'terminal' })) };
       if (method === 'surface.create') { const id = `S-NEW-${++created}`; live.add(id); return { surface_id: id }; }
+      if (method === 'surface.read_text') return { text: screens[params.surface_id] ?? '' };
       return {};
     },
   };
   const make = () => new ShareTasks({ config, shares, client: () => cmux, now: () => clock, pollMs: 60_000, settleMs: 0,
+    laneCommand: async (agent) => `/bin/zsh -lc '${agent} for tasks'`,
     shareTerminalCommand: async (_config, entry, sessionId) => `/bin/zsh -lc 'claude --session-id ${sessionId}'` });
   const hook = (surface, event) => appendFile(join(taskEventsDirectory(config, share), `${surfaceFileName(surface)}.jsonl`), JSON.stringify(event) + '\n');
   await mkdir(taskEventsDirectory(config, share), { recursive: true });
   const fx = {
-    root, config, share, shares, live, calls, make, hook, tasks: make(),
+    root, config, share, shares, live, calls, screens, make, hook, tasks: make(),
     advance(ms) { clock += ms; },
     pastes: () => calls.filter((c) => c.method === 'terminal.paste'),
     async current() { return (await shares.read())[0]; },
@@ -226,7 +228,7 @@ test('a paste Claude never takes is reported, not sent again, and a late start s
   assert.equal((await fx.tasks.get(fx.share, task.id)).status, 'running');
   await stopped(fx, 'late', '还是做完了');
   await fx.tasks.tick();
-  assert.deepEqual(Object.values(await fx.tasks.get(fx.share, task.id)).slice(1, 2), ['done']);
+  assert.equal((await fx.tasks.get(fx.share, task.id)).status, 'done');
 });
 
 test('canceling takes a task out of the queue, or interrupts it in the window', async (t) => {
@@ -388,4 +390,142 @@ test('task folders are deleted some days after their task ends, and nothing else
   state.cleanedAt = 0;
   await fx.tasks.tick();
   assert.ok((await readdir(tasks)).includes(recent));
+});
+
+const IDLE = { codex: '› Ask Codex to do anything\n  ? for shortcuts', agy: '>\n? for shortcuts' };
+const pastesTo = (fx, surface) => fx.pastes().filter((c) => c.params.surface_id === surface);
+const typed = (fx, surface, text) => fx.calls.filter((c) => c.method === 'surface.send_text' && c.params.surface_id === surface && c.params.text === text).length;
+
+test('agents are claude, codex or agy, and the Codex and agy windows start with full access and the hooks', () => {
+  assert.deepEqual([taskAgent(undefined), taskAgent('Codex'), taskAgent('antigravity'), taskAgent('agy')], ['claude', 'codex', 'agy', 'agy']);
+  assert.throws(() => taskAgent('gpt'), { code: 'invalid_params' });
+  const codex = agentCommand('codex', { binary: '/opt/homebrew/bin/codex', events: "/st/it's", directory: '/d' });
+  assert.ok(codex.startsWith("exec /usr/bin/env PANECAST_TASK_EVENTS='/st/it'\\''s' '/opt/homebrew/bin/codex' --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --disable memories -c check_for_update_on_startup=false -c 'hooks={SessionStart=[{hooks=[{type=\"command\""), codex);
+  for (const event of ['UserPromptSubmit', 'Stop', 'SessionEnd', 'Interrupt']) assert.ok(codex.includes(`${event}=[{hooks=`), event);
+  const agy = agentCommand('agy', { binary: '/u/agy', events: '/st/e', directory: '/share' });
+  assert.equal(agy, `exec /usr/bin/env PANECAST_TASK_EVENTS='/st/e' '/u/agy' --dangerously-skip-permissions --settings '{"trustedWorkspaces":["/share"]}'`);
+  assert.deepEqual(Object.keys(agyHooks().panecast), ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']);
+});
+
+test('the shared hook records only where a task window set its folder', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'panecast-env-hook-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const run = async (env) => {
+    const child = spawn('/bin/sh', ['-c', ENV_HOOK_COMMAND], { env: { PATH: '/usr/bin:/bin', CMUX_SURFACE_ID: 'S-9', ...env } });
+    child.stdin.end('{"hookEventName":"Stop","lastUserInput":"x"}');
+    return (await once(child, 'exit'))[0];
+  };
+  assert.equal(await run({}), 0);
+  assert.deepEqual(await readdir(directory), [], 'an ordinary agy session leaves nothing');
+  assert.equal(await run({ PANECAST_TASK_EVENTS: join(directory, 'e') }), 0);
+  const { events } = await readHookEvents(join(directory, 'e', 's-9.jsonl'));
+  assert.deepEqual(events.map((event) => event.hookEventName), ['Stop']);
+});
+
+test('a Codex task opens a Codex window beside Claude\'s, and Codex tasks clear with /new on their own lane', async (t) => {
+  const fx = await fixture(t);
+  await start(fx);
+  const first = await fx.tasks.submit(fx.share, { text: '用 Codex 做', agent: 'codex' });
+  assert.equal(first.agent, 'codex');
+  const claude = await fx.tasks.submit(fx.share, { text: 'Claude 同时做' });
+  await fx.tasks.tick();
+  const create = fx.calls.find((c) => c.method === 'surface.create');
+  assert.deepEqual(create.params, { workspace_id: 'W-1', type: 'terminal', cwd: fx.share.directory, initial_command: "/bin/zsh -lc 'codex for tasks'", focus: false });
+  const share = await fx.current();
+  assert.deepEqual(share.task_windows.codex.surface_id, 'S-NEW-1');
+  assert.deepEqual(share.terminals.map((terminal) => [terminal.surface_id, terminal.agent ?? 'claude']), [['S-1', 'claude'], ['S-NEW-1', 'codex']]);
+  // Claude's task went in meanwhile: the agents work side by side.
+  assert.deepEqual(fx.pastes().map((c) => c.params.surface_id), ['S-1']);
+  assert.equal((await fx.tasks.get(fx.share, claude.id)).status, 'sending');
+  // Codex has no session before its first prompt: its idle screen means ready.
+  await fx.tasks.tick();
+  assert.equal(pastesTo(fx, 'S-NEW-1').length, 0);
+  fx.screens['S-NEW-1'] = IDLE.codex;
+  await fx.tasks.tick();
+  assert.equal(pastesTo(fx, 'S-NEW-1').length, 1);
+  const text = pastesTo(fx, 'S-NEW-1')[0].params.text;
+  await fx.hook('S-NEW-1', { hook_event_name: 'SessionStart', session_id: 'c1', transcript_path: '/x/rollout.jsonl', source: 'startup' });
+  await fx.hook('S-NEW-1', { hook_event_name: 'UserPromptSubmit', session_id: 'c1', turn_id: 'turn-1', prompt: text });
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, first.id)).status, 'running');
+  const second = await fx.tasks.submit(fx.share, { text: '第二个 Codex 任务', agent: 'codex' });
+  await fx.hook('S-NEW-1', { hook_event_name: 'Stop', session_id: 'c1', turn_id: 'turn-1', last_assistant_message: 'Codex 做完了' });
+  fx.screens['S-NEW-1'] = `› ${text}\n• Codex 做完了\n${IDLE.codex}`;
+  await fx.tasks.tick();
+  const done = await fx.tasks.get(fx.share, first.id);
+  assert.deepEqual([done.status, done.result], ['done', 'Codex 做完了']);
+  assert.equal(typed(fx, 'S-NEW-1', '/new'), 1);
+  // Still the old conversation on screen: not cleared yet.
+  fx.advance(2000);
+  await fx.tasks.tick();
+  assert.equal(pastesTo(fx, 'S-NEW-1').length, 1);
+  fx.screens['S-NEW-1'] = IDLE.codex;
+  await fx.tasks.tick();
+  await fx.tasks.tick();
+  assert.equal(pastesTo(fx, 'S-NEW-1').length, 2);
+  assert.equal((await fx.tasks.get(fx.share, second.id)).status, 'sending');
+  // Esc in Codex: its Interrupt hook ends the turn.
+  await fx.hook('S-NEW-1', { hook_event_name: 'UserPromptSubmit', session_id: 'c2', turn_id: 'turn-2', prompt: pastesTo(fx, 'S-NEW-1')[1].params.text });
+  await fx.hook('S-NEW-1', { hook_event_name: 'Interrupt', session_id: 'c2', turn_id: 'turn-2' });
+  await fx.tasks.tick();
+  const interrupted = await fx.tasks.get(fx.share, second.id);
+  assert.deepEqual([interrupted.status, interrupted.error], ['failed', '任务在窗口里被中断了']);
+});
+
+test('agy tasks: the first prompt comes with SessionStart, later ones from the transcript, and the reply from the transcript', async (t) => {
+  const fx = await fixture(t);
+  const transcript = join(fx.root, 'agy-transcript.jsonl');
+  const step = (index, type, content, status = 'DONE') => JSON.stringify({ step_index: index, source: type === 'USER_INPUT' ? 'USER_EXPLICIT' : 'MODEL', type, status, content });
+  const first = await fx.tasks.submit(fx.share, { text: '用反重力做', agent: 'agy' });
+  await fx.tasks.tick();
+  fx.screens['S-NEW-1'] = IDLE.agy;
+  await fx.tasks.tick();
+  const text = pastesTo(fx, 'S-NEW-1')[0].params.text;
+  const agy = (event) => fx.hook('S-NEW-1', { conversationId: 'g1', transcriptPath: transcript, fullyIdle: true, ...event });
+  await agy({ hookEventName: 'SessionStart', lastUserInput: text });
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, first.id)).status, 'running');
+  // Stop carries no message; the transcript has it, a moment later.
+  await agy({ hookEventName: 'Stop', lastUserInput: text, terminationReason: 'NO_TOOL_CALL' });
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, first.id)).status, 'done');
+  await writeFile(transcript, [step(0, 'USER_INPUT', `<USER_REQUEST>\n${text}\n</USER_REQUEST>`), step(1, 'PLANNER_RESPONSE', '', 'RUNNING'), step(1, 'PLANNER_RESPONSE', ''), step(2, 'GENERIC', 'ls'), step(3, 'PLANNER_RESPONSE', '反重力做完了')].join('\n') + '\n');
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, first.id)).result, '反重力做完了');
+
+  // A task that continues: agy reports no prompt after the session's first, so the transcript shows it arrived.
+  const next = await fx.tasks.submit(fx.share, { text: '接着做', agent: 'agy', continue: true });
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-1', '/clear'), 0);
+  const nextText = pastesTo(fx, 'S-NEW-1')[1].params.text;
+  await appendFile(transcript, step(4, 'USER_INPUT', `<USER_REQUEST>\n${nextText}\n</USER_REQUEST>`) + '\n');
+  fx.advance(4000);
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, next.id)).status, 'running');
+  // Esc in agy: nothing is reported; the screen says it.
+  fx.screens['S-NEW-1'] = `> ${nextText}\n  ⎿  Interrupted · What should Antigravity CLI do instead?\n${IDLE.agy}`;
+  fx.advance(4000);
+  await fx.tasks.tick();
+  const stopped = await fx.tasks.get(fx.share, next.id);
+  assert.deepEqual([stopped.status, stopped.error], ['failed', '任务在窗口里被中断了']);
+  // The next fresh task clears with /clear once the window is free.
+  const third = await fx.tasks.submit(fx.share, { text: '新的', agent: 'agy' });
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-1', '/clear'), 1);
+  fx.screens['S-NEW-1'] = IDLE.agy;
+  fx.advance(2000);
+  await fx.tasks.tick();
+  await fx.tasks.tick();
+  assert.equal(pastesTo(fx, 'S-NEW-1').length, 3);
+  assert.equal((await fx.tasks.get(fx.share, third.id)).status, 'sending');
+});
+
+test('an agent whose window cannot open fails its task with the reason, and other agents go on', async (t) => {
+  const fx = await fixture(t);
+  fx.tasks.laneCommand = async () => { throw new Error('找不到 agy 命令，请先在这台电脑上安装 Antigravity CLI'); };
+  const task = await fx.tasks.submit(fx.share, { text: 'x', agent: 'agy' });
+  await fx.tasks.tick();
+  const failed = await fx.tasks.get(fx.share, task.id);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /Antigravity 任务窗口没能打开：找不到 agy 命令/);
 });

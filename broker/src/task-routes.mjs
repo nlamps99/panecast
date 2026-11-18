@@ -6,7 +6,7 @@
  * one task method and closes it. The broker keeps nothing; the computer's
  * gateway queues the tasks (relay-tmux/src/hub/share-tasks.mjs).
  *
- *   POST /v1/tasks[?wait=秒]          {text, attachments:[{name, data_base64}], continue?}  → 201 {task}
+ *   POST /v1/tasks[?wait=秒]          {text, attachments:[{name, data_base64}], agent?, continue?}  → 201 {task}
  *   GET  /v1/tasks?limit=20                                                     → {tasks}
  *   GET  /v1/tasks/<id>[?wait=秒]                                               → {task}
  *   POST /v1/tasks/<id>/cancel                                                  → {task}
@@ -68,7 +68,9 @@ export async function taskRoute(request, response, url, { authenticateGuest, ope
     const text = typeof body.text === "string" ? body.text : body.prompt;
     const attachments = body.attachments ?? body.images ?? body.files ?? [];
     // `continue`: the task goes on in the previous task's conversation instead of an empty one.
-    calls = [["task.submit", { text, attachments, ...(body.continue === true ? { continue: true } : {}) }]];
+    // `agent`: claude (default), codex or agy; the computer checks the name.
+    calls = [["task.submit", { text, attachments, ...(typeof body.agent === "string" && body.agent.length <= 32 ? { agent: body.agent } : {}),
+      ...(body.continue === true ? { continue: true } : {}) }]];
   } else if (rest.length === 0 && request.method === "GET") calls = [["task.list", { limit: Number(url.searchParams.get("limit") ?? 20) }]];
   else if (rest.length === 1 && request.method === "GET") calls = [["task.get", { task_id: rest[0], wait_s: wait }]];
   else if (rest.length === 2 && request.method === "POST") calls = [["task.cancel", { task_id: rest[0] }]];

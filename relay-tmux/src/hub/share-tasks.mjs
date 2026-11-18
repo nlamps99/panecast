@@ -1,6 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
+import { promisify } from 'node:util';
 import { RpcError } from '../tmux.mjs';
 import { writeJSON } from '../push.mjs';
 import { saveUpload } from './share-files.mjs';
@@ -18,6 +21,15 @@ import { sharesDirectory, shareTerminals } from './share-binding.mjs';
  * (SessionStart, UserPromptSubmit, Stop, SessionEnd). Stop carries the turn's
  * prompt_id and Claude's last message. An Esc leaves no Stop; the transcript
  * then holds "[Request interrupted by user]" under the same promptId.
+ *
+ * A task may name another agent: Codex CLI or Antigravity CLI (agy). Each
+ * agent has its own window in the share's workspace, opened on its first
+ * task, and its own queue; different agents work at the same time. They
+ * differ (checked on Codex 0.170 and agy 1.5.11, see AGENTS below): both
+ * start their session only with the first prompt, so a new or cleared
+ * window counts as ready when its screen shows the idle prompt; agy reports
+ * only a session's first prompt and no Esc, and its Stop has no message, so
+ * its transcript and screen fill in.
  */
 
 /** The text goes into the window as one paste. */
@@ -34,11 +46,49 @@ const START_TIMEOUT_MS = 120_000;
 const RESULT_FILES_MAX = 50;
 const FINAL = new Set(['done', 'failed', 'canceled']);
 const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
+const exec = promisify(execFile);
+
+/** Agents a task may run with; `claude` is the share's first window. */
+export const TASK_AGENTS = ['claude', 'codex', 'agy'];
+const AGENT_NAMES = { claude: 'claude', 'claude-code': 'claude', codex: 'codex', agy: 'agy', antigravity: 'agy', 'antigravity-cli': 'agy' };
+export function taskAgent(value) {
+  if (value === undefined || value === null || value === '') return 'claude';
+  const agent = AGENT_NAMES[String(value).trim().toLowerCase()];
+  if (!agent) throw new RpcError('invalid_params', 'agent 只能是 claude、codex 或 agy');
+  return agent;
+}
+/** The idle prompt of a TUI, without a menu or a question in front of it. */
+const idleScreen = (refuse) => (text) => /\? for shortcuts/.test(text) && !refuse.test(text);
+/**
+ * How each agent's window is driven.
+ * - `clear`: the command that starts an empty conversation. Claude confirms it
+ *   with SessionStart "clear"; Codex (/new) and agy (/clear) say nothing until
+ *   the next prompt, so their cleared screen (no task mark left) confirms it.
+ * - `lazy`: the session (and SessionStart) begins only with the first prompt.
+ */
+const AGENTS = {
+  claude: { label: 'Claude', clear: '/clear', lazy: false },
+  codex: { label: 'Codex', clear: '/new', lazy: true, idle: idleScreen(/Update now|trust this|Do you trust/i) },
+  agy: { label: 'Antigravity', clear: '/clear', lazy: true, idle: idleScreen(/trust the contents|Do you trust/i), interrupted: /Interrupted · What should/ },
+};
+const CLEAR_SETTLE_MS = 1500;
+const TASK_MARK = /【任务 t[0-9a-f]{10}】/;
 const INTERRUPTED = /^\[Request interrupted by user/;
 
 const quote = (value) => "'" + String(value).replace(/'/g, "'\\''") + "'";
 export const taskEventsDirectory = (config, share) => join(sharesDirectory(config), share.id, 'events');
 export const taskRecordFile = (config, share) => join(sharesDirectory(config), share.id, 'tasks.json');
+/**
+ * The hook for Codex and agy: the same append, to the folder named by
+ * PANECAST_TASK_EVENTS, which only a task window's environment sets. agy
+ * loads hooks only from an installed plugin, which then runs in every agy
+ * session; elsewhere this does nothing.
+ */
+export const ENV_HOOK_COMMAND = `[ -n "$PANECAST_TASK_EVENTS" ] || exit 0; n=$(printf %s "\${CMUX_SURFACE_ID:-unknown}" | /usr/bin/tr 'A-Z' 'a-z' | /usr/bin/tr -cd 'a-z0-9_-'); /bin/mkdir -p "$PANECAST_TASK_EVENTS" && { /bin/cat; echo; } >> "$PANECAST_TASK_EVENTS/$n.jsonl"; exit 0`;
+export const AGY_PLUGIN = 'panecast-tasks';
+/** agy's hooks.json: hook name → event → handlers (agy 1.5.11 refuses Claude's layout). */
+export const agyHooks = () => ({ panecast: Object.fromEntries(HOOK_EVENTS.map((event) => [event, [{ type: 'command', command: ENV_HOOK_COMMAND }]])) });
+
 /** The name cmux gives a terminal in CMUX_SURFACE_ID, as the hook files it. */
 export const surfaceFileName = (surfaceId) => String(surfaceId ?? '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
 const marker = (id) => `【任务 ${id}】`;
@@ -118,7 +168,7 @@ export async function readHookEvents(path, offset = 0) {
     if (end < from) return { events: [], offset: start + from };
     const events = buffer.subarray(from, end).toString('utf8').split('\n').flatMap((line) => {
       if (!line.trim()) return [];
-      try { const value = JSON.parse(line); return value && typeof value === 'object' && typeof value.hook_event_name === 'string' ? [value] : []; } catch { return []; }
+      try { const value = JSON.parse(line); return value && typeof value === 'object' && typeof (value.hook_event_name ?? value.hookEventName) === 'string' ? [value] : []; } catch { return []; }
     });
     return { events, offset: start + end + 1 };
   } finally { await handle.close(); }
@@ -153,6 +203,47 @@ export async function promptOutcome(transcriptPath, promptId) {
   return { seen, interrupted, text: last };
 }
 
+/** One hook event of any agent: Claude and Codex (snake_case, Codex's turn_id) or agy (camelCase). */
+export function hookEvent(raw) {
+  const name = raw.hook_event_name ?? raw.hookEventName;
+  const agy = raw.hookEventName !== undefined;
+  return {
+    name, agy,
+    sessionId: raw.session_id ?? raw.conversationId ?? null,
+    transcript: raw.transcript_path ?? raw.transcriptPath ?? null,
+    promptId: raw.prompt_id ?? raw.turn_id ?? null,
+    // agy names the prompt only in a session's SessionStart and in Stop.
+    prompt: typeof raw.prompt === 'string' ? raw.prompt : typeof raw.lastUserInput === 'string' && raw.lastUserInput ? raw.lastUserInput : null,
+    message: typeof raw.last_assistant_message === 'string' ? raw.last_assistant_message : null,
+    source: raw.source ?? null, reason: raw.reason ?? null,
+    idle: raw.fullyIdle !== false,
+  };
+}
+
+/** In agy's transcript: whether the task's prompt arrived, and the last text agy wrote after it. */
+export async function agyOutcome(transcriptPath, taskId) {
+  if (typeof transcriptPath !== 'string') return { seen: false };
+  let text;
+  try {
+    const handle = await open(transcriptPath, 'r');
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, 8 * 1024 * 1024);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      text = buffer.toString('utf8');
+    } finally { await handle.close(); }
+  } catch { return { seen: false }; }
+  // A running step is written again under the same index when it finishes.
+  const steps = new Map();
+  for (const line of text.split('\n')) { try { const step = JSON.parse(line); if (Number.isInteger(step?.step_index)) steps.set(step.step_index, step); } catch {} }
+  const ordered = [...steps.values()].sort((a, b) => a.step_index - b.step_index);
+  const start = ordered.findLastIndex((step) => step.type === 'USER_INPUT' && String(step.content ?? '').includes(marker(taskId)));
+  if (start < 0) return { seen: false };
+  const reply = ordered.slice(start + 1).findLast((step) => step.type === 'PLANNER_RESPONSE' && String(step.content ?? '').trim());
+  return { seen: true, text: reply ? String(reply.content).trim() : '' };
+}
+
 /** Files Claude left in the task's out folder, relative to the shared directory. */
 async function resultFiles(directory, id) {
   const root = join(directory, 'tasks', id, 'out'), files = [];
@@ -172,6 +263,7 @@ async function resultFiles(directory, id) {
 /** What a caller sees of a task. */
 function view(task, queue) {
   const { surface_id, prompt_id, sent_at, finishing, enters, ...rest } = task;
+  rest.agent ??= 'claude';
   const position = task.status === 'queued' ? queue.filter((other) => other.status === 'queued').findIndex((other) => other.id === task.id) + 1 : undefined;
   return { ...rest, ...(position ? { position } : {}) };
 }
@@ -194,14 +286,67 @@ export function taskAttachment(value, index) {
   return { name: name || `${index + 1}.bin`, data: Buffer.from(data, 'base64') };
 }
 
+/** Where an agent CLI is: PANECAST_<AGENT>_BIN, else the PATH plus the usual install folders (never cmux's wrappers). */
+export async function agentBinary(agent) {
+  const override = process.env[`PANECAST_${agent.toUpperCase()}_BIN`];
+  if (override) return override;
+  const PATH = ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin'), '/usr/bin', '/bin'].join(':');
+  const { stdout } = await exec('/usr/bin/which', [agent], { env: { PATH } }).catch(() => ({ stdout: '' }));
+  if (!stdout.trim()) throw new Error(`找不到 ${agent} 命令，请先在这台电脑上安装 ${AGENTS[agent].label} CLI`);
+  return stdout.trim();
+}
+
+/**
+ * The command a Codex or agy task window starts with, full access like the
+ * share's Claude. Codex takes its hooks on the command line; it must skip
+ * the hook review and the update prompt (whose default answer installs an
+ * update), and its memories stay off. agy trusts the shared directory for
+ * this session only.
+ */
+export function agentCommand(agent, { binary, events, directory }) {
+  const env = ['exec', '/usr/bin/env', `PANECAST_TASK_EVENTS=${quote(events)}`];
+  if (agent === 'codex') {
+    const handler = `{type="command",command=${JSON.stringify(ENV_HOOK_COMMAND)}}`;
+    const hooks = `hooks={${[...HOOK_EVENTS, 'Interrupt'].map((event) => `${event}=[{hooks=[${handler}]}]`).join(',')}}`;
+    return [...env, quote(binary), '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--disable', 'memories',
+      '-c', 'check_for_update_on_startup=false', '-c', quote(hooks)].join(' ');
+  }
+  if (agent === 'agy') return [...env, quote(binary), '--dangerously-skip-permissions', '--settings', quote(JSON.stringify({ trustedWorkspaces: [directory] }))].join(' ');
+  throw new Error(`unknown agent ${agent}`);
+}
+
+/** Installs (or updates) the agy plugin that carries the task hooks; agy has no other way to take them. */
+export async function ensureAgyPlugin(binary, folder) {
+  const wanted = JSON.stringify(agyHooks(), null, 1);
+  const installed = join(homedir(), '.gemini', 'config', 'plugins', AGY_PLUGIN, 'hooks.json');
+  if ((await readFile(installed, 'utf8').catch(() => null)) === wanted) return;
+  await mkdir(folder, { recursive: true, mode: 0o700 });
+  await writeFile(join(folder, 'plugin.json'), JSON.stringify({ name: AGY_PLUGIN, version: '0.1.0',
+    description: 'Reports the turns of Panecast task windows to the Panecast gateway. Does nothing in other agy sessions.' }, null, 1));
+  await writeFile(join(folder, 'hooks.json'), wanted);
+  await exec(binary, ['plugin', 'uninstall', AGY_PLUGIN], { timeout: 60_000 }).catch(() => {});
+  await exec(binary, ['plugin', 'install', folder], { timeout: 60_000 });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const agentOf = (task) => task.agent ?? 'claude';
+
 /**
  * Runs the tasks of every share created with `--tasks`. One instance per
- * gateway: it alone writes each share's tasks.json, and it sends a share's
- * tasks one at a time, only while the window's Claude is idle.
+ * gateway: it alone writes each share's tasks.json. Each agent of a share
+ * (a lane) sends its tasks one at a time, only while its window is idle.
  */
 export class ShareTasks {
-  constructor({ config, shares, client, fileLinks = null, now = Date.now, pollMs = 1000, settleMs = 400, shareTerminalCommand = null, openShareWorkspace = null }) {
-    Object.assign(this, { config, shares, client, fileLinks, now, pollMs, settleMs, shareTerminalCommand, openShareWorkspace, states: new Map(), timer: null, ticking: null, closed: false });
+  constructor({ config, shares, client, fileLinks = null, now = Date.now, pollMs = 1000, settleMs = 400, clearSettleMs = CLEAR_SETTLE_MS,
+    shareTerminalCommand = null, openShareWorkspace = null, laneCommand = null }) {
+    Object.assign(this, { config, shares, client, fileLinks, now, pollMs, settleMs, clearSettleMs, shareTerminalCommand, openShareWorkspace,
+      laneCommand: laneCommand ?? ((agent, share) => this.defaultLaneCommand(agent, share)), states: new Map(), timer: null, ticking: null, closed: false });
+  }
+
+  async defaultLaneCommand(agent, share) {
+    const binary = await agentBinary(agent);
+    if (agent === 'agy') await ensureAgyPlugin(binary, join(sharesDirectory(this.config), share.id, 'agy-plugin'));
+    return `/bin/zsh -lc ${quote(agentCommand(agent, { binary, events: taskEventsDirectory(this.config, share), directory: share.directory }))}`;
   }
 
   start() {
@@ -217,7 +362,7 @@ export class ShareTasks {
   async state(share) {
     let state = this.states.get(share.id);
     if (!state) {
-      state = { tasks: [], loaded: null, lane: Promise.resolve(), waiters: new Set(), terminal: null, checkedAt: 0, starting: null, live: null };
+      state = { tasks: [], loaded: null, lane: Promise.resolve(), waiters: new Set(), lanes: new Map() };
       this.states.set(share.id, state);
     }
     state.loaded ??= readFile(taskRecordFile(this.config, share), 'utf8').then((text) => {
@@ -245,6 +390,7 @@ export class ShareTasks {
   }
 
   async submit(share, params) {
+    const agent = taskAgent(params.agent);
     const text = typeof params.text === 'string' ? params.text.trim() : '';
     if (!text) throw new RpcError('invalid_params', '任务内容不能为空');
     if (text.length > TASK_TEXT_MAX) throw new RpcError('invalid_params', `任务文字最多 ${TASK_TEXT_MAX} 个字符`);
@@ -260,12 +406,12 @@ export class ShareTasks {
       for (const file of files) attachments.push(`tasks/${id}/${(await saveUpload(folder, file.name, file.data)).filename}`);
     }
     return this.exclusive(share, async (state) => {
-      const task = { id, status: 'queued', text, attachments, ...(params.continue === true ? { continue: true } : {}),
+      const task = { id, agent, status: 'queued', text, attachments, ...(params.continue === true ? { continue: true } : {}),
         created_at: new Date(this.now()).toISOString(), started_at: null, finished_at: null, result: null, error: null, files: [] };
       state.tasks.push(task);
       await this.save(share, state);
       queueMicrotask(() => { void this.tick().catch(() => {}); });
-      return view(task, state.tasks);
+      return view(task, state.tasks.filter((entry) => agentOf(entry) === agent));
     });
   }
 
@@ -288,7 +434,7 @@ export class ShareTasks {
       });
       ({ state, task } = await this.find(share, id));
     }
-    return this.withLinks(share, view(task, state.tasks));
+    return this.withLinks(share, view(task, state.tasks.filter((entry) => agentOf(entry) === agentOf(task))));
   }
 
   async withLinks(share, task) {
@@ -304,7 +450,7 @@ export class ShareTasks {
   async list(share, limit = 20) {
     const state = await this.state(share);
     const count = Math.min(Math.max(1, Number(limit) || 20), TASK_RECORDS_KEPT);
-    return state.tasks.slice(-count).reverse().map((task) => view(task, state.tasks));
+    return state.tasks.slice(-count).reverse().map((task) => view(task, state.tasks.filter((entry) => agentOf(entry) === agentOf(task))));
   }
 
   /** A queued task leaves the queue; one in the window is interrupted with Esc. */
@@ -312,13 +458,13 @@ export class ShareTasks {
     return this.exclusive(share, async (state) => {
       const task = state.tasks.find((entry) => entry.id === id);
       if (!task) throw new RpcError('task_not_found', '找不到这个任务');
-      if (FINAL.has(task.status)) return view(task, state.tasks);
+      if (FINAL.has(task.status)) return view(task, []);
       if (task.status !== 'queued' && task.surface_id) {
         await this.client(share.source_id).call('surface.send_key', { workspace_id: share.workspace_id, surface_id: task.surface_id, key: 'escape' }).catch(() => {});
       }
       Object.assign(task, { status: 'canceled', finished_at: new Date(this.now()).toISOString(), error: '已取消' });
       await this.save(share, state);
-      return view(task, state.tasks);
+      return view(task, []);
     });
   }
 
@@ -336,48 +482,96 @@ export class ShareTasks {
     return this.ticking;
   }
 
-  /** Reads the terminal's new hook events and moves this share's tasks along. */
+  /** The window an agent's tasks go to: Claude's is the share's first terminal. */
+  windowOf(share, agent) { return agent === 'claude' ? share.surface_id : share.task_windows?.[agent]?.surface_id ?? null; }
+
+  /** Moves every lane of the share along, then cleans old task folders. */
   async advance(share, state) {
     let changed = false;
-    const surfaceId = share.surface_id;
-    if (state.terminal?.surfaceId !== surfaceId) state.terminal = { surfaceId, offset: 0, ready: false, busy: null, sessionId: null, transcript: null, endedAt: null, startedWaiting: null, dirty: false, clearing: null };
-    const terminal = state.terminal;
-    const read = await readHookEvents(join(taskEventsDirectory(this.config, share), `${surfaceFileName(surfaceId)}.jsonl`), terminal.offset);
-    terminal.offset = read.offset;
-    for (const event of read.events) changed = this.apply(state, terminal, event) || changed;
-    for (const task of state.tasks.filter((entry) => entry.finishing)) {
-      delete task.finishing;
-      task.files = await resultFiles(share.directory, task.id);
-      // Claude Code before last_assistant_message in the Stop hook: the transcript has it.
-      if (!task.result) task.result = (await promptOutcome(terminal.transcript, task.prompt_id)).text || '';
-      changed = true;
+    for (const agent of TASK_AGENTS) {
+      const pending = state.tasks.some((task) => agentOf(task) === agent && !FINAL.has(task.status));
+      if (!pending && !state.lanes.has(agent) && !this.windowOf(share, agent)) continue;
+      changed = await this.advanceLane(share, state, agent).catch(() => false) || changed;
     }
-    // Esc ends a turn without a Stop hook: the transcript shows it.
-    if (terminal.busy && this.now() - (terminal.checkedAt ?? 0) > 3000) {
-      terminal.checkedAt = this.now();
-      const outcome = await promptOutcome(terminal.transcript, terminal.busy.promptId);
-      if (outcome.interrupted) {
-        const task = state.tasks.find((entry) => entry.prompt_id === terminal.busy.promptId && entry.status === 'running');
-        if (task) { Object.assign(task, { status: 'failed', error: '任务在窗口里被中断了', result: outcome.text || null, finished_at: new Date(this.now()).toISOString() }); changed = true; }
-        terminal.busy = null;
-      }
+    if (this.now() - (state.cleanedAt ?? 0) > CLEAN_EVERY_MS) { state.cleanedAt = this.now(); changed = await this.clean(share, state) || changed; }
+    if (changed) await this.save(share, state);
+  }
+
+  /** Reads one agent window's new hook events and moves that agent's tasks along. */
+  async advanceLane(share, state, agent) {
+    let changed = false;
+    const surfaceId = this.windowOf(share, agent);
+    let lane = state.lanes.get(agent);
+    if (!lane || lane.surfaceId !== surfaceId) {
+      lane = { agent, surfaceId, offset: 0, ready: false, busy: null, sessionId: null, transcript: null, endedAt: null, startedWaiting: null, dirty: false, clearing: null, checkedAt: 0, liveAt: 0, live: null, starting: null };
+      state.lanes.set(agent, lane);
     }
-    const sending = state.tasks.find((task) => task.status === 'sending');
+    const mine = state.tasks.filter((task) => agentOf(task) === agent);
+    if (surfaceId) {
+      const read = await readHookEvents(join(taskEventsDirectory(this.config, share), `${surfaceFileName(surfaceId)}.jsonl`), lane.offset);
+      lane.offset = read.offset;
+      for (const raw of read.events) changed = this.apply(mine, lane, hookEvent(raw)) || changed;
+    }
+    for (const task of mine.filter((entry) => entry.finishing)) {
+      task.finishing = (task.finishing === true ? 0 : task.finishing) + 1;
+      if (!task.result && agent === 'claude') task.result = (await promptOutcome(lane.transcript, task.prompt_id)).text || '';
+      // agy's Stop carries no message; its transcript may be written a moment later.
+      if (!task.result && agent === 'agy') task.result = (await agyOutcome(lane.transcript, task.id)).text || '';
+      if (task.result || task.finishing > 5) { delete task.finishing; task.result ??= ''; task.files = await resultFiles(share.directory, task.id); changed = true; }
+    }
+    changed = await this.watchTurn(share, mine, lane) || changed;
+    const sending = mine.find((task) => task.status === 'sending');
     const enters = sending?.enters ?? 1;
     if (sending && enters <= ENTER_RETRY_MS.length && this.now() - Date.parse(sending.sent_at) > ENTER_RETRY_MS[enters - 1]) {
       sending.enters = enters + 1;
       await this.client(share.source_id).call('surface.send_key', { workspace_id: share.workspace_id, surface_id: sending.surface_id, key: 'enter' }).catch(() => {});
     }
     if (sending && this.now() - Date.parse(sending.sent_at) > SUBMIT_TIMEOUT_MS) {
-      Object.assign(sending, { status: 'failed', error: '任务送进窗口后 Claude 没有开始处理（窗口可能在等你确认什么），请看一下窗口', finished_at: new Date(this.now()).toISOString() });
+      Object.assign(sending, { status: 'failed', error: `任务送进窗口后 ${AGENTS[agent].label} 没有开始处理（窗口可能在等你确认什么），请看一下窗口`, finished_at: new Date(this.now()).toISOString() });
       changed = true;
     }
-    // A paste Claude never took (timed out or canceled) no longer holds the window.
-    if (terminal.busy?.pasted && !state.tasks.some((task) => task.status === 'sending')) terminal.busy = null;
-    const next = state.tasks.find((task) => task.status === 'queued');
-    if (next && !state.tasks.some((task) => task.status === 'sending' || task.status === 'running')) changed = await this.dispatch(share, state, terminal, next) || changed;
-    if (this.now() - (state.cleanedAt ?? 0) > CLEAN_EVERY_MS) { state.cleanedAt = this.now(); changed = await this.clean(share, state) || changed; }
-    if (changed) await this.save(share, state);
+    // A paste the agent never took (timed out or canceled) no longer holds the window.
+    if (lane.busy?.pasted && !mine.some((task) => task.status === 'sending')) lane.busy = null;
+    const next = mine.find((task) => task.status === 'queued');
+    if (next && !mine.some((task) => task.status === 'sending' || task.status === 'running')) changed = await this.dispatch(share, mine, lane, next) || changed;
+    return changed;
+  }
+
+  /** Turn ends the hooks do not report: Claude's Esc (transcript), agy's prompts after the first and its Esc (transcript, screen). */
+  async watchTurn(share, mine, lane) {
+    if (!lane.busy || this.now() - lane.checkedAt < 3000) return false;
+    lane.checkedAt = this.now();
+    let changed = false;
+    const fail = (task, error, result = null) => { Object.assign(task, { status: 'failed', error, result, finished_at: new Date(this.now()).toISOString() }); changed = true; };
+    if (lane.agent === 'claude' && lane.busy.promptId) {
+      const outcome = await promptOutcome(lane.transcript, lane.busy.promptId);
+      if (outcome.interrupted) {
+        const task = mine.find((entry) => entry.prompt_id === lane.busy.promptId && entry.status === 'running');
+        if (task) fail(task, '任务在窗口里被中断了', outcome.text || null);
+        lane.busy = null;
+      }
+    }
+    if (lane.agent === 'agy' && lane.busy.taskId) {
+      const task = mine.find((entry) => entry.id === lane.busy.taskId);
+      if (task?.status === 'sending' && (await agyOutcome(lane.transcript, task.id)).seen) {
+        Object.assign(task, { status: 'running', prompt_id: `agy:${task.id}`, started_at: new Date(this.now()).toISOString() });
+        // Taken: the window is busy with this turn, no longer with a paste.
+        lane.busy = { promptId: `agy:${task.id}`, taskId: task.id };
+        changed = true;
+      }
+      const screen = await this.screen(share, lane).catch(() => '');
+      const at = screen.lastIndexOf(marker(lane.busy.taskId));
+      if (at >= 0 && AGENTS.agy.interrupted.test(screen.slice(at))) {
+        if (task?.status === 'running') fail(task, '任务在窗口里被中断了');
+        lane.busy = null;
+      }
+    }
+    return changed;
+  }
+
+  async screen(share, lane) {
+    const { text = '' } = await this.client(share.source_id).call('surface.read_text', { workspace_id: share.workspace_id, surface_id: lane.surfaceId });
+    return String(text);
   }
 
   /** Deletes the folders of tasks that ended more than the share's keep days ago. Only tasks/<task id> folders, never links. */
@@ -400,100 +594,162 @@ export class ShareTasks {
     return changed;
   }
 
-  apply(state, terminal, event) {
-    const name = event.hook_event_name;
-    if (typeof event.transcript_path === 'string') terminal.transcript = event.transcript_path;
-    if (typeof event.session_id === 'string') terminal.sessionId = event.session_id;
-    if (name === 'SessionStart') { Object.assign(terminal, { ready: true, busy: null, endedAt: null, dirty: false, clearing: null }); return false; }
+  /** Applies one hook event to a lane and its tasks. */
+  apply(mine, lane, event) {
+    if (event.transcript) lane.transcript = event.transcript;
+    if (event.sessionId) lane.sessionId = event.sessionId;
+    const now = new Date(this.now()).toISOString();
+    const start = (task, promptId) => Object.assign(task, { status: 'running', prompt_id: promptId, started_at: now, error: null, finished_at: null });
+    const markedTask = (prompt, statuses) => {
+      const id = TASK_MARK.exec(typeof prompt === 'string' ? prompt.slice(0, 400) : '')?.[0]?.slice(4, -1);
+      return id ? mine.find((entry) => entry.id === id && statuses.includes(entry.status)) : null;
+    };
+    if (event.name === 'SessionStart') {
+      Object.assign(lane, { ready: true, busy: null, endedAt: null, dirty: false, clearing: null });
+      // agy's only report of a session's first prompt.
+      if (event.agy && event.prompt) {
+        const task = markedTask(event.prompt, ['sending']);
+        lane.busy = { promptId: `agy:${task?.id ?? event.sessionId}`, taskId: task?.id ?? null };
+        lane.dirty = true;
+        if (task) { start(task, `agy:${task.id}`); return true; }
+      }
+      return false;
+    }
     // /clear ends one session and starts the next right away.
-    if (name === 'SessionEnd') { Object.assign(terminal, { ready: false, busy: null, endedAt: event.reason === 'clear' ? null : this.now() }); return false; }
-    if (name === 'UserPromptSubmit') {
-      Object.assign(terminal, { busy: { promptId: event.prompt_id ?? null }, dirty: true });
-      const id = MARKER.exec(typeof event.prompt === 'string' ? event.prompt.slice(0, 400) : '')?.[1];
-      // The first prompt after a paste is the task's even if Claude shortened its text.
-      const task = state.tasks.find((entry) => entry.id === id && (entry.status === 'sending' || (entry.status === 'failed' && entry.prompt_id == null && entry.sent_at)))
-        ?? (!id ? state.tasks.find((entry) => entry.status === 'sending') : undefined);
+    if (event.name === 'SessionEnd') { Object.assign(lane, { ready: false, busy: null, endedAt: event.reason === 'clear' ? null : this.now() }); return false; }
+    if (event.name === 'UserPromptSubmit') {
+      Object.assign(lane, { busy: { promptId: event.promptId }, dirty: true });
+      // A failed task whose paste was taken late still counts. The first prompt after a paste is the task's even if its text was shortened.
+      const task = markedTask(event.prompt, ['sending']) ?? mine.find((entry) => entry.status === 'failed' && entry.prompt_id == null && entry.sent_at && event.prompt?.includes(marker(entry.id)))
+        ?? (!TASK_MARK.test(event.prompt ?? '') ? mine.find((entry) => entry.status === 'sending') : undefined);
       if (!task) return false;
-      Object.assign(task, { status: 'running', prompt_id: event.prompt_id ?? null, started_at: new Date(this.now()).toISOString(), error: null, finished_at: null });
+      lane.busy.taskId = task.id;
+      start(task, event.promptId);
       return true;
     }
-    if (name === 'Stop') {
-      if (!terminal.busy || !event.prompt_id || terminal.busy.promptId === event.prompt_id) terminal.busy = null;
-      const task = event.prompt_id ? state.tasks.find((entry) => entry.prompt_id === event.prompt_id && entry.status === 'running') : null;
+    if (event.name === 'Interrupt') {
+      lane.busy = null;
+      const task = mine.find((entry) => entry.status === 'running' && (!event.promptId || entry.prompt_id === event.promptId));
       if (!task) return false;
-      task.status = 'done';
-      task.result = typeof event.last_assistant_message === 'string' ? event.last_assistant_message : '';
-      task.finished_at = new Date(this.now()).toISOString();
-      task.finishing = true;
+      Object.assign(task, { status: 'failed', error: '任务在窗口里被中断了', finished_at: now });
+      return true;
+    }
+    if (event.name === 'Stop') {
+      if (!event.idle) return false;
+      let task;
+      if (event.agy) {
+        task = markedTask(event.prompt, ['running', 'sending']);
+        lane.busy = null;
+      } else {
+        if (!lane.busy || !event.promptId || lane.busy.promptId === event.promptId) lane.busy = null;
+        task = event.promptId ? mine.find((entry) => entry.prompt_id === event.promptId && entry.status === 'running') : null;
+      }
+      if (!task) return false;
+      Object.assign(task, { status: 'done', result: event.message ?? '', finished_at: now, finishing: true });
       return true;
     }
     return false;
   }
 
-  /** Sends the next task when the window's Claude is idle, opening a new terminal first when the old one is gone. */
-  async dispatch(share, state, terminal, task) {
+  /** Sends the next task when the agent's window is idle, opening the window first when there is none. */
+  async dispatch(share, mine, lane, task) {
     let changed = false;
-    if (terminal.busy) return changed;
+    if (lane.busy) return changed;
+    const agent = lane.agent, profile = AGENTS[agent];
     const client = this.client(share.source_id);
-    let live = true;
-    if (this.now() - state.checkedAt > 5000 || !terminal.ready) {
-      state.checkedAt = this.now();
+    let live = Boolean(lane.surfaceId);
+    if (lane.surfaceId && (this.now() - lane.liveAt > 5000 || !lane.ready)) {
+      lane.liveAt = this.now();
       try {
         const { surfaces = [] } = await client.call('surface.list', { workspace_id: share.workspace_id });
-        live = surfaces.some((surface) => surface.id === share.surface_id);
+        live = surfaces.some((surface) => surface.id === lane.surfaceId);
       } catch { live = false; }
-      state.live = live;
-    } else live = state.live ?? true;
-    const exited = !terminal.ready && terminal.endedAt !== null && this.now() - terminal.endedAt > 5000;
+      lane.live = live;
+    } else if (lane.surfaceId) live = lane.live ?? true;
+    const exited = !lane.ready && lane.endedAt !== null && this.now() - lane.endedAt > 5000;
     if (!live || exited) {
-      // The window was closed, or its Claude exited: start the same Claude in a new terminal.
-      if (state.starting) return changed;
-      state.starting = this.reopen(share).finally(() => { state.starting = null; state.checkedAt = 0; });
-      await state.starting.catch((error) => {
-        Object.assign(task, { status: 'failed', error: `任务窗口没能打开：${error.message}`, finished_at: new Date(this.now()).toISOString() });
+      // No window yet, or it was closed, or its agent exited: start the agent in a new terminal.
+      if (lane.starting) return changed;
+      lane.starting = this.openLane(share, agent).finally(() => { lane.starting = null; lane.liveAt = 0; });
+      await lane.starting.catch((error) => {
+        Object.assign(task, { status: 'failed', error: `${profile.label} 任务窗口没能打开：${error.message}`, finished_at: new Date(this.now()).toISOString() });
         changed = true;
       });
       return true;
     }
-    if (!terminal.ready) {
-      terminal.startedWaiting ??= this.now();
+    if (!lane.ready && profile.lazy && profile.idle(await this.screen(share, lane).catch(() => ''))) lane.ready = true;
+    if (!lane.ready) {
+      lane.startedWaiting ??= this.now();
       // A terminal without hooks (opened before tasks were on) never reports ready.
-      if (this.now() - terminal.startedWaiting > START_TIMEOUT_MS && !task.waiting) { task.waiting = '等任务窗口里的 Claude 启动（如果窗口在问「信任这个文件夹」，请在电脑上确认）'; changed = true; }
+      if (this.now() - lane.startedWaiting > START_TIMEOUT_MS && !task.waiting) {
+        task.waiting = `等任务窗口里的 ${profile.label} 启动（如果窗口在问「信任这个文件夹」，请在电脑上确认）`;
+        changed = true;
+      }
       return changed;
     }
     delete task.waiting;
-    const target = { workspace_id: share.workspace_id, surface_id: share.surface_id };
-    if (!task.continue && terminal.dirty) return await this.clear(task, terminal, client, target) || changed;
+    const target = { workspace_id: share.workspace_id, surface_id: lane.surfaceId };
+    if (!task.continue && lane.dirty) return await this.clear(share, task, lane, client, target) || changed;
     await client.call('terminal.paste', { ...target, text: taskPrompt(task) });
-    Object.assign(task, { status: 'sending', sent_at: new Date(this.now()).toISOString(), surface_id: share.surface_id, enters: 1 });
-    if (this.settleMs) await new Promise((resolve) => setTimeout(resolve, this.settleMs));
+    Object.assign(task, { status: 'sending', sent_at: new Date(this.now()).toISOString(), surface_id: lane.surfaceId, enters: 1 });
+    if (this.settleMs) await sleep(this.settleMs);
     await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
-    // Claude takes it as a new turn; until the hook says so the window counts as busy.
-    terminal.busy = { promptId: null, pasted: true };
+    // The agent takes it as a new turn; until it says so the window counts as busy.
+    Object.assign(lane, { busy: { promptId: null, pasted: true, taskId: task.id }, dirty: true });
     return true;
   }
 
-  /** Types /clear before a task that starts fresh; the task goes in once Claude reports the new session. */
-  async clear(task, terminal, client, target) {
-    if (!terminal.clearing) {
-      await client.call('surface.send_text', { ...target, text: '/clear' });
-      terminal.clearing = { at: this.now(), enters: 1 };
-      if (this.settleMs) await new Promise((resolve) => setTimeout(resolve, this.settleMs));
+  /** Types the agent's clear command before a task that starts fresh; the task goes in once the conversation is empty. */
+  async clear(share, task, lane, client, target) {
+    const profile = AGENTS[lane.agent];
+    if (!lane.clearing) {
+      await client.call('surface.send_text', { ...target, text: profile.clear });
+      lane.clearing = { at: this.now(), enters: 1 };
+      if (this.settleMs) await sleep(this.settleMs);
       await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
       return false;
     }
-    const waited = this.now() - terminal.clearing.at;
-    if (waited > CLEAR_RETRY_MS && terminal.clearing.enters < 2) {
-      terminal.clearing.enters++;
+    const waited = this.now() - lane.clearing.at;
+    // Codex and agy report nothing for a clear: their screen shows it done, no task mark left above an idle prompt.
+    if (profile.lazy && waited >= this.clearSettleMs) {
+      const screen = await this.screen(share, lane).catch(() => '');
+      if (profile.idle(screen) && !TASK_MARK.test(screen)) { Object.assign(lane, { dirty: false, clearing: null }); return false; }
+    }
+    if (waited > CLEAR_RETRY_MS && lane.clearing.enters < 2) {
+      lane.clearing.enters++;
       await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
     }
     if (waited <= CLEAR_TIMEOUT_MS) return false;
-    terminal.clearing = null;
+    lane.clearing = null;
     Object.assign(task, { status: 'failed', error: '清空上一段对话没有成功（窗口可能在等你确认什么），请看一下窗口', finished_at: new Date(this.now()).toISOString() });
     return true;
   }
 
-  /** A new terminal in the share's workspace (or a new workspace when that is gone) becomes the task window. */
+  /** Opens an agent's task window: Claude's as the share's first terminal, the others beside it in the same workspace. */
+  async openLane(share, agent) {
+    if (agent === 'claude') return this.reopen(share);
+    const command = await this.laneCommand(agent, share);
+    const client = this.client(share.source_id);
+    const create = () => client.call('surface.create', { workspace_id: share.workspace_id, type: 'terminal', cwd: share.directory, initial_command: command, focus: false });
+    let created;
+    try { created = await create(); }
+    catch {
+      // The workspace is gone: Claude's window opens a new one first.
+      await this.reopen(share);
+      created = await create();
+    }
+    const surfaceId = created?.surface_id ?? created?.id;
+    if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('电脑没有返回新终端');
+    const at = new Date(this.now()).toISOString();
+    await this.shares.update(share.id, (entry) => {
+      entry.task_windows = { ...entry.task_windows, [agent]: { surface_id: surfaceId, created_at: at } };
+      entry.terminals = [...shareTerminals(entry).filter((terminal) => terminal.surface_id !== share.task_windows?.[agent]?.surface_id),
+        { surface_id: surfaceId, session_id: null, agent, created_at: at }];
+    });
+    share.task_windows = { ...share.task_windows, [agent]: { surface_id: surfaceId, created_at: at } };
+  }
+
+  /** A new terminal in the share's workspace (or a new workspace when that is gone) becomes Claude's task window. */
   async reopen(share) {
     if (!this.shareTerminalCommand) throw new Error('网关不能打开新终端');
     const client = this.client(share.source_id);
@@ -509,10 +765,14 @@ export class ShareTasks {
     const surfaceId = created?.surface_id ?? created?.id;
     if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('电脑没有返回新终端');
     await this.shares.update(share.id, (entry) => {
-      const kept = entry.workspace_id === workspaceId ? shareTerminals(entry).filter((terminal) => terminal.surface_id !== entry.surface_id) : [];
+      const moved = entry.workspace_id !== workspaceId;
+      const kept = moved ? [] : shareTerminals(entry).filter((terminal) => terminal.surface_id !== entry.surface_id);
       Object.assign(entry, { workspace_id: workspaceId, surface_id: surfaceId, session_id: sessionId,
         terminals: [{ surface_id: surfaceId, session_id: sessionId, created_at: new Date(this.now()).toISOString() }, ...kept] });
+      // Other agents' windows went with the old workspace.
+      if (moved) delete entry.task_windows;
     });
+    if (workspaceId !== share.workspace_id) delete share.task_windows;
     Object.assign(share, { workspace_id: workspaceId, surface_id: surfaceId, session_id: sessionId });
   }
 }

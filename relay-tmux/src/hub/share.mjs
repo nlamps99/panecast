@@ -367,6 +367,8 @@ export async function shareCLI(args, configPath) {
     // Terminals guests added went with the old workspace.
     Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId, prompt_hook: !full,
       terminals: [{ surface_id: target.surfaceId, session_id: sessionId, created_at: new Date().toISOString() }] });
+    // Codex and agy task windows went with the old workspace; their next task opens new ones.
+    delete share.task_windows;
     await store.write(shares);
     const closed = await closeShareWindow(config, previous).then(() => true, () => false);
     console.log(`已为「${share.name}」打开新窗口，访客的密钥不变，连接后就是新窗口。${closed ? '旧窗口已关闭。' : '旧窗口没能关闭，可以在 cmux 里自己关掉。'}`);
@@ -402,7 +404,7 @@ export async function shareCLI(args, configPath) {
     const labels = { queued: '排队', sending: '发送中', running: '进行中', done: '完成', failed: '失败', canceled: '已取消' };
     for (const task of tasks.slice(-Number(flag(args, '--limit') ?? 20)).reverse()) {
       const line = task.text.replace(/\s+/g, ' ').slice(0, 40);
-      console.log(`${task.id}\t${labels[task.status] ?? task.status}\t${task.created_at.slice(0, 16).replace('T', ' ')}\t${line}${task.error ? `\t${task.error}` : ''}`);
+      console.log(`${task.id}\t${task.agent ?? 'claude'}\t${labels[task.status] ?? task.status}\t${task.created_at.slice(0, 16).replace('T', ' ')}\t${line}${task.error ? `\t${task.error}` : ''}`);
     }
     return;
   }

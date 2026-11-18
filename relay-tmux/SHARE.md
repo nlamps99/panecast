@@ -56,7 +56,7 @@ panecast share tasks 任务 --keep-days 14     # 任务文件夹保留 14 天（
 
 | 请求 | 作用 |
 |---|---|
-| `POST /v1/tasks[?wait=秒]`，body `{"text": "…", "attachments": [{"name": "图.png", "data_base64": "…"}], "continue": false}` | 提交任务，返回 201 `{task}`；带 `wait` 时在同一个请求里等结果（最多 300 秒）；`"continue": true` 接着上一个任务的对话 |
+| `POST /v1/tasks[?wait=秒]`，body `{"text": "…", "attachments": [{"name": "图.png", "data_base64": "…"}], "agent": "claude", "continue": false}` | 提交任务，返回 201 `{task}`；带 `wait` 时在同一个请求里等结果（最多 300 秒）；`agent` 选 `claude`（默认）、`codex` 或 `agy`（反重力 CLI）；`"continue": true` 接着同一个 agent 上一个任务的对话 |
 | `GET /v1/tasks/<编号>[?wait=秒]` | 查询任务；带 `wait` 时等到做完或超时再返回 |
 | `GET /v1/tasks[?limit=20]` | 最近的任务，新的在前 |
 | `POST /v1/tasks/<编号>/cancel` | 排队的移出队列；正在做的在窗口里按 Esc 打断 |
@@ -68,6 +68,10 @@ curl -s 'https://panecast.drinklake.com/cmux-remote/v1/tasks?wait=300' -H "Autho
 
 - 任务：`id`、`status`（`queued` 排队 → `sending` 送进窗口 → `running` 在做 → `done` / `failed` / `canceled`）、`result`（Claude 这一轮最后的回复）、`files`（Claude 存进 `tasks/<编号>/out/` 的文件，带 1 小时内有效的下载链接）、`attachments`、`position`（排队时第几个）、`error`。
 - 附件也可以写成 data URL（`{"data": "data:image/png;base64,…"}`），每个任务最多 10 个、合计 20 MB，存进分享目录的 `tasks/<编号>/`；任务文字里会列出路径，Claude 用 Read 工具看图片和 PDF。文字最多 32,000 字。
+- 三个 agent 各有一个窗口，都在这个分享的工作区里：Claude 是第一个终端，Codex 和 agy 的窗口在它们的第一个任务来时打开（访客在 Panecast 里也看得到）。每个 agent 各排各的队，不同 agent 的任务同时做。都是完整权限：Codex 用 `--dangerously-bypass-approvals-and-sandbox`，agy 用 `--dangerously-skip-permissions` 并只在本次会话信任分享目录。
+- Codex：钩子在启动命令里（`-c hooks=…`，加 `--dangerously-bypass-hook-trust` 跳过钩子审核），关掉 memories 和启动时的更新提示（它的默认选项会直接升级 Codex）。直接用 Codex 的绝对路径，不经过 cmux 给终端里 `codex` 套的那层包装。清空对话用 `/new`；按 Esc 有 Interrupt 钩子。
+- agy（反重力 CLI 1.5.11）：只能从插件加载钩子，所以网关第一次开 agy 窗口时装一个插件 `panecast-tasks`（`~/.gemini/config/plugins/panecast-tasks`）。它的钩子只在设置了 `PANECAST_TASK_EVENTS` 的窗口里记录，你平时用 agy 不受影响。agy 只在会话的第一条消息时报告（随 SessionStart），Stop 不带回复，按 Esc 不报告：后续消息和回复从 agy 自己的 transcript 读，中断从屏幕上的「Interrupted」看。清空对话用 `/clear`。
+- Codex 和 agy 要等第一条消息才开始会话，所以新窗口和清空后的窗口，以屏幕上出现空闲输入框（「? for shortcuts」）、并且没有任务标记为准。
 - 同一个窗口一次只做一个任务。每个任务默认从空白对话开始：网关先在窗口里输入 `/clear`，等 Claude 报告新会话开始（SessionEnd/SessionStart 的 `clear`）再送任务，所以上下文不会越积越多，任务之间也不会串。`"continue": true` 的任务不清空，接着上一个任务的对话（适合「先分析，再按结果改」）。你自己在窗口里聊的内容也会在下一个任务前被清空（之前的对话仍可用 `/resume` 找回）。你在窗口里提问时，任务等你这一轮结束再送。
 - 任务窗口里的 Claude 关掉了自动记忆（设置 `autoMemoryEnabled: false`）：否则任务里说「记住……」时它会写进 `~/.claude/projects/<目录>/memory`，`/clear` 之后照样读得到，任务之间又串起来了。你的 `~/.claude/CLAUDE.md` 等说明文件照常生效。
 - 任务结束 7 天后，它在分享目录 `tasks/<编号>/` 下的文件夹（附件和产出）自动删除，任务记录还在，`files` 变为空、带 `files_removed_at`。天数用 `panecast share tasks 名称 --keep-days 天数` 改，0 表示一直保留。
