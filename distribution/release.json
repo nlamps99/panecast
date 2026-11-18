@@ -260,39 +260,37 @@
     }
   ],
   "desktop": {
-    "version": "0.2.15",
+    "version": "0.2.16",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.15-mac-arm64.dmg",
-    "size": 4600682,
-    "sha256": "5d473567033767145fe181344dd7d7a86e2a8d1c385f43747de1684b53a9d8be",
+    "file": "panecast-desktop-0.2.16-mac-arm64.dmg",
+    "size": 4612154,
+    "sha256": "6a69157bda50c7bcee4d13888d308b8c11d0746166726ecff7552d4dbd1b038f",
     "archive": {
-      "file": "panecast-desktop-0.2.15-mac-arm64.zip",
-      "size": 4333187,
-      "sha256": "6154dff637dd64503d30142fd4bf391244469177ea032a824d35e2f8703acaf4"
+      "file": "panecast-desktop-0.2.16-mac-arm64.zip",
+      "size": 4344246,
+      "sha256": "0ac3365f371c9302f45bea25325a592efe1c1dfb5c4e5230aea84b6563416afc"
     },
     "installer": {
-      "file": "install-desktop-0.2.15-mac-arm64.sh",
+      "file": "install-desktop-0.2.16-mac-arm64.sh",
       "size": 5632,
-      "sha256": "c8457beafd3d115cbf59099636800b8a2f39f511dba900da96afea23076fd62e"
+      "sha256": "8329eccac7774eb3180c980574577b75d7c8f3c0f951b71306fdb4c0fbae3f9c"
     },
     "update": {
-      "file": "panecast-desktop-0.2.15-mac-arm64.app.tar.gz",
-      "size": 4328277,
-      "sha256": "9601c0bee053d7069a1130ccff7851f25acd691031068aeb55d6dd99e019ca0f",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ2ZqUVdiVUk0ak1HaElDaFcweTkzMWcxUjhhSUNuMVRZS1Y5dXRqYlArMC9Va1FncC83c1RRak9SZGw1RSszN2RwWVhUenJqSzhZZ0pqTG5wYmNWbmdNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0OTIyODAwCWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTUtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTUKbEREVENkN2Y3dGlJby9rR053Ync0YnFXUWJRaHJhWHFQN2wxMnd4enlvOHVVL0VqRFJHdlJuZGxRSUkwY0VoNjZkSS9NczVGclFyRW1KVDJYODNKQ0E9PQo="
+      "file": "panecast-desktop-0.2.16-mac-arm64.app.tar.gz",
+      "size": 4340163,
+      "sha256": "716defdf54e2a927c726705bb4fd55c6b5c1af6622f2c821131ed92eed1073ed",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ2NPYjlocmJ4ekpjUnE2TFU3cDhuSkJPd0E4QktBekFjM0huRXBTUlZlZVBLL1pCRHhpTCtHOEFuSmdKem0ycU0zaHhBbnFLQUptVkNZVXl2Q2lmYWdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDAxNTc0CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTYtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTYKRHRYbkk1emQ3blRLQnlKM1NvN3BlbHdlaUFLclN4Nm5DTlJqVWpjb0J1TWNvb1UrVlhpNnFRM1Y2ZVNsMytEOGhldFBxTVhYTUQwNk1LalVMLzBnRGc9PQo="
     },
     "minimumMacOS": "13.0",
-    "date": "2026-11-17",
+    "date": "2026-11-18",
     "notarized": false,
-    "sourceCommit": "b369d452decf312da20ef5794125bab6c1165ac0",
+    "sourceCommit": "74c5bb5f61c8600114f5b05e9837e3896b3b7ea8",
     "notes": [
-      "会话记录里被截短的工具输出和 diff，点一下「还有 N 行，点按展开」就显示全文",
-      "在 Claude Code、Codex 窗口里搜索时会先读完整段会话，搜得到很早以前的内容",
-      "切到别的窗口再回来，会回到你上次在会话记录里读到的位置",
-      "历史和实时画面接缝处重复的几行只显示一次",
-      "更新更及时：每 30 分钟检查一次，切回 Panecast 窗口时也会检查，不用等好几个小时"
+      "别人分享给你的窗口可以自己新开终端（最多 5 个，每个都是同样设置的 Claude），也可以关掉不用的终端，最后一个保留",
+      "分享窗口里 ⌘T 新建终端也能用了",
+      "Antigravity CLI 的通知会标明来源"
     ]
   },
   "windows": {
