@@ -9,7 +9,7 @@ import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { localConversationSource } from './terminal-conversation.mjs';
 import { sharesDirectory, sharesFile, shareTerminals } from './share-binding.mjs';
-import { taskEventsDirectory, withTaskHooks } from './share-tasks.mjs';
+import { taskEventsDirectory, taskWindowSettings } from './share-tasks.mjs';
 
 export { sharesDirectory, sharesFile, shareTerminals };
 
@@ -327,7 +327,7 @@ export async function shareCLI(args, configPath) {
     const id = newId();
     const settingsPath = join(sharesDirectory(config), id, 'claude-settings.json');
     if (!full) await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)), openNetwork: web }));
-    if (tasks) await writeJSON(settingsPath, withTaskHooks({}, taskEventsDirectory(config, { id })));
+    if (tasks) await writeJSON(settingsPath, taskWindowSettings(taskEventsDirectory(config, { id })));
     const sessionId = randomUUID();
     const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web, sessionId, tasks });
     const createdAt = new Date().toISOString();
@@ -359,7 +359,7 @@ export async function shareCLI(args, configPath) {
     const full = share.full === true;
     const settingsPath = shareSettingsPath(config, share);
     if (!full) await writeJSON(settingsPath, withPromptHook(JSON.parse(await readFile(settingsPath, 'utf8'))));
-    if (share.tasks === true) await writeJSON(settingsPath, withTaskHooks({}, taskEventsDirectory(config, share)));
+    if (share.tasks === true) await writeJSON(settingsPath, taskWindowSettings(taskEventsDirectory(config, share)));
     // A fresh conversation, as before; its new session id replaces the old one.
     const sessionId = randomUUID();
     const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open', sessionId, tasks: share.tasks === true });

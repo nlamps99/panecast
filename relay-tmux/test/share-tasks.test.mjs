@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocketServer } from 'ws';
 import { createHub } from '../src/hub/server.mjs';
 import { ShareStore, shareCommand } from '../src/hub/share.mjs';
-import { ShareTasks, readHookEvents, surfaceFileName, taskAttachment, taskEventsDirectory, taskHookCommand, taskPrompt, withTaskHooks } from '../src/hub/share-tasks.mjs';
+import { ShareTasks, readHookEvents, surfaceFileName, taskAttachment, taskEventsDirectory, taskHookCommand, taskPrompt, taskWindowSettings, withTaskHooks } from '../src/hub/share-tasks.mjs';
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
@@ -90,6 +90,10 @@ test('a task share starts the owner\'s Claude with the hooks and without questio
   assert.deepEqual(Object.keys(settings.hooks).sort(), ['SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']);
   assert.equal(settings.hooks.Stop.length, 2, 'the owner\'s hook stays and ours is there once');
   assert.equal(settings.hooks.Stop[0].hooks[0].command, 'mine');
+  // Nothing a task asks Claude to remember reaches the next task through its memory files.
+  const window = taskWindowSettings('/e');
+  assert.equal(window.autoMemoryEnabled, false);
+  assert.deepEqual(window.hooks, withTaskHooks({}, '/e').hooks);
 });
 
 test('attachments come as base64 or data URLs', () => {

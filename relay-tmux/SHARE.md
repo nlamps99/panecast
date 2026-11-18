@@ -69,6 +69,7 @@ curl -s 'https://panecast.drinklake.com/cmux-remote/v1/tasks?wait=300' -H "Autho
 - 任务：`id`、`status`（`queued` 排队 → `sending` 送进窗口 → `running` 在做 → `done` / `failed` / `canceled`）、`result`（Claude 这一轮最后的回复）、`files`（Claude 存进 `tasks/<编号>/out/` 的文件，带 1 小时内有效的下载链接）、`attachments`、`position`（排队时第几个）、`error`。
 - 附件也可以写成 data URL（`{"data": "data:image/png;base64,…"}`），每个任务最多 10 个、合计 20 MB，存进分享目录的 `tasks/<编号>/`；任务文字里会列出路径，Claude 用 Read 工具看图片和 PDF。文字最多 32,000 字。
 - 同一个窗口一次只做一个任务。每个任务默认从空白对话开始：网关先在窗口里输入 `/clear`，等 Claude 报告新会话开始（SessionEnd/SessionStart 的 `clear`）再送任务，所以上下文不会越积越多，任务之间也不会串。`"continue": true` 的任务不清空，接着上一个任务的对话（适合「先分析，再按结果改」）。你自己在窗口里聊的内容也会在下一个任务前被清空（之前的对话仍可用 `/resume` 找回）。你在窗口里提问时，任务等你这一轮结束再送。
+- 任务窗口里的 Claude 关掉了自动记忆（设置 `autoMemoryEnabled: false`）：否则任务里说「记住……」时它会写进 `~/.claude/projects/<目录>/memory`，`/clear` 之后照样读得到，任务之间又串起来了。你的 `~/.claude/CLAUDE.md` 等说明文件照常生效。
 - 任务结束 7 天后，它在分享目录 `tasks/<编号>/` 下的文件夹（附件和产出）自动删除，任务记录还在，`files` 变为空、带 `files_removed_at`。天数用 `panecast share tasks 名称 --keep-days 天数` 改，0 表示一直保留。
 - 窗口里的 Claude 用 `--disallowedTools=AskUserQuestion` 启动，不会停下来等人回答选择题。
 - 任务窗口被关掉、或者 Claude 退出了，下一个任务来时网关在同一个工作区重新开一个（工作区也没了就新开一个工作区），等 Claude 启动后再送。

@@ -84,6 +84,14 @@ export function withTaskHooks(settings, directory) {
   return { ...settings, hooks };
 }
 
+/**
+ * The settings file of a task window: the hooks, and no auto memory. Claude
+ * otherwise saves what a task asks it to remember under
+ * ~/.claude/projects/<folder>/memory and recalls it after /clear, so one
+ * task would still reach the next (seen on Claude Code 2.1.327).
+ */
+export const taskWindowSettings = (directory) => withTaskHooks({ autoMemoryEnabled: false }, directory);
+
 /** What the window receives for a task. Paths are relative to the shared directory, where Claude runs. */
 export function taskPrompt(task) {
   const lines = [marker(task.id), task.text];
