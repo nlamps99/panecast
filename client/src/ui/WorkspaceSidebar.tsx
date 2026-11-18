@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { confirmClose } from '../platform/confirm';
 import { requestTerminalClose, requestWorkspaceClose } from '../session/closeRequests';
-import { canManage } from '../session/surfaces';
+import { canCloseTerminal, canManage } from '../session/surfaces';
 import { SurfaceActions } from '../session/surfaceActions';
 import { actionErrorText, workspaceActionsFor } from '../session/workspaceActions';
 import { describeError } from '../session/terminalSession';
@@ -56,7 +56,7 @@ export function WorkspaceSidebar() {
         {pendingByWorkspace[workspace.id] ? <Text style={styles.attention}>{pendingByWorkspace[workspace.id]} 项待处理</Text> : null}
         {[...(surfaces[workspace.id] ?? [])].sort((a, b) => compareActivity(activity[activityKey({ workspaceId: workspace.id, surfaceId: a.id })], activity[activityKey({ workspaceId: workspace.id, surfaceId: b.id })])).map((surface) => <View key={surface.id} style={[styles.surfaceRow, target?.surfaceId === surface.id && styles.selected]}>
           <Pressable onPress={() => openSurface(machine, workspace.id, surface.id)} style={[styles.surface, { flexDirection: 'row', alignItems: 'center', gap: 6 }]} accessibilityRole="button" accessibilityLabel={surface.title} accessibilityState={{ selected: target?.surfaceId === surface.id }}><TerminalActivityBadge activity={activity[activityKey({ workspaceId: workspace.id, surfaceId: surface.id })]} /><Text numberOfLines={2} style={[styles.surfaceText, { flex: 1 }]}>{surface.title}</Text></Pressable>
-          <CloseButton label={`关闭终端 ${surface.title}`} disabled={!connected || !canManage(workspace) || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
+          <CloseButton label={`关闭终端 ${surface.title}`} disabled={!connected || !canCloseTerminal(workspace, surfaces[workspace.id]?.length ?? 0) || Boolean(workspaceActionState.pending[workspace.id]) || terminalActionState.running !== null}
             onPress={() => { setCloseError(null); void requestTerminalClose(machine, terminalActions, workspace, surface, confirmClose).catch(error => setCloseError(describeError(error))); }} />
         </View>)}
       </View>)}

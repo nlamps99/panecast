@@ -9,7 +9,7 @@ import type { TerminalInputHandle } from '../../modules/terminal-input';
 import type { ConnectionStatus } from '../protocol/connection';
 import { HostStatusStore } from '../session/hostStatus';
 import { SurfaceActions } from '../session/surfaceActions';
-import { canManage, pickDefaultTarget } from '../session/surfaces';
+import { canCloseTerminal, pickDefaultTarget } from '../session/surfaces';
 import { requestTerminalClose } from '../session/closeRequests';
 import { actionErrorText, workspaceActionsFor } from '../session/workspaceActions';
 import { describeError } from '../session/terminalSession';
@@ -238,7 +238,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
                 const itemActivity = activity[activityKey({ workspaceId: target.workspaceId, surfaceId: item.id })];
-                const closable = canManage(workspace);
+                const closable = canCloseTerminal(workspace, siblings.length);
                 const busy = running !== null || Boolean(workspaceActionState.pending[target.workspaceId]);
                 const close = () => {
                   if (!isOpen || !workspace || readOnly || busy) return;

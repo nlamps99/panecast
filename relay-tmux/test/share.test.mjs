@@ -26,7 +26,8 @@ async function cmux(t) {
   await once(server, 'listening');
   t.after(async () => { for (const ws of server.clients) ws.terminate(); await new Promise((resolve) => server.close(resolve)); });
   const calls = [];
-  const fx = { calls, methods: [] };
+  // Terminals made with surface.create, and terminals closed, per workspace.
+  const fx = { calls, methods: [], added: { $0: [], $1: [] }, closed: new Set(), created: 0 };
   server.on('connection', (ws) => ws.on('message', (raw) => {
     const m = JSON.parse(raw); if (!m.method) return;
     calls.push(m);
@@ -36,7 +37,12 @@ async function cmux(t) {
     if (m.method === 'window.list') result = { windows: [{ id: 'w1' }, { id: 'w2' }] };
     if (m.method === 'workspace.list') result = m.params.window_id === 'w2'
       ? { workspaces: [{ id: '$1', title: 'shared paper' }] } : { workspaces: [{ id: '$0', title: 'private work' }] };
-    if (m.method === 'surface.list') result = { surfaces: [{ id: m.params.workspace_id === '$1' ? '%1' : '%0', type: 'terminal', title: 'a' }, { id: '%9', type: 'terminal', title: 'b' }] };
+    if (m.method === 'surface.list') {
+      const ids = [m.params.workspace_id === '$1' ? '%1' : '%0', '%9', ...(fx.added[m.params.workspace_id] ?? [])].filter((id) => !fx.closed.has(id));
+      result = { surfaces: ids.map((id) => ({ id, type: 'terminal', title: id === '%9' ? 'b' : 'a' })) };
+    }
+    if (m.method === 'surface.create') { const id = `%${100 + fx.created++}`; fx.added[m.params.workspace_id]?.push(id); result = { surface_id: id, workspace_id: m.params.workspace_id, type: 'terminal' }; }
+    if (m.method === 'surface.close') fx.closed.add(m.params.surface_id);
     if (m.method === 'surface.subscribe') ws.send(JSON.stringify({ type: 'screen.full', surface_id: m.params.surface_id, rev: 1, rows: ['claude'], cols: 80, rowsCount: 1, cursor: { x: 0, y: 0 } }));
     ws.send(JSON.stringify({ id: m.id, ok: true, result }));
   }));
@@ -110,7 +116,7 @@ test('a guest sees one source, one workspace and one terminal', async (t) => {
   assert.deepEqual(sources.sources.map((s) => [s.id, s.name, s.status, s.capabilities.create]), [['cmux', '论文', 'online', false]]);
   assert.equal(JSON.stringify(sources).includes('upstream-secret'), false);
   const info = await relay.call('g', 'relay.info');
-  assert.deepEqual(info.share, { id: 's1', name: '论文', ...own, files: { list: true, links: true, upload: true } });
+  assert.deepEqual(info.share, { id: 's1', name: '论文', ...own, max_terminals: 5, files: { list: true, links: true, upload: true } });
   const { windows } = await relay.call('g', 'window.list');
   assert.equal(windows.length, 1);
   const listing = await relay.call('g', 'workspace.list', { window_id: windows[0].id });
@@ -131,11 +137,14 @@ test('a guest cannot reach any other terminal or management call', async (t) => 
   const { relay, upstream } = await setup(t);
   relay.open('g', 'guest-a', { share_id: 's1' });
   const other = { workspace_id: scoped('cmux', '$0'), surface_id: scoped('cmux', '%0') };
+  // %9 is a terminal the owner opened in the shared workspace.
+  const owners = { ...own, surface_id: scoped('cmux', '%9') };
   for (const [method, params] of [
-    ['surface.subscribe', other], ['surface.subscribe', { ...own, surface_id: scoped('cmux', '%9') }], ['surface.history', other],
+    ['surface.subscribe', other], ['surface.subscribe', owners], ['surface.history', other],
     ['surface.send_text', { ...other, text: 'hi' }], ['surface.list', { workspace_id: other.workspace_id }], ['terminal.conversation', other],
-    ['workspace.create', { source_id: 'cmux', title: 'x' }], ['workspace.close', { workspace_id: own.workspace_id }], ['surface.close', own],
-    ['surface.create', { workspace_id: own.workspace_id }], ['workspace.rename', { workspace_id: own.workspace_id, title: 'x' }],
+    ['workspace.create', { source_id: 'cmux', title: 'x' }], ['workspace.close', { workspace_id: own.workspace_id }], ['surface.close', owners], ['surface.close', other],
+    ['surface.create', { workspace_id: other.workspace_id }], ['surface.create', { workspace_id: own.workspace_id, type: 'browser', url: 'https://example.com' }],
+    ['surface.create', { workspace_id: own.workspace_id, pane_id: scoped('cmux', '%0') }], ['workspace.rename', { workspace_id: own.workspace_id, title: 'x' }],
     ['file.upload', { ...other, data_base64: 'aGk=' }], ['notification.create', own], ['project.read', { ...own, path: 'a.txt' }], ['project.list', own], ['agent.threads', { source_id: 'cmux' }],
     ['workspace.list', { source_id: 'other' }], ['surface.subscribe', { ...own, pane_id: scoped('cmux', '%0') }],
   ]) await assert.rejects(relay.call('g', method, params), { code: 'forbidden' }, method);
@@ -443,4 +452,93 @@ test('shared windows start Claude with a known session id that the gateway can f
   assert.equal(await shareConversationBinding(config, 'other', 'w1', 's1'), null);
   await writeFile(join(state, 'shares', 'shares.json'), JSON.stringify({ version: 1, shares: [{ ...share, revoked_at: '2026-11-17T00:00:00Z' }] }));
   assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's1'), null);
+});
+
+/** A share whose Claude settings exist, as `panecast share create` leaves them, with a stand-in Claude binary. */
+async function withTerminals(t, share = SHARE) {
+  const previous = process.env.PANECAST_CLAUDE_BIN;
+  process.env.PANECAST_CLAUDE_BIN = '/opt/test/claude';
+  t.after(() => { if (previous === undefined) delete process.env.PANECAST_CLAUDE_BIN; else process.env.PANECAST_CLAUDE_BIN = previous; });
+  const fx = await setup(t, [share]);
+  const settings = join(fx.directory, 'state', 'shares', share.id, 'claude-settings.json');
+  await mkdir(join(settings, '..'), { recursive: true });
+  await writeFile(settings, '{}');
+  fx.relay.open('g', 'guest-a', { share_id: share.id });
+  return { ...fx, settings, config: { state_directory: join(fx.directory, 'state') } };
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+test('a guest adds terminals in the shared workspace running the same confined Claude', async (t) => {
+  const { relay, upstream, store, settings, config } = await withTerminals(t);
+  const created = await relay.call('g', 'surface.create', { workspace_id: own.workspace_id, type: 'terminal', focus: true });
+  assert.deepEqual(created, { workspace_id: own.workspace_id, surface_id: scoped('cmux', '%100'), type: 'terminal' });
+  const call = upstream.calls.find((c) => c.method === 'surface.create');
+  // In the share's workspace and folder, without taking the owner's focus.
+  assert.deepEqual({ ...call.params, initial_command: undefined }, { workspace_id: '$1', type: 'terminal', cwd: '/tmp/paper', focus: false, initial_command: undefined });
+  const command = call.params.initial_command;
+  assert.ok(command.startsWith("/bin/zsh -lc 'exec /usr/bin/env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT "), command);
+  for (const part of ['/opt/test/claude', '--restricted', '--disable-slash-commands', '--strict-mcp-config', settings, '--session-id']) assert.ok(command.includes(part), part);
+  assert.ok(!command.includes('--dangerously-skip-permissions'));
+  // The new terminal is the guest's like the first; the owner's %9 stays hidden.
+  const { surfaces } = await relay.call('g', 'surface.list', { workspace_id: own.workspace_id });
+  assert.deepEqual(surfaces.map((s) => s.id), [own.surface_id, created.surface_id]);
+  const [share] = await store.read();
+  assert.deepEqual(share.terminals.map((terminal) => terminal.surface_id), ['%1', '%100']);
+  const sessionId = share.terminals[1].session_id;
+  assert.match(sessionId, UUID_PATTERN);
+  assert.ok(command.includes(sessionId));
+  assert.deepEqual(await shareConversationBinding(config, 'cmux', '$1', '%100'), { kind: 'claude', checkpoint_id: sessionId });
+  // Input to it goes through the same checks.
+  await relay.call('g', 'surface.send_text', { ...own, surface_id: created.surface_id, text: '跑一下!' });
+  await assert.rejects(relay.call('g', 'surface.send_key', { ...own, surface_id: created.surface_id, key: 'ctrl-g' }), { code: 'guest_key' });
+  assert.deepEqual(upstream.sent().map((c) => [c.params.surface_id, c.params.text]), [['%100', '跑一下！']]);
+});
+
+test('a share holds at most five terminals and always keeps one', async (t) => {
+  const { relay, upstream, store } = await withTerminals(t);
+  // Requests sent together cannot pass the limit together.
+  const results = await Promise.allSettled(Array.from({ length: 5 }, () => relay.call('g', 'surface.create', { workspace_id: own.workspace_id })));
+  assert.deepEqual(results.map((r) => r.status === 'fulfilled' ? 'ok' : r.reason.code).sort(), ['ok', 'ok', 'ok', 'ok', 'share_terminal_limit']);
+  assert.equal(upstream.calls.filter((c) => c.method === 'surface.create').length, 4);
+  // The first window may close while others remain; the share then points at the next one.
+  await relay.call('g', 'surface.close', own);
+  let [share] = await store.read();
+  assert.equal(share.surface_id, '%100');
+  assert.deepEqual(share.terminals.map((terminal) => terminal.surface_id), ['%100', '%101', '%102', '%103']);
+  await assert.rejects(relay.call('g', 'surface.send_text', { ...own, text: 'x' }), { code: 'forbidden' });
+  assert.equal((await relay.call('g', 'relay.info')).share.surface_id, scoped('cmux', '%100'));
+  // A terminal closed in cmux by the owner no longer counts.
+  upstream.closed.add('%103');
+  await relay.call('g', 'surface.create', { workspace_id: own.workspace_id });
+  [share] = await store.read();
+  assert.deepEqual(share.terminals.map((terminal) => terminal.surface_id), ['%100', '%101', '%102', '%104']);
+  for (const id of ['%101', '%102', '%104']) await relay.call('g', 'surface.close', { ...own, surface_id: scoped('cmux', id) });
+  await assert.rejects(relay.call('g', 'surface.close', { ...own, surface_id: scoped('cmux', '%100') }), { code: 'share_last_terminal' });
+  [share] = await store.read();
+  assert.deepEqual(share.terminals.map((terminal) => terminal.surface_id), ['%100']);
+  assert.deepEqual([...upstream.closed].sort(), ['%1', '%101', '%102', '%103', '%104']);
+});
+
+test('a full-access share adds terminals with the owner\'s unrestricted Claude', async (t) => {
+  const { relay, upstream } = await withTerminals(t, { ...SHARE, full: true, prompt_hook: false });
+  const created = await relay.call('g', 'surface.create', { workspace_id: own.workspace_id });
+  const command = upstream.calls.find((c) => c.method === 'surface.create').params.initial_command;
+  assert.ok(command.includes('--dangerously-skip-permissions') && !command.includes('--restricted'), command);
+  await relay.call('g', 'surface.send_key', { ...own, surface_id: created.surface_id, key: 'ctrl-g' });
+  assert.deepEqual(upstream.sent().map((c) => [c.params.surface_id, c.params.key]), [['%100', 'ctrl-g']]);
+});
+
+test('an open-network share adds terminals with the same network', async (t) => {
+  const { relay, upstream } = await withTerminals(t, { ...SHARE, network: 'open' });
+  await relay.call('g', 'surface.create', { workspace_id: own.workspace_id });
+  const command = upstream.calls.find((c) => c.method === 'surface.create').params.initial_command;
+  assert.ok(command.includes('WebFetch') && command.includes('--restricted'), command);
+});
+
+test('a confined share without its settings adds no terminal', async (t) => {
+  const { relay, upstream, settings } = await withTerminals(t);
+  await rm(settings);
+  await assert.rejects(relay.call('g', 'surface.create', { workspace_id: own.workspace_id }), { code: 'share_terminal_failed' });
+  assert.equal(upstream.calls.some((c) => c.method === 'surface.create'), false);
 });

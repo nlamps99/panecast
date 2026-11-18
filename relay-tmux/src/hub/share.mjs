@@ -8,12 +8,14 @@ import { writeJSON } from '../push.mjs';
 import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { localConversationSource } from './terminal-conversation.mjs';
-import { sharesDirectory, sharesFile } from './share-binding.mjs';
+import { sharesDirectory, sharesFile, shareTerminals } from './share-binding.mjs';
 
-export { sharesDirectory, sharesFile };
+export { sharesDirectory, sharesFile, shareTerminals };
 
 const exec = promisify(execFile);
 const KEY_PREFIX = 'pcs1.';
+/** Terminals a share may hold at once, the first window included. Each runs its own Claude on the owner's account. */
+export const SHARE_MAX_TERMINALS = 5;
 /** Tools the shared Claude may use. Bash runs inside Claude Code's OS sandbox. */
 export const SHARE_TOOLS = 'Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebSearch,TodoWrite,AskUserQuestion';
 /**
@@ -59,6 +61,24 @@ export class ShareStore {
   }
 
   async write(shares) { await writeJSON(this.path, { version: 1, shares }); this.cache = null; }
+
+  /**
+   * Changes one share in the file as it is now, for the hub (terminals a
+   * guest added or closed). Changes made here run one at a time; the CLI
+   * writes rarely and only on the owner's command.
+   */
+  update(shareId, change) {
+    const run = (this.updating ?? Promise.resolve()).then(async () => {
+      const shares = await this.read();
+      const share = shares.find((entry) => entry.id === shareId && !entry.revoked_at);
+      if (!share) throw new Error('share not found');
+      const result = await change(share);
+      await this.write(shares);
+      return result;
+    });
+    this.updating = run.catch(() => {});
+    return run;
+  }
 
   /** The share a guest connection may use, or null. Throws when the file cannot be read, which refuses the guest. */
   async guestShare(shareId, deviceId) {
@@ -202,6 +222,24 @@ export function validName(name) {
   return value;
 }
 
+/** Where a confined share keeps its Claude settings, outside the shared directory. */
+export const shareSettingsPath = (config, share) => join(sharesDirectory(config), share.id, 'claude-settings.json');
+
+/**
+ * The command for another terminal in a share's workspace: the same Claude,
+ * flags and settings as the share's first window, with its own session.
+ * cmux runs a new terminal's command without a shell, so zsh runs it, as it
+ * does for a new workspace.
+ */
+export async function shareTerminalCommand(config, share, sessionId) {
+  const full = share.full === true, settingsPath = shareSettingsPath(config, share);
+  if (!full) {
+    try { await stat(settingsPath); }
+    catch { throw new Error('这个分享的 Claude 设置文件不见了，请在电脑上运行 panecast share reopen 重新打开'); }
+  }
+  return `/bin/zsh -lc ${quote(shareCommand(await claudeBinary(), settingsPath, { full, web: share.network === 'open', sessionId }))}`;
+}
+
 async function claudeBinary() {
   if (process.env.PANECAST_CLAUDE_BIN) return process.env.PANECAST_CLAUDE_BIN;
   const PATH = [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin')].filter(Boolean).join(':');
@@ -274,8 +312,9 @@ export async function shareCLI(args, configPath) {
     if (!full) await writeJSON(settingsPath, shareSettings(directory, { allowDomains: flagValues(args, '--allow-domain'), allowRead: flagValues(args, '--allow-read').map((path) => resolve(path)), openNetwork: web }));
     const sessionId = randomUUID();
     const target = await openShareWindow(config, { name, directory, settingsPath, sourceId: flag(args, '--source'), full, web, sessionId });
+    const createdAt = new Date().toISOString();
     const share = { id, name, directory, source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId,
-      created_at: new Date().toISOString(), revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), ...(web ? { network: 'open' } : {}), guests: [] };
+      terminals: [{ surface_id: target.surfaceId, session_id: sessionId, created_at: createdAt }], created_at: createdAt, revoked_at: null, prompt_hook: !full, ...(full ? { full: true } : {}), ...(web ? { network: 'open' } : {}), guests: [] };
     shares.push(share);
     await store.write(shares);
     console.log(`已在 cmux 打开工作区「${full ? '完整权限分享' : '分享'} · ${name}」，目录：${directory}`);
@@ -297,13 +336,15 @@ export async function shareCLI(args, configPath) {
     if (share.revoked_at) throw new Error('这个分享已停止');
     // Same sandbox and network choices; the prompt hook added for windows made before it.
     const full = share.full === true;
-    const settingsPath = join(sharesDirectory(config), share.id, 'claude-settings.json');
+    const settingsPath = shareSettingsPath(config, share);
     if (!full) await writeJSON(settingsPath, withPromptHook(JSON.parse(await readFile(settingsPath, 'utf8'))));
     // A fresh conversation, as before; its new session id replaces the old one.
     const sessionId = randomUUID();
     const target = await openShareWindow(config, { name: share.name, directory: share.directory, settingsPath, sourceId: share.source_id, full, web: share.network === 'open', sessionId });
     const previous = { sourceId: share.source_id, workspaceId: share.workspace_id };
-    Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId, prompt_hook: !full });
+    // Terminals guests added went with the old workspace.
+    Object.assign(share, { source_id: target.sourceId, workspace_id: target.workspaceId, surface_id: target.surfaceId, session_id: sessionId, prompt_hook: !full,
+      terminals: [{ surface_id: target.surfaceId, session_id: sessionId, created_at: new Date().toISOString() }] });
     await store.write(shares);
     const closed = await closeShareWindow(config, previous).then(() => true, () => false);
     console.log(`已为「${share.name}」打开新窗口，访客的密钥不变，连接后就是新窗口。${closed ? '旧窗口已关闭。' : '旧窗口没能关闭，可以在 cmux 里自己关掉。'}`);
@@ -313,7 +354,8 @@ export async function shareCLI(args, configPath) {
     const shares = await store.read();
     if (!shares.length) { console.log('还没有分享的窗口。运行 panecast share create 名称 来创建。'); return; }
     for (const share of shares) {
-      console.log(`${share.id}\t${share.name}\t${share.revoked_at ? '已停止' : '分享中'}${share.full ? '（完整权限）' : share.network === 'open' ? '（联网）' : ''}\t${share.directory}`);
+      const terminals = shareTerminals(share).length;
+      console.log(`${share.id}\t${share.name}\t${share.revoked_at ? '已停止' : '分享中'}${share.full ? '（完整权限）' : share.network === 'open' ? '（联网）' : ''}${terminals > 1 ? ` · ${terminals} 个终端` : ''}\t${share.directory}`);
       for (const [index, guest] of share.guests.entries()) {
         console.log(`  ${index + 1}. ${guest.label || '未命名'}\t${guest.revoked_at ? '已撤销' : '有效'}\t${guest.created_at.slice(0, 16).replace('T', ' ')}`);
       }

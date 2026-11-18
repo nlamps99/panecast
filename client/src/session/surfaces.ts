@@ -2,12 +2,22 @@ import type { RpcChannel, SurfaceTarget } from './terminalSession';
 
 /**
  * `shared`: a window someone shared with a key. It takes input like `control`
- * but cannot be created, renamed or closed from here.
+ * and may gain and lose terminals, but always keeps one; the workspace itself
+ * cannot be created, renamed or closed from here.
  */
 export type Access = 'read' | 'control' | 'shared';
 /** Whether workspaces and terminals here may be created, renamed or closed. */
 export function canManage(item: { access?: Access } | null | undefined): boolean {
   return item?.access !== 'read' && item?.access !== 'shared';
+}
+
+/**
+ * Whether one of `count` terminals in this workspace may be closed. Closing
+ * the last terminal closes its workspace, which a shared window cannot.
+ */
+export function canCloseTerminal(workspace: { access?: Access } | null | undefined, count: number): boolean {
+  if (workspace?.access === 'read' || !workspace) return false;
+  return workspace.access !== 'shared' || count > 1;
 }
 
 export type WorkspaceInfo = { id: string; title: string; index: number; selected: boolean; sourceId?: string; access?: Access };

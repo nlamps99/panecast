@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { RpcError } from '../tmux.mjs';
 // A namespace import: gateways older than batched input have no inputItems.
@@ -5,10 +6,24 @@ import * as relayServer from '../server.mjs';
 import { UPLOAD_CHUNK_BYTES } from '../upload.mjs';
 import { HubSession } from './session.mjs';
 import { scoped, scopeResult } from './ids.mjs';
-import { sharesDirectory } from './share.mjs';
+import { SHARE_MAX_TERMINALS, sharesDirectory, shareTerminalCommand, shareTerminals } from './share.mjs';
 import { listShareFiles, MAX_UPLOAD_BYTES, mimeFor, saveUpload, saveUploadChunk } from './share-files.mjs';
 
-/** Methods a guest may call, always for the shared terminal only. */
+/**
+ * Adding and closing a share's terminals, one change at a time per share
+ * across every guest connection, so two guests cannot pass the limit or
+ * close the last two terminals together.
+ */
+const terminalChanges = new Map();
+function oneAtATime(shareId, work) {
+  const run = (terminalChanges.get(shareId) ?? Promise.resolve()).then(work);
+  const settled = run.then(() => {}, () => {});
+  terminalChanges.set(shareId, settled);
+  void settled.then(() => { if (terminalChanges.get(shareId) === settled) terminalChanges.delete(shareId); });
+  return run;
+}
+
+/** Methods a guest may call, always for one of the share's terminals. */
 const TARGETED = new Set(['surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text',
   'terminal.replay', 'terminal.scroll', 'terminal.conversation', 'surface.focus', 'surface.send_text', 'surface.send_key', 'surface.input', 'terminal.paste']);
 /*
@@ -51,7 +66,7 @@ const KEEPS_TEXT = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'h
 const KEEPS_TEXT_CTRL = new Set(['c', 'a', 'e', 'b', 'f', 'p', 'n', 'l', 'o', 't', 's', 'x']);
 const MODIFIER = /^(ctrl|control|alt|option|opt|shift|cmd|command|meta|super)-(?=.)/;
 const SYSTEM_MODIFIERS = new Set(['cmd', 'command', 'meta', 'super']);
-const forbidden = () => new RpcError('forbidden', '分享窗口只能操作被分享的这一个终端');
+const forbidden = () => new RpcError('forbidden', '分享窗口只能操作被分享的工作区里的终端');
 
 /** What a guest types: any text without control characters; a ! is typed as ！ (see above). */
 export function guestText(text) {
@@ -97,9 +112,12 @@ const submittedLine = (items) => items.length === 2 && typeof items[0].text === 
 
 /**
  * A connection that holds a guest key. It sees one source with one
- * workspace and one terminal, and receives no notifications. The share is
- * checked again on every request, so a revoke applies even before the broker
- * drops the connection; a share that cannot be read refuses everything.
+ * workspace and the share's terminals in it, and receives no notifications.
+ * The guest may add terminals running the same Claude, up to
+ * SHARE_MAX_TERMINALS, and close them while another remains. Terminals the
+ * owner opens in that workspace stay out of reach. The share is checked
+ * again on every request, so a revoke applies even before the broker drops
+ * the connection; a share that cannot be read refuses everything.
  */
 export class GuestSession extends HubSession {
   constructor(registry, config, send, close, notify, { shares, deviceId, shareId, fileLinks = null }) {
@@ -122,9 +140,77 @@ export class GuestSession extends HubSession {
     void this.current().catch(() => {});
   }
 
+  /** What the guest may address. `surfaces` maps each terminal's id as the guest sees it to cmux's. */
   target(share) {
     return { source: share.source_id, workspace_id: scoped(share.source_id, share.workspace_id), surface_id: scoped(share.source_id, share.surface_id),
-      window_id: scoped(share.source_id, 'default') };
+      window_id: scoped(share.source_id, 'default'), surfaces: new Map(shareTerminals(share).map((terminal) => [scoped(share.source_id, terminal.surface_id), terminal.surface_id])) };
+  }
+
+  /** The share's terminals still open in cmux. */
+  async liveTerminals(share) {
+    const { surfaces = [] } = await this.client(share.source_id).call('surface.list', { workspace_id: share.workspace_id });
+    const open = new Set(surfaces.map((surface) => surface.id));
+    return shareTerminals(share).filter((terminal) => open.has(terminal.surface_id));
+  }
+
+  /** A new terminal in the shared workspace, running the same Claude as the first one with its own session. */
+  addTerminal(p, own) {
+    if (p.workspace_id !== own.workspace_id || (p.type !== undefined && p.type !== 'terminal')) throw forbidden();
+    return oneAtATime(this.shareId, async () => {
+      // Read again: another guest may have changed the terminals meanwhile.
+      const share = await this.current();
+      if (this.target(share).workspace_id !== own.workspace_id) throw forbidden();
+      const live = await this.liveTerminals(share);
+      if (live.length >= SHARE_MAX_TERMINALS) throw new RpcError('share_terminal_limit', `分享窗口最多 ${SHARE_MAX_TERMINALS} 个终端，请先关掉不用的`);
+      const sessionId = randomUUID();
+      let command;
+      try { command = await shareTerminalCommand(this.config, share, sessionId); }
+      catch (error) { throw new RpcError('share_terminal_failed', error.message); }
+      const client = this.client(share.source_id);
+      // Never focus: that would switch what the owner sees in cmux.
+      const created = await client.call('surface.create', { workspace_id: share.workspace_id, type: 'terminal', cwd: share.directory, initial_command: command, focus: false });
+      const surfaceId = created?.surface_id ?? created?.id;
+      if (typeof surfaceId !== 'string' || !surfaceId) throw new RpcError('share_terminal_failed', '电脑没有返回新终端');
+      try {
+        await this.shares.update(share.id, (entry) => {
+          if (entry.workspace_id !== share.workspace_id) throw new Error('the share moved to another workspace');
+          // Terminals closed in cmux meanwhile leave the record too.
+          const open = new Set(live.map((terminal) => terminal.surface_id));
+          entry.terminals = [...shareTerminals(entry).filter((terminal) => open.has(terminal.surface_id)),
+            { surface_id: surfaceId, session_id: sessionId, created_at: new Date().toISOString() }];
+        });
+      } catch {
+        // A terminal the share does not list would be the owner's: close it rather than leave it.
+        await client.call('surface.close', { workspace_id: share.workspace_id, surface_id: surfaceId }).catch(() => {});
+        throw new RpcError('share_terminal_failed', '新终端没能加入分享，已经关掉');
+      }
+      return { workspace_id: own.workspace_id, surface_id: scoped(share.source_id, surfaceId), type: 'terminal' };
+    });
+  }
+
+  /** Closes one of the share's terminals; the last one stays. */
+  closeTerminal(p, own) {
+    if (p.workspace_id !== own.workspace_id || !own.surfaces.has(p.surface_id)) throw forbidden();
+    return oneAtATime(this.shareId, async () => {
+      const share = await this.current();
+      const mine = this.target(share);
+      const surfaceId = mine.surfaces.get(p.surface_id);
+      if (mine.workspace_id !== own.workspace_id || !surfaceId) throw forbidden();
+      const live = await this.liveTerminals(share);
+      if (live.some((terminal) => terminal.surface_id === surfaceId)) {
+        if (live.length <= 1) throw new RpcError('share_last_terminal', '分享窗口至少要留一个终端，最后一个不能关');
+        await this.client(share.source_id).call('surface.close', { workspace_id: share.workspace_id, surface_id: surfaceId });
+      }
+      await this.shares.update(share.id, (entry) => {
+        if (entry.workspace_id !== share.workspace_id) return;
+        const open = new Set(live.map((terminal) => terminal.surface_id));
+        const rest = shareTerminals(entry).filter((terminal) => terminal.surface_id !== surfaceId && open.has(terminal.surface_id));
+        entry.terminals = rest;
+        // The first window's fields follow a terminal that is still open, for gateways that read only those.
+        if (entry.surface_id === surfaceId && rest[0]) Object.assign(entry, { surface_id: rest[0].surface_id, session_id: rest[0].session_id });
+      }).catch(() => { /* Closed in cmux; a stale entry is dropped on the next change. */ });
+      return {};
+    });
   }
 
   info(share, status) {
@@ -150,7 +236,7 @@ export class GuestSession extends HubSession {
     const own = this.target(share);
     if (method === 'relay.info') {
       const info = { backend: 'hub', protocol_version: 1, sources: [this.info(share)], share: { id: share.id, name: share.name, workspace_id: own.workspace_id, surface_id: own.surface_id,
-        files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}), ...(share.network === 'open' ? { network: 'open' } : {}) } };
+        max_terminals: SHARE_MAX_TERMINALS, files: { list: true, links: Boolean(this.fileLinks), upload: true }, ...(share.full === true ? { full: true } : {}), ...(share.network === 'open' ? { network: 'open' } : {}) } };
       if (p.source_id !== undefined || p.workspace_id !== undefined || p.surface_id !== undefined) {
         this.check(p, own);
         const limits = await this.client(share.source_id).call('relay.info', {});
@@ -170,7 +256,7 @@ export class GuestSession extends HubSession {
     }
     if (method === 'relay.snippets') return { snippets: [] };
     if (method === 'host.battery') return { available: false };
-    // `shared`: takes input, but the guest cannot create, rename or close anything.
+    // `shared`: takes input and may add or close the share's terminals, but not create, rename or close workspaces.
     if (method === 'window.list') return { windows: [{ id: own.window_id, ref: share.name, title: share.name, source_id: share.source_id, access: 'shared', index: 0, key: true }] };
     if (method === 'workspace.list') {
       if (p.source_id !== undefined && p.source_id !== share.source_id) throw forbidden();
@@ -183,8 +269,11 @@ export class GuestSession extends HubSession {
       this.check(p, own);
       if (p.workspace_id !== own.workspace_id) throw forbidden();
       const { surfaces = [] } = await this.client(share.source_id).call('surface.list', { workspace_id: share.workspace_id });
-      return { surfaces: surfaces.filter((surface) => surface.id === share.surface_id).map((surface) => scopeResult(share.source_id, surface, true)) };
+      const mine = new Set(own.surfaces.values());
+      return { surfaces: surfaces.filter((surface) => mine.has(surface.id)).map((surface) => scopeResult(share.source_id, surface, true)) };
     }
+    if (method === 'surface.create') { this.check(p, own); return this.addTerminal(p, own); }
+    if (method === 'surface.close') { this.check(p, own); return this.closeTerminal(p, own); }
     // Each entry goes back through this dispatch, so each is checked on its own.
     if (method === 'terminal.conversation.batch') {
       if (typeof this.conversationBatch !== 'function') throw new RpcError('method_not_found', '统一网关不支持这个操作');
@@ -198,7 +287,7 @@ export class GuestSession extends HubSession {
     }
     if (method === 'file.upload') {
       this.check(p, own);
-      if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
+      if (p.workspace_id !== own.workspace_id || !own.surfaces.has(p.surface_id)) throw forbidden();
       // Any size, in chunks that collect in the gateway's own folder for this share.
       if (p.upload_id !== undefined) {
         const saved = await saveUploadChunk(this.uploadParts(share), share.directory, p);
@@ -215,8 +304,8 @@ export class GuestSession extends HubSession {
     }
     if (!TARGETED.has(method)) throw forbidden();
     this.check(p, own);
-    if (p.workspace_id !== own.workspace_id || p.surface_id !== own.surface_id) throw forbidden();
-    // A full-access share runs Claude without a sandbox: input goes to the one terminal as typed.
+    if (p.workspace_id !== own.workspace_id || !own.surfaces.has(p.surface_id)) throw forbidden();
+    // A full-access share runs Claude without a sandbox: input goes to its terminals as typed.
     if (share.full === true) return super.dispatch(method, p);
     if (method === 'surface.send_text') return super.dispatch(method, { workspace_id: p.workspace_id, surface_id: p.surface_id, text: guestText(p.text) });
     const editing = share.prompt_hook === true;
@@ -257,6 +346,6 @@ export class GuestSession extends HubSession {
     if (p.window_id !== undefined && p.window_id !== own.window_id) throw forbidden();
     if (p.pane_id !== undefined) throw forbidden();
     if (p.workspace_id !== undefined && p.workspace_id !== own.workspace_id) throw forbidden();
-    if (p.surface_id !== undefined && p.surface_id !== own.surface_id) throw forbidden();
+    if (p.surface_id !== undefined && !own.surfaces.has(p.surface_id)) throw forbidden();
   }
 }

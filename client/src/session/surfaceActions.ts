@@ -92,8 +92,8 @@ export class SurfaceActions {
   }
 
   /** Shown when the user tries to close a workspace's only terminal. */
-  refuseLastClose(): void {
-    this.update({ error: '不能关闭工作区里的最后一个终端' });
+  refuseLastClose(message = '不能关闭工作区里的最后一个终端'): void {
+    this.update({ error: message });
   }
 
   /** Creates a terminal in `workspaceId` and opens it, unless the user has since opened another one. */
