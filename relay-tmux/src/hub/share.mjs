@@ -385,8 +385,17 @@ export async function shareCLI(args, configPath) {
     return;
   }
   if (action === 'tasks') {
-    const { share } = await store.find(args[1]);
+    const { shares, share } = await store.find(args[1]);
     if (share.tasks !== true) throw new Error('这个分享没有开启任务接口（创建时加 --full --tasks）');
+    const keep = flag(args, '--keep-days');
+    if (keep !== undefined) {
+      const days = Number(keep);
+      if (!Number.isInteger(days) || days < 0 || days > 3650) throw new Error('--keep-days 需要 0 到 3650 的整数（0 表示一直保留）');
+      share.task_keep_days = days;
+      await store.write(shares);
+      console.log(days ? `任务结束 ${days} 天后删除它在分享目录 tasks/ 下的文件夹（附件和产出）。` : '任务的附件和产出会一直保留。');
+      return;
+    }
     let tasks = [];
     try { tasks = JSON.parse(await readFile(join(sharesDirectory(config), share.id, 'tasks.json'), 'utf8')).tasks ?? []; } catch { /* none yet */ }
     if (!tasks.length) { console.log('还没有任务。'); printTaskUsage(config); return; }
@@ -418,5 +427,5 @@ export async function shareCLI(args, configPath) {
     if (failed.length) console.log(`有 ${failed.length} 个密钥没能在中转服务器上删除；这台电脑已经拒绝它们，网络恢复后再运行一次 revoke 即可清理。`);
     return;
   }
-  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full [--tasks]] | key 分享 [--guest 名字] | reopen 分享 | list | tasks 分享 | revoke 分享 [--guest 名字或序号]');
+  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full [--tasks]] | key 分享 [--guest 名字] | reopen 分享 | list | tasks 分享 [--keep-days 天数] | revoke 分享 [--guest 名字或序号]');
 }

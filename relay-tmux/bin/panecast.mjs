@@ -36,7 +36,7 @@ async function main() {
   panecast share create 名称 --full --tasks  再加任务接口：程序用密钥提交任务，排队送进窗口，回答完返回结果
   panecast share key 分享 [--guest 名字]   给同一个窗口再发一把密钥
   panecast share reopen 分享               重新打开分享窗口（旧窗口打开后才能用退格等编辑键）
-  panecast share list | tasks 分享 | revoke 分享 [--guest 名字或序号]
+  panecast share list | tasks 分享 [--keep-days 天数] | revoke 分享 [--guest 名字或序号]
 
 cmux 只允许自己终端里的程序连接时，在 cmux 终端里运行一次 panecast restart 即可授权网关；
 也可以在 cmux 设置中把「套接字控制模式」改为「自动化模式」。

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { RpcError } from '../tmux.mjs';
 import { writeJSON } from '../push.mjs';
@@ -51,6 +51,17 @@ const MARKER = /【任务 (t[0-9a-f]{10})】/;
  * prompt Enter does nothing.
  */
 const ENTER_RETRY_MS = [10_000, 25_000];
+/**
+ * Each task starts from an empty conversation unless it asks to continue:
+ * `/clear` ends the session (SessionEnd "clear") and starts the next
+ * (SessionStart "clear"), and the task goes in after that.
+ */
+const CLEAR_RETRY_MS = 10_000;
+const CLEAR_TIMEOUT_MS = 30_000;
+/** Task folders (attachments and results) are deleted this many days after the task ends; 0 keeps them. */
+export const TASK_KEEP_DAYS = 7;
+const CLEAN_EVERY_MS = 3600_000;
+const TASK_ID = /^t[0-9a-f]{10}$/;
 
 /**
  * The hook command: appends the JSON Claude passes on stdin, one line, to the
@@ -241,7 +252,8 @@ export class ShareTasks {
       for (const file of files) attachments.push(`tasks/${id}/${(await saveUpload(folder, file.name, file.data)).filename}`);
     }
     return this.exclusive(share, async (state) => {
-      const task = { id, status: 'queued', text, attachments, created_at: new Date(this.now()).toISOString(), started_at: null, finished_at: null, result: null, error: null, files: [] };
+      const task = { id, status: 'queued', text, attachments, ...(params.continue === true ? { continue: true } : {}),
+        created_at: new Date(this.now()).toISOString(), started_at: null, finished_at: null, result: null, error: null, files: [] };
       state.tasks.push(task);
       await this.save(share, state);
       queueMicrotask(() => { void this.tick().catch(() => {}); });
@@ -320,7 +332,7 @@ export class ShareTasks {
   async advance(share, state) {
     let changed = false;
     const surfaceId = share.surface_id;
-    if (state.terminal?.surfaceId !== surfaceId) state.terminal = { surfaceId, offset: 0, ready: false, busy: null, sessionId: null, transcript: null, endedAt: null, startedWaiting: null };
+    if (state.terminal?.surfaceId !== surfaceId) state.terminal = { surfaceId, offset: 0, ready: false, busy: null, sessionId: null, transcript: null, endedAt: null, startedWaiting: null, dirty: false, clearing: null };
     const terminal = state.terminal;
     const read = await readHookEvents(join(taskEventsDirectory(this.config, share), `${surfaceFileName(surfaceId)}.jsonl`), terminal.offset);
     terminal.offset = read.offset;
@@ -356,18 +368,39 @@ export class ShareTasks {
     if (terminal.busy?.pasted && !state.tasks.some((task) => task.status === 'sending')) terminal.busy = null;
     const next = state.tasks.find((task) => task.status === 'queued');
     if (next && !state.tasks.some((task) => task.status === 'sending' || task.status === 'running')) changed = await this.dispatch(share, state, terminal, next) || changed;
+    if (this.now() - (state.cleanedAt ?? 0) > CLEAN_EVERY_MS) { state.cleanedAt = this.now(); changed = await this.clean(share, state) || changed; }
     if (changed) await this.save(share, state);
+  }
+
+  /** Deletes the folders of tasks that ended more than the share's keep days ago. Only tasks/<task id> folders, never links. */
+  async clean(share, state) {
+    const days = Number.isFinite(share.task_keep_days) ? share.task_keep_days : TASK_KEEP_DAYS;
+    if (!(days > 0)) return false;
+    const root = join(share.directory, 'tasks');
+    let entries; try { entries = await readdir(root, { withFileTypes: true }); } catch { return false; }
+    const cutoff = this.now() - days * 86_400_000;
+    let changed = false;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !TASK_ID.test(entry.name)) continue;
+      const record = state.tasks.find((task) => task.id === entry.name);
+      if (record && !FINAL.has(record.status)) continue;
+      const ended = Date.parse(record?.finished_at ?? record?.created_at ?? '') || (await stat(join(root, entry.name)).catch(() => null))?.mtimeMs;
+      if (!ended || ended > cutoff) continue;
+      await rm(join(root, entry.name), { recursive: true, force: true }).catch(() => {});
+      if (record) { Object.assign(record, { files: [], files_removed_at: new Date(this.now()).toISOString() }); changed = true; }
+    }
+    return changed;
   }
 
   apply(state, terminal, event) {
     const name = event.hook_event_name;
     if (typeof event.transcript_path === 'string') terminal.transcript = event.transcript_path;
     if (typeof event.session_id === 'string') terminal.sessionId = event.session_id;
-    if (name === 'SessionStart') { Object.assign(terminal, { ready: true, busy: null, endedAt: null }); return false; }
+    if (name === 'SessionStart') { Object.assign(terminal, { ready: true, busy: null, endedAt: null, dirty: false, clearing: null }); return false; }
     // /clear ends one session and starts the next right away.
     if (name === 'SessionEnd') { Object.assign(terminal, { ready: false, busy: null, endedAt: event.reason === 'clear' ? null : this.now() }); return false; }
     if (name === 'UserPromptSubmit') {
-      terminal.busy = { promptId: event.prompt_id ?? null };
+      Object.assign(terminal, { busy: { promptId: event.prompt_id ?? null }, dirty: true });
       const id = MARKER.exec(typeof event.prompt === 'string' ? event.prompt.slice(0, 400) : '')?.[1];
       // The first prompt after a paste is the task's even if Claude shortened its text.
       const task = state.tasks.find((entry) => entry.id === id && (entry.status === 'sending' || (entry.status === 'failed' && entry.prompt_id == null && entry.sent_at)))
@@ -422,12 +455,33 @@ export class ShareTasks {
     }
     delete task.waiting;
     const target = { workspace_id: share.workspace_id, surface_id: share.surface_id };
+    if (!task.continue && terminal.dirty) return await this.clear(task, terminal, client, target) || changed;
     await client.call('terminal.paste', { ...target, text: taskPrompt(task) });
     Object.assign(task, { status: 'sending', sent_at: new Date(this.now()).toISOString(), surface_id: share.surface_id, enters: 1 });
     if (this.settleMs) await new Promise((resolve) => setTimeout(resolve, this.settleMs));
     await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
     // Claude takes it as a new turn; until the hook says so the window counts as busy.
     terminal.busy = { promptId: null, pasted: true };
+    return true;
+  }
+
+  /** Types /clear before a task that starts fresh; the task goes in once Claude reports the new session. */
+  async clear(task, terminal, client, target) {
+    if (!terminal.clearing) {
+      await client.call('surface.send_text', { ...target, text: '/clear' });
+      terminal.clearing = { at: this.now(), enters: 1 };
+      if (this.settleMs) await new Promise((resolve) => setTimeout(resolve, this.settleMs));
+      await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
+      return false;
+    }
+    const waited = this.now() - terminal.clearing.at;
+    if (waited > CLEAR_RETRY_MS && terminal.clearing.enters < 2) {
+      terminal.clearing.enters++;
+      await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
+    }
+    if (waited <= CLEAR_TIMEOUT_MS) return false;
+    terminal.clearing = null;
+    Object.assign(task, { status: 'failed', error: '清空上一段对话没有成功（窗口可能在等你确认什么），请看一下窗口', finished_at: new Date(this.now()).toISOString() });
     return true;
   }
 

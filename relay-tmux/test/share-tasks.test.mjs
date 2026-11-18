@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -50,6 +50,12 @@ async function fixture(t, { surfaces = ['S-1'] } = {}) {
 const start = (fx, surface = 'S-1', session = 'sess-1') => fx.hook(surface, { hook_event_name: 'SessionStart', session_id: session, transcript_path: join(fx.root, `${session}.jsonl`), source: 'startup' });
 const submitted = (fx, prompt, promptId, surface = 'S-1') => fx.hook(surface, { hook_event_name: 'UserPromptSubmit', session_id: 'sess-1', transcript_path: join(fx.root, 'sess-1.jsonl'), prompt_id: promptId, prompt });
 const stopped = (fx, promptId, message, surface = 'S-1') => fx.hook(surface, { hook_event_name: 'Stop', session_id: 'sess-1', prompt_id: promptId, last_assistant_message: message });
+/** What /clear does in the window: the session ends and a new one starts. */
+const cleared = async (fx, session = 'sess-2', surface = 'S-1') => {
+  await fx.hook(surface, { hook_event_name: 'SessionEnd', session_id: 'sess-1', reason: 'clear' });
+  await fx.hook(surface, { hook_event_name: 'SessionStart', session_id: session, transcript_path: join(fx.root, `${session}.jsonl`), source: 'clear' });
+};
+const clears = (fx) => fx.calls.filter((c) => c.method === 'surface.send_text' && c.params.text === '/clear').length;
 
 test('the hook appends what Claude passes to the file of its own terminal and prints nothing', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'panecast-task-hook-'));
@@ -137,6 +143,14 @@ test('tasks go into the window one at a time, each when Claude is idle, and come
   assert.deepEqual(done.files, [{ path: `tasks/${first.id}/out/结果.txt`, size: 6 }]);
   assert.equal(done.prompt_id, undefined, 'internal fields stay inside');
 
+  // The next task starts from an empty conversation: /clear first (the first task went into a fresh
+  // window without one), the task once the new session starts.
+  assert.equal(clears(fx), 1);
+  assert.deepEqual(fx.calls.slice(-2).map((c) => [c.method, c.params.text ?? c.params.key]), [['surface.send_text', '/clear'], ['surface.send_key', 'enter']]);
+  assert.equal(fx.pastes().length, 1);
+  await fx.tasks.tick();
+  assert.equal(clears(fx), 1, '/clear is typed once');
+  await cleared(fx);
   await fx.tasks.tick();
   assert.equal(fx.pastes().length, 2);
   assert.ok(fx.pastes()[1].params.text.startsWith(`【任务 ${second.id}】\n第二个任务`));
@@ -152,6 +166,9 @@ test('the owner\'s own prompt in the window holds the queue until its turn ends'
   await fx.tasks.tick();
   assert.equal(fx.pastes().length, 0);
   await stopped(fx, 'owner-1', '回答了主人');
+  await fx.tasks.tick();
+  assert.equal(clears(fx), 1, 'the owner\'s conversation is cleared before the task');
+  await cleared(fx);
   await fx.tasks.tick();
   assert.equal(fx.pastes().length, 1);
   assert.equal((await fx.tasks.get(fx.share, task.id)).status, 'sending');
@@ -174,6 +191,7 @@ test('a task interrupted with Esc fails with what Claude wrote, and the queue go
   await fx.tasks.tick();
   const failed = await fx.tasks.get(fx.share, task.id);
   assert.deepEqual([failed.status, failed.result], ['failed', '先看看目录']);
+  await cleared(fx);
   await fx.tasks.tick();
   assert.equal((await fx.tasks.get(fx.share, next.id)).status, 'sending');
 });
@@ -297,4 +315,73 @@ test('the guest key of a task share submits, waits for and lists tasks; other sh
   assert.equal((await call('p', 'relay.info')).share.tasks, undefined);
   await assert.rejects(call('p', 'task.submit', { text: 'x' }), { code: 'tasks_disabled' });
   assert.deepEqual(calls, [['submit', 'st1', '做点事'], ['get', 't1', 5]]);
+});
+
+test('a task that continues goes on in the previous conversation without a clear', async (t) => {
+  const fx = await fixture(t);
+  await start(fx);
+  const first = await fx.tasks.submit(fx.share, { text: '先分析' });
+  const second = await fx.tasks.submit(fx.share, { text: '按分析结果改', continue: true });
+  assert.equal(second.continue, true);
+  await fx.tasks.tick();
+  await submitted(fx, fx.pastes()[0].params.text, 'p1');
+  await stopped(fx, 'p1', '分析完了');
+  await fx.tasks.tick();
+  await fx.tasks.tick();
+  assert.equal(clears(fx), 0);
+  assert.equal(fx.pastes().length, 2);
+  assert.equal((await fx.tasks.get(fx.share, first.id)).status, 'done');
+});
+
+test('a clear Claude does not take gets one more Enter, then fails the task without pasting it', async (t) => {
+  const fx = await fixture(t);
+  await start(fx);
+  await submitted(fx, '主人的问题', 'owner');
+  await stopped(fx, 'owner', '答');
+  const task = await fx.tasks.submit(fx.share, { text: '任务' });
+  await fx.tasks.tick();
+  const enters = () => fx.calls.filter((c) => c.method === 'surface.send_key' && c.params.key === 'enter').length;
+  assert.deepEqual([clears(fx), enters()], [1, 1]);
+  fx.advance(11_000);
+  await fx.tasks.tick();
+  assert.deepEqual([clears(fx), enters()], [1, 2]);
+  fx.advance(20_000);
+  await fx.tasks.tick();
+  const failed = await fx.tasks.get(fx.share, task.id);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /清空/);
+  assert.equal(fx.pastes().length, 0);
+});
+
+test('task folders are deleted some days after their task ends, and nothing else is', async (t) => {
+  const fx = await fixture(t);
+  const keep = await fx.tasks.submit(fx.share, { text: '还在排队', attachments: [{ name: 'a.png', data_base64: PNG }] });
+  const tasks = join(fx.share.directory, 'tasks');
+  const old = 't00000000aa', recent = 't00000000bb', unknown = 't00000000cc';
+  for (const id of [old, recent, unknown, 'notes']) await mkdir(join(tasks, id, 'out'), { recursive: true });
+  const outside = join(fx.root, 'outside');
+  await mkdir(outside);
+  await writeFile(join(outside, 'keep.txt'), 'x');
+  await symlink(outside, join(tasks, 't00000000dd'));
+  const day = 86_400_000, now = Date.parse('2026-11-18T10:00:00Z');
+  const state = await fx.tasks.state(fx.share);
+  state.tasks.push({ id: old, status: 'done', finished_at: new Date(now - 8 * day).toISOString(), files: [{ path: `tasks/${old}/out/a.txt`, size: 1 }] },
+    { id: recent, status: 'done', finished_at: new Date(now - 2 * day).toISOString(), files: [] });
+  const ancient = new Date(now - 30 * day);
+  await utimes(join(tasks, unknown), ancient, ancient);
+  state.cleanedAt = 0;
+  await fx.tasks.tick();
+  assert.deepEqual((await readdir(tasks)).sort(), [keep.id, 'notes', recent, 't00000000dd'].sort());
+  assert.equal(await readFile(join(outside, 'keep.txt'), 'utf8'), 'x', 'a link is never followed');
+  const cleaned = await fx.tasks.get(fx.share, old);
+  assert.deepEqual(cleaned.files, []);
+  assert.ok(cleaned.files_removed_at);
+  // 0 keeps everything.
+  const shares = await fx.shares.read();
+  shares[0].task_keep_days = 0;
+  await fx.shares.write(shares);
+  state.tasks.find((task) => task.id === recent).finished_at = new Date(now - 100 * day).toISOString();
+  state.cleanedAt = 0;
+  await fx.tasks.tick();
+  assert.ok((await readdir(tasks)).includes(recent));
 });

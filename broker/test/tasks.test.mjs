@@ -51,14 +51,14 @@ test("a share key opens a guest session for each task call and nothing else", as
     });
     const headers = { authorization: `Bearer ${fx.key}`, "content-type": "application/json" };
     const image = `data:image/png;base64,${Buffer.from("png").toString("base64")}`;
-    const submitted = await fetch(`${fx.baseURL}/v1/tasks?wait=5`, { method: "POST", headers, body: JSON.stringify({ text: "看图", images: [{ data: image }] }) });
+    const submitted = await fetch(`${fx.baseURL}/v1/tasks?wait=5`, { method: "POST", headers, body: JSON.stringify({ text: "看图", images: [{ data: image }], continue: true, other: "dropped" }) });
     assert.equal(submitted.status, 201);
     assert.deepEqual(await submitted.json(), { task: { id: "t0000000001", status: "done", result: "好了" } });
     // One session: opened as the guest of its share, hello first, then submit and the wait.
     assert.deepEqual(computer.seen.opened.map((frame) => [frame.device_id, frame.guest]), [[fx.guest.device_id, { share_id: "st1" }]]);
     assert.equal(computer.seen.hellos[0].protocolVersion, 1);
     assert.deepEqual(computer.seen.calls.map((call) => call.method), ["task.submit", "task.get"]);
-    assert.deepEqual(computer.seen.calls[0].params, { text: "看图", attachments: [{ data: image }] });
+    assert.deepEqual(computer.seen.calls[0].params, { text: "看图", attachments: [{ data: image }], continue: true });
     assert.deepEqual(computer.seen.calls[1].params, { task_id: "t0000000001", wait_s: 5 });
     for (let i = 0; i < 50 && computer.seen.closed.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
     assert.equal(computer.seen.closed.length, 1, "the session closes after the request");
