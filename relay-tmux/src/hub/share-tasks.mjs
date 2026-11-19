@@ -57,20 +57,30 @@ export function taskAgent(value) {
   if (!agent) throw new RpcError('invalid_params', 'agent 只能是 claude、codex 或 agy');
   return agent;
 }
-/** The idle prompt of a TUI, without a menu or a question in front of it. */
-const idleScreen = (refuse) => (text) => /\? for shortcuts/.test(text) && !refuse.test(text);
+/** The idle prompt of a TUI: no turn running, no menu or question in front of it. Codex shows "? for shortcuts" while it works too. */
+const idleScreen = (refuse, busy) => (text) => /\? for shortcuts/.test(text) && !refuse.test(text) && !busy.test(text);
+const CODEX_BUSY = /esc to interrupt/i;
+const AGY_BUSY = /esc to cancel/i;
 /**
  * How each agent's window is driven.
  * - `clear`: the command that starts an empty conversation. Claude confirms it
  *   with SessionStart "clear"; Codex (/new) and agy (/clear) say nothing until
  *   the next prompt, so their cleared screen (no task mark left) confirms it.
  * - `lazy`: the session (and SessionStart) begins only with the first prompt.
+ * - `busy`: the screen while a turn runs. Codex can still be ending its turn
+ *   just after its Stop hook, and then drops /new with `refused`; agy's
+ *   /clear would cancel a running turn. Their clear waits for an idle screen,
+ *   and a /new Codex dropped is typed again.
  */
 const AGENTS = {
   claude: { label: 'Claude', clear: '/clear', lazy: false },
-  codex: { label: 'Codex', clear: '/new', lazy: true, idle: idleScreen(/Update now|trust this|Do you trust/i) },
-  agy: { label: 'Antigravity', clear: '/clear', lazy: true, idle: idleScreen(/trust the contents|Do you trust/i), interrupted: /Interrupted · What should/ },
+  codex: { label: 'Codex', clear: '/new', lazy: true, busy: CODEX_BUSY, refused: /is disabled while a task is in progress/g,
+    idle: idleScreen(/Update now|trust this|Do you trust/i, CODEX_BUSY) },
+  agy: { label: 'Antigravity', clear: '/clear', lazy: true, busy: AGY_BUSY, idle: idleScreen(/trust the contents|Do you trust/i, AGY_BUSY), interrupted: /Interrupted · What should/ },
 };
+const occurrences = (pattern, text) => (pattern ? text.match(pattern)?.length ?? 0 : 0);
+/** How many times a clear command is typed before the task fails. */
+const CLEAR_TYPED_MAX = 3;
 const CLEAR_SETTLE_MS = 1500;
 const TASK_MARK = /【任务 t[0-9a-f]{10}】/;
 const INTERRUPTED = /^\[Request interrupted by user/;
@@ -702,24 +712,30 @@ export class ShareTasks {
   /** Types the agent's clear command before a task that starts fresh; the task goes in once the conversation is empty. */
   async clear(share, task, lane, client, target) {
     const profile = AGENTS[lane.agent];
-    if (!lane.clearing) {
-      await client.call('surface.send_text', { ...target, text: profile.clear });
-      lane.clearing = { at: this.now(), enters: 1 };
-      if (this.settleMs) await sleep(this.settleMs);
-      await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
-      return false;
+    const clearing = lane.clearing ??= { since: this.now(), at: null, enters: 0, typed: 0, refusals: 0 };
+    const screen = profile.lazy ? await this.screen(share, lane).catch(() => '') : '';
+    if (clearing.at === null) {
+      if (!profile.busy?.test(screen)) {
+        await client.call('surface.send_text', { ...target, text: profile.clear });
+        Object.assign(clearing, { at: this.now(), enters: 1, typed: clearing.typed + 1, refusals: occurrences(profile.refused, screen) });
+        if (this.settleMs) await sleep(this.settleMs);
+        await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
+        return false;
+      }
+    } else {
+      const waited = this.now() - clearing.at;
+      // Codex and agy report nothing for a clear: their screen shows it done, no task mark left above an idle prompt.
+      if (profile.lazy && waited >= this.clearSettleMs) {
+        if (profile.idle(screen) && !TASK_MARK.test(screen)) { Object.assign(lane, { dirty: false, clearing: null }); return false; }
+        // Dropped while the turn was still ending: typed again once the screen is idle.
+        if (occurrences(profile.refused, screen) > clearing.refusals && clearing.typed < CLEAR_TYPED_MAX) { clearing.at = null; return false; }
+      }
+      if (waited > CLEAR_RETRY_MS && clearing.enters < 2) {
+        clearing.enters++;
+        await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
+      }
     }
-    const waited = this.now() - lane.clearing.at;
-    // Codex and agy report nothing for a clear: their screen shows it done, no task mark left above an idle prompt.
-    if (profile.lazy && waited >= this.clearSettleMs) {
-      const screen = await this.screen(share, lane).catch(() => '');
-      if (profile.idle(screen) && !TASK_MARK.test(screen)) { Object.assign(lane, { dirty: false, clearing: null }); return false; }
-    }
-    if (waited > CLEAR_RETRY_MS && lane.clearing.enters < 2) {
-      lane.clearing.enters++;
-      await client.call('surface.send_key', { ...target, key: 'enter' }).catch(() => {});
-    }
-    if (waited <= CLEAR_TIMEOUT_MS) return false;
+    if (this.now() - clearing.since <= CLEAR_TIMEOUT_MS) return false;
     lane.clearing = null;
     Object.assign(task, { status: 'failed', error: '清空上一段对话没有成功（窗口可能在等你确认什么），请看一下窗口', finished_at: new Date(this.now()).toISOString() });
     return true;

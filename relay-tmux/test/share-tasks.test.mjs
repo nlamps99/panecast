@@ -472,6 +472,61 @@ test('a Codex task opens a Codex window beside Claude\'s, and Codex tasks clear 
   assert.deepEqual([interrupted.status, interrupted.error], ['failed', '任务在窗口里被中断了']);
 });
 
+test('a clear waits until the Codex or agy turn has ended, and a /new Codex drops is typed again', async (t) => {
+  const fx = await fixture(t);
+  const first = await fx.tasks.submit(fx.share, { text: '第一个', agent: 'codex' });
+  await fx.tasks.tick();
+  fx.screens['S-NEW-1'] = IDLE.codex;
+  await fx.tasks.tick();
+  const text = pastesTo(fx, 'S-NEW-1')[0].params.text;
+  await fx.hook('S-NEW-1', { hook_event_name: 'UserPromptSubmit', session_id: 'c1', turn_id: 'turn-1', prompt: text });
+  await fx.tasks.tick();
+  const second = await fx.tasks.submit(fx.share, { text: '第二个', agent: 'codex' });
+  // Codex's Stop hook can come while its screen still shows the turn running ("? for shortcuts" too).
+  await fx.hook('S-NEW-1', { hook_event_name: 'Stop', session_id: 'c1', turn_id: 'turn-1', last_assistant_message: '好了' });
+  const old = `› ${text}\n• 好了\n`;
+  fx.screens['S-NEW-1'] = `${old}• Working (5s • esc to interrupt)\n${IDLE.codex}`;
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, first.id)).status, 'done');
+  assert.equal(typed(fx, 'S-NEW-1', '/new'), 0, 'not typed while Codex is working');
+  fx.screens['S-NEW-1'] = old + IDLE.codex;
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-1', '/new'), 1);
+  // Codex dropped it anyway: typed once more, not just Enter on an empty prompt.
+  fx.screens['S-NEW-1'] = `${old}■ '/new' is disabled while a task is in progress.\n${IDLE.codex}`;
+  fx.advance(2000);
+  await fx.tasks.tick();
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-1', '/new'), 2);
+  fx.advance(2000);
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-1', '/new'), 2, 'the same refusal on screen is not counted twice');
+  fx.screens['S-NEW-1'] = IDLE.codex;
+  await fx.tasks.tick();
+  await fx.tasks.tick();
+  assert.equal(pastesTo(fx, 'S-NEW-1').length, 2);
+  assert.equal((await fx.tasks.get(fx.share, second.id)).status, 'sending');
+
+  // agy's /clear would cancel a running turn: it waits for "esc to cancel" to go.
+  const agyTask = await fx.tasks.submit(fx.share, { text: 'agy 第一个', agent: 'agy' });
+  await fx.tasks.tick();
+  fx.screens['S-NEW-2'] = IDLE.agy;
+  await fx.tasks.tick();
+  const agyText = pastesTo(fx, 'S-NEW-2')[0].params.text;
+  const agy = (event) => fx.hook('S-NEW-2', { conversationId: 'g1', transcriptPath: join(fx.root, 'g1.jsonl'), fullyIdle: true, ...event });
+  await agy({ hookEventName: 'SessionStart', lastUserInput: agyText });
+  await agy({ hookEventName: 'Stop', lastUserInput: agyText });
+  await fx.tasks.tick();
+  assert.equal((await fx.tasks.get(fx.share, agyTask.id)).status, 'done');
+  await fx.tasks.submit(fx.share, { text: 'agy 第二个', agent: 'agy' });
+  fx.screens['S-NEW-2'] = `> ${agyText}\n  Generating...\nesc to cancel`;
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-2', '/clear'), 0);
+  fx.screens['S-NEW-2'] = `> ${agyText}\n${IDLE.agy}`;
+  await fx.tasks.tick();
+  assert.equal(typed(fx, 'S-NEW-2', '/clear'), 1);
+});
+
 test('agy tasks: the first prompt comes with SessionStart, later ones from the transcript, and the reply from the transcript', async (t) => {
   const fx = await fixture(t);
   const transcript = join(fx.root, 'agy-transcript.jsonl');

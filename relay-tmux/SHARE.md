@@ -71,7 +71,8 @@ curl -s 'https://panecast.drinklake.com/cmux-remote/v1/tasks?wait=300' -H "Autho
 - 三个 agent 各有一个窗口，都在这个分享的工作区里：Claude 是第一个终端，Codex 和 agy 的窗口在它们的第一个任务来时打开（访客在 Panecast 里也看得到）。每个 agent 各排各的队，不同 agent 的任务同时做。都是完整权限：Codex 用 `--dangerously-bypass-approvals-and-sandbox`，agy 用 `--dangerously-skip-permissions` 并只在本次会话信任分享目录。
 - Codex：钩子在启动命令里（`-c hooks=…`，加 `--dangerously-bypass-hook-trust` 跳过钩子审核），关掉 memories 和启动时的更新提示（它的默认选项会直接升级 Codex）。直接用 Codex 的绝对路径，不经过 cmux 给终端里 `codex` 套的那层包装。清空对话用 `/new`；按 Esc 有 Interrupt 钩子。
 - agy（反重力 CLI 1.5.11）：只能从插件加载钩子，所以网关第一次开 agy 窗口时装一个插件 `panecast-tasks`（`~/.gemini/config/plugins/panecast-tasks`）。它的钩子只在设置了 `PANECAST_TASK_EVENTS` 的窗口里记录，你平时用 agy 不受影响。agy 只在会话的第一条消息时报告（随 SessionStart），Stop 不带回复，按 Esc 不报告：后续消息和回复从 agy 自己的 transcript 读，中断从屏幕上的「Interrupted」看。清空对话用 `/clear`。
-- Codex 和 agy 要等第一条消息才开始会话，所以新窗口和清空后的窗口，以屏幕上出现空闲输入框（「? for shortcuts」）、并且没有任务标记为准。
+- Codex 和 agy 要等第一条消息才开始会话，所以新窗口和清空后的窗口，以屏幕上出现空闲输入框（「? for shortcuts」）、没有在忙、并且没有任务标记为准。
+- 清空命令要等屏幕上不再显示在忙（Codex 是「esc to interrupt」，它忙的时候也显示「? for shortcuts」；agy 是「esc to cancel」）再输入：Codex 的 Stop 钩子触发后，有时这一轮还没真正结束，这时的 `/new` 会被丢掉（「'/new' is disabled while a task is in progress」），网关看到这句就重新输入，最多 3 次；agy 忙的时候收到 `/clear` 会直接打断这一轮。
 - 同一个窗口一次只做一个任务。每个任务默认从空白对话开始：网关先在窗口里输入 `/clear`，等 Claude 报告新会话开始（SessionEnd/SessionStart 的 `clear`）再送任务，所以上下文不会越积越多，任务之间也不会串。`"continue": true` 的任务不清空，接着上一个任务的对话（适合「先分析，再按结果改」）。你自己在窗口里聊的内容也会在下一个任务前被清空（之前的对话仍可用 `/resume` 找回）。你在窗口里提问时，任务等你这一轮结束再送。
 - 任务窗口里的 Claude 关掉了自动记忆（设置 `autoMemoryEnabled: false`）：否则任务里说「记住……」时它会写进 `~/.claude/projects/<目录>/memory`，`/clear` 之后照样读得到，任务之间又串起来了。你的 `~/.claude/CLAUDE.md` 等说明文件照常生效。
 - 任务结束 7 天后，它在分享目录 `tasks/<编号>/` 下的文件夹（附件和产出）自动删除，任务记录还在，`files` 变为空、带 `files_removed_at`。天数用 `panecast share tasks 名称 --keep-days 天数` 改，0 表示一直保留。
