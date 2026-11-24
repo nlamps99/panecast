@@ -405,6 +405,11 @@ test('agents are claude, codex or agy, and the Codex and agy windows start with 
   const agy = agentCommand('agy', { binary: '/u/agy', events: '/st/e', directory: '/share' });
   assert.equal(agy, `exec /usr/bin/env PANECAST_TASK_EVENTS='/st/e' '/u/agy' --dangerously-skip-permissions --settings '{"trustedWorkspaces":["/share"]}'`);
   assert.deepEqual(Object.keys(agyHooks().panecast), ['SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd']);
+  // A plain window (no events folder): full access and a model, no task hooks; Codex still skips the update prompt.
+  assert.equal(agentCommand('agy', { binary: '/u/agy', directory: '/share', model: 'gemini-4-carbon-high' }),
+    `exec '/u/agy' --dangerously-skip-permissions --model 'gemini-4-carbon-high' --settings '{"trustedWorkspaces":["/share"]}'`);
+  assert.equal(agentCommand('codex', { binary: '/c', directory: '/share', model: 'gpt-6' }),
+    "exec '/c' --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false --model 'gpt-6'");
 });
 
 test('the shared hook records only where a task window set its folder', async (t) => {

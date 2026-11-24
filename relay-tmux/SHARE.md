@@ -82,6 +82,20 @@ curl -s 'https://panecast.drinklake.com/cmux-remote/v1/tasks?wait=300' -H "Autho
 - 送进窗口：先粘贴，停 0.4 秒再单独按回车（多行粘贴时随粘贴一起到的回车会被 Claude 吞掉）；10 秒和 25 秒时没看到 Claude 接收就再按一次回车，不会重复粘贴；60 秒还没开始就标为失败（之后 Claude 又接收了，任务会恢复）。
 - 密钥就是完整权限分享的密钥：拿到它的程序能让这台电脑做任何事。broker 每个请求开一个访客连接、调一次方法就关，不保存任务；电脑离线时返回 503。
 
+## 加 agy、Codex 终端（完整权限分享）
+
+```sh
+panecast share add 完整权限 --agent agy --model gemini-4-carbon-high   # 反重力 CLI，模型 Gemini 4 Carbon 最高档
+panecast share add 完整权限 --agent codex [--model 模型]
+panecast share add 完整权限                                            # 再加一个同样设置的 Claude 终端
+```
+
+- 在分享的工作区里再开一个终端，并记进分享的终端列表：访客在 Panecast 里看得到、能操作。算在 5 个终端里，不抢你在 cmux 里的焦点。
+- 只能加到完整权限分享：agy 用 `--dangerously-skip-permissions` 启动，只在这次会话信任分享目录；Codex 用 `--dangerously-bypass-approvals-and-sandbox`，并关掉启动时的更新提示（它的默认选项会直接升级 Codex）。这两个都没有分享用的沙箱，受限和联网分享会拒绝。没有任务接口的钩子，就是普通的窗口。
+- 模型用 `agy models` 列出的 ID；Carbon 只有 low、medium、high 三档。
+- 访客点「新建」开的仍然是 Claude。这个终端在 cmux 里关掉后就不再属于分享；`reopen` 只重开第一个 Claude 窗口。
+- agy 的欢迎画面会显示这台电脑登录的 Google 账号，访客看得到。
+
 ## 访客能做什么
 
 对方的连接只能访问这个分享的终端：

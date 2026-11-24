@@ -307,21 +307,23 @@ export async function agentBinary(agent) {
 }
 
 /**
- * The command a Codex or agy task window starts with, full access like the
- * share's Claude. Codex takes its hooks on the command line; it must skip
- * the hook review and the update prompt (whose default answer installs an
- * update), and its memories stay off. agy trusts the shared directory for
- * this session only.
+ * The command a Codex or agy window starts with, full access like the
+ * share's Claude. Codex always skips the update prompt (whose default answer
+ * installs an update); agy trusts the shared directory for this session only.
+ * A task window (`events`) reports its turns: Codex takes its hooks on the
+ * command line, must skip the hook review, and keeps its memories off.
+ * `model`: a name as `codex` or `agy models` lists it.
  */
-export function agentCommand(agent, { binary, events, directory }) {
-  const env = ['exec', '/usr/bin/env', `PANECAST_TASK_EVENTS=${quote(events)}`];
+export function agentCommand(agent, { binary, events = null, directory, model = null }) {
+  const start = events ? ['exec', '/usr/bin/env', `PANECAST_TASK_EVENTS=${quote(events)}`, quote(binary)] : ['exec', quote(binary)];
+  const chosen = model ? ['--model', quote(model)] : [];
   if (agent === 'codex') {
     const handler = `{type="command",command=${JSON.stringify(ENV_HOOK_COMMAND)}}`;
     const hooks = `hooks={${[...HOOK_EVENTS, 'Interrupt'].map((event) => `${event}=[{hooks=[${handler}]}]`).join(',')}}`;
-    return [...env, quote(binary), '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--disable', 'memories',
-      '-c', 'check_for_update_on_startup=false', '-c', quote(hooks)].join(' ');
+    return [...start, '--dangerously-bypass-approvals-and-sandbox', ...(events ? ['--dangerously-bypass-hook-trust', '--disable', 'memories'] : []),
+      '-c', 'check_for_update_on_startup=false', ...(events ? ['-c', quote(hooks)] : []), ...chosen].join(' ');
   }
-  if (agent === 'agy') return [...env, quote(binary), '--dangerously-skip-permissions', '--settings', quote(JSON.stringify({ trustedWorkspaces: [directory] }))].join(' ');
+  if (agent === 'agy') return [...start, '--dangerously-skip-permissions', ...chosen, '--settings', quote(JSON.stringify({ trustedWorkspaces: [directory] }))].join(' ');
   throw new Error(`unknown agent ${agent}`);
 }
 

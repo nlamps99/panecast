@@ -17,7 +17,7 @@ const batchedInput = typeof relayServer.inputItems === 'function';
 const conversationBatch = typeof HubSession.prototype.conversationBatch === 'function';
 import { guestText, guestKey, guestPaste } from '../src/hub/guest-session.mjs';
 import { shareConversationBinding } from '../src/hub/share-binding.mjs';
-import { decodeShareKey, encodeShareKey, PROMPT_HOOK, shareCommand, shareDirectory, shareSettings, ShareStore, BrokerGuests, validName, withPromptHook } from '../src/hub/share.mjs';
+import { addShareTerminal, decodeShareKey, encodeShareKey, PROMPT_HOOK, shareCommand, shareDirectory, shareSettings, ShareStore, BrokerGuests, validName, withPromptHook } from '../src/hub/share.mjs';
 import { spawn } from 'node:child_process';
 
 /** A cmux relay with two workspaces of two terminals each. */
@@ -534,6 +534,36 @@ test('an open-network share adds terminals with the same network', async (t) => 
   await relay.call('g', 'surface.create', { workspace_id: own.workspace_id });
   const command = upstream.calls.find((c) => c.method === 'surface.create').params.initial_command;
   assert.ok(command.includes('WebFetch') && command.includes('--restricted'), command);
+});
+
+test('the owner adds an agy or Codex terminal to a full-access share, and its guests use it too', async (t) => {
+  const previous = process.env.PANECAST_AGY_BIN;
+  process.env.PANECAST_AGY_BIN = '/opt/test/agy';
+  t.after(() => { if (previous === undefined) delete process.env.PANECAST_AGY_BIN; else process.env.PANECAST_AGY_BIN = previous; });
+  const { relay, upstream, store, directory } = await withTerminals(t, { ...SHARE, full: true, prompt_hook: false });
+  const config = { state_directory: join(directory, 'state'),
+    sources: [{ id: 'cmux', type: 'cmux', name: 'cmux', enabled: true, access: 'control', url: upstream.url, token: 'upstream-secret', device_id: 'hub' }] };
+  const [share] = await store.read();
+  await addShareTerminal(config, store, share, { agent: 'agy', model: 'gemini-4-carbon-high' });
+  const call = upstream.calls.find((c) => c.method === 'surface.create');
+  assert.deepEqual({ ...call.params, initial_command: undefined }, { workspace_id: '$1', type: 'terminal', cwd: '/tmp/paper', focus: false, initial_command: undefined });
+  // Full access in the shared folder with the chosen model, and none of a task window's hooks.
+  const command = call.params.initial_command;
+  for (const part of ["/bin/zsh -lc 'exec ", '/opt/test/agy', '--dangerously-skip-permissions', "--model '\\''gemini-4-carbon-high'\\''", '"trustedWorkspaces":["/tmp/paper"]']) assert.ok(command.includes(part), `${part} in ${command}`);
+  assert.ok(!command.includes('PANECAST_TASK_EVENTS'), command);
+  const [after] = await store.read();
+  assert.deepEqual(after.terminals.map((terminal) => [terminal.surface_id, terminal.agent ?? 'claude', terminal.model ?? null]), [['%1', 'claude', null], ['%100', 'agy', 'gemini-4-carbon-high']]);
+  // The guest sees it beside the first window and types into it as into any full-access terminal.
+  let surfaces = [];
+  for (let i = 0; i < 40 && surfaces.length < 2; i++) { ({ surfaces } = await relay.call('g', 'surface.list', { workspace_id: own.workspace_id })); if (surfaces.length < 2) await delay(100); }
+  assert.deepEqual(surfaces.map((s) => s.id), [own.surface_id, scoped('cmux', '%100')]);
+  await relay.call('g', 'surface.send_key', { ...own, surface_id: scoped('cmux', '%100'), key: 'ctrl-g' });
+  assert.deepEqual(upstream.sent().map((c) => [c.params.surface_id, c.params.key]), [['%100', 'ctrl-g']]);
+  // Codex and agy have no sandbox for a confined share; names and models are checked before anything opens.
+  await assert.rejects(addShareTerminal(config, store, { ...share, full: false }, { agent: 'agy' }), /完整权限/);
+  await assert.rejects(addShareTerminal(config, store, share, { agent: 'agy', model: "x' ; rm -rf ~" }), /模型名称无效/);
+  await assert.rejects(addShareTerminal(config, store, share, { agent: 'gpt' }), /--agent/);
+  assert.equal(upstream.calls.filter((c) => c.method === 'surface.create').length, 1);
 });
 
 test('a confined share without its settings adds no terminal', async (t) => {

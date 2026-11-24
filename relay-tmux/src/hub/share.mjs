@@ -9,7 +9,7 @@ import { SourceRegistry } from './registry.mjs';
 import { HubSession } from './session.mjs';
 import { localConversationSource } from './terminal-conversation.mjs';
 import { sharesDirectory, sharesFile, shareTerminals } from './share-binding.mjs';
-import { taskEventsDirectory, taskWindowSettings } from './share-tasks.mjs';
+import { agentBinary, agentCommand, taskEventsDirectory, taskWindowSettings } from './share-tasks.mjs';
 
 export { sharesDirectory, sharesFile, shareTerminals };
 
@@ -243,6 +243,52 @@ export async function shareTerminalCommand(config, share, sessionId) {
   return `/bin/zsh -lc ${quote(shareCommand(await claudeBinary(), settingsPath, { full, web: share.network === 'open', sessionId, tasks }))}`;
 }
 
+/** Agents besides Claude that a full-access share can hold a terminal of. Neither has a sandbox for a confined share. */
+export const SHARE_EXTRA_AGENTS = { codex: 'Codex', agy: 'Antigravity（agy）' };
+const MODEL_NAME = /^[\w.:/-]{1,80}$/;
+
+/**
+ * Opens one more terminal in the share's workspace and lists it with the
+ * share, as a guest's new terminal is, so guests see and use it too. `agent`
+ * is claude (the share's own Claude, with its own session), codex or agy;
+ * `model` is the Codex or agy model, as `agy models` lists it.
+ */
+export async function addShareTerminal(config, store, share, { agent = 'claude', model = null } = {}) {
+  if (agent !== 'claude' && !SHARE_EXTRA_AGENTS[agent]) throw new Error('--agent 需要 claude、codex 或 agy');
+  if (agent !== 'claude' && share.full !== true) throw new Error('Codex 和 agy 没有分享用的沙箱，只能加到完整权限分享（create --full）里');
+  if (model !== null && (agent === 'claude' || !MODEL_NAME.test(model))) throw new Error(agent === 'claude' ? 'Claude 终端跟分享的第一个窗口用同样的设置，不能单独指定模型' : '模型名称无效');
+  const sessionId = agent === 'claude' ? randomUUID() : null;
+  const command = agent === 'claude' ? await shareTerminalCommand(config, share, sessionId)
+    : `/bin/zsh -lc ${quote(agentCommand(agent, { binary: await agentBinary(agent), directory: share.directory, model }))}`;
+  const registry = new SourceRegistry(config.sources ?? []);
+  const session = new HubSession(registry, config, () => {}, () => {}, () => {});
+  try {
+    const client = session.client(share.source_id);
+    let surfaces;
+    try { ({ surfaces = [] } = await client.call('surface.list', { workspace_id: share.workspace_id })); }
+    catch { throw new Error('找不到这个分享的工作区，请先运行 panecast share reopen 重新打开'); }
+    const open = new Set(surfaces.map((surface) => surface.id));
+    const live = shareTerminals(share).filter((terminal) => open.has(terminal.surface_id));
+    if (!live.length) throw new Error('这个分享的工作区里已经没有它的终端了，请先运行 panecast share reopen 重新打开');
+    if (live.length >= SHARE_MAX_TERMINALS) throw new Error(`分享窗口最多 ${SHARE_MAX_TERMINALS} 个终端，请先关掉不用的`);
+    // Never focus: the owner keeps what they are looking at in cmux.
+    const created = await client.call('surface.create', { workspace_id: share.workspace_id, type: 'terminal', cwd: share.directory, initial_command: command, focus: false });
+    const surfaceId = created?.surface_id ?? created?.id;
+    if (typeof surfaceId !== 'string' || !surfaceId) throw new Error('电脑没有返回新终端');
+    try {
+      await store.update(share.id, (entry) => {
+        if (entry.workspace_id !== share.workspace_id) throw new Error('the share moved to another workspace');
+        entry.terminals = [...shareTerminals(entry), { surface_id: surfaceId, ...(sessionId ? { session_id: sessionId } : { agent }), ...(model ? { model } : {}), created_at: new Date().toISOString() }];
+      });
+    } catch {
+      // A terminal the share does not list would be the owner's: close it rather than leave it.
+      await client.call('surface.close', { workspace_id: share.workspace_id, surface_id: surfaceId }).catch(() => {});
+      throw new Error('新终端没能加入分享，已经关掉');
+    }
+    return { surfaceId };
+  } finally { session.dispose(); registry.close(); }
+}
+
 async function claudeBinary() {
   if (process.env.PANECAST_CLAUDE_BIN) return process.env.PANECAST_CLAUDE_BIN;
   const PATH = [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin')].filter(Boolean).join(':');
@@ -374,6 +420,18 @@ export async function shareCLI(args, configPath) {
     console.log(`已为「${share.name}」打开新窗口，访客的密钥不变，连接后就是新窗口。${closed ? '旧窗口已关闭。' : '旧窗口没能关闭，可以在 cmux 里自己关掉。'}`);
     return;
   }
+  if (action === 'add') {
+    const { share } = await store.find(args[1]);
+    if (share.revoked_at) throw new Error('这个分享已停止');
+    const given = flag(args, '--agent') ?? 'claude';
+    const agent = /^anti/i.test(given) ? 'agy' : given.toLowerCase();
+    const model = flag(args, '--model') ?? null;
+    await addShareTerminal(config, store, share, { agent, model });
+    const label = SHARE_EXTRA_AGENTS[agent] ?? 'Claude';
+    console.log(`已在「${shareTitle(share)}」工作区加了一个 ${label} 终端${model ? `（模型 ${model}）` : ''}，目录：${share.directory}`);
+    console.log('访客在 Panecast 里也能看到和操作它。在 cmux 里关掉后它就不再属于这个分享；reopen 也不会重开它。');
+    return;
+  }
   if (action === 'list') {
     const shares = await store.read();
     if (!shares.length) { console.log('还没有分享的窗口。运行 panecast share create 名称 来创建。'); return; }
@@ -429,5 +487,5 @@ export async function shareCLI(args, configPath) {
     if (failed.length) console.log(`有 ${failed.length} 个密钥没能在中转服务器上删除；这台电脑已经拒绝它们，网络恢复后再运行一次 revoke 即可清理。`);
     return;
   }
-  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full [--tasks]] | key 分享 [--guest 名字] | reopen 分享 | list | tasks 分享 [--keep-days 天数] | revoke 分享 [--guest 名字或序号]');
+  throw new Error('用法：panecast share create 名称 [--dir 目录] [--guest 名字] [--allow-domain 域名] [--net | --full [--tasks]] | key 分享 [--guest 名字] | reopen 分享 | add 分享 [--agent claude|codex|agy] [--model 模型] | list | tasks 分享 [--keep-days 天数] | revoke 分享 [--guest 名字或序号]');
 }
