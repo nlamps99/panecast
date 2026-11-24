@@ -409,6 +409,23 @@ test('a guest lists, links and uploads files of the shared directory only', asyn
   assert.equal(await readFile(join(outside, 'id_rsa'), 'utf8'), 'secret');
 });
 
+test('typing and listing go on while a file is still on its way to the file relay', async (t) => {
+  const folder = await realpath(await mkdtemp(join(tmpdir(), 'panecast-shared-'))); t.after(() => rm(folder, { recursive: true, force: true }));
+  await writeFile(join(folder, '论文.docx'), 'paper');
+  let finish;
+  const uploading = new Promise((resolve) => { finish = resolve; });
+  const fileLinks = { link: async (root, path) => { await uploading; return { url: 'https://files.example/x', name: path, path, size: 5, type: 'x', expires_at: '' }; } };
+  const { relay, upstream } = await setup(t, [{ ...SHARE, directory: folder }], { fileLinks });
+  relay.open('g', 'guest-a', { share_id: 's1' });
+  const link = relay.call('g', 'share.file.link', { path: '论文.docx' });
+  await relay.call('g', 'surface.send_text', { ...own, text: '继续写' });
+  await relay.call('g', 'surface.send_key', { ...own, key: 'enter' });
+  assert.deepEqual((await relay.call('g', 'share.files.list')).files.map((f) => f.path), ['论文.docx']);
+  assert.ok(upstream.calls.some((c) => c.method === 'surface.send_text' && c.params?.text === '继续写'), 'the text reached the terminal before the link');
+  finish();
+  assert.equal((await link).url, 'https://files.example/x');
+});
+
 test('a guest uploads a file of any size in chunks kept outside the shared directory', async (t) => {
   const folder = await realpath(await mkdtemp(join(tmpdir(), 'panecast-shared-'))); t.after(() => rm(folder, { recursive: true, force: true }));
   await writeFile(join(folder, '数据.csv'), 'old');

@@ -22,8 +22,15 @@ const bearer = (request) => /^Bearer (.+)$/i.exec(request.headers.authorization 
 /** Reads that change nothing; they may overtake the ordered input lane. */
 export const CONCURRENT_READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.history', 'surface.read_text', 'terminal.replay',
   'terminal.conversation', 'terminal.conversation.batch', 'project.list', 'project.read', 'project.diff', 'relay.info', 'relay.snippets',
-  'relay.diagnostics', 'source.list', 'host.battery']);
+  'relay.diagnostics', 'source.list', 'host.battery', 'share.files.list']);
 const MAX_CONCURRENT_READS = 6;
+/**
+ * Requests that may take minutes: a shared window's file goes to the file
+ * relay before its link exists. They run in a lane of their own, so neither
+ * typing nor reads wait for an upload over a slow network.
+ */
+export const SLOW_REQUESTS = new Set(['share.file.link']);
+const MAX_SLOW_REQUESTS = 2;
 /** The same-user credential the hub leaves for a desktop app on this computer. */
 export const LOCAL_CLIENT_ID = 'panecast-local-gateway';
 const MAX_INPUT_ITEMS = 512, MAX_INPUT_TEXT = 256 * 1024;
@@ -82,26 +89,36 @@ export class RelaySession {
     // session opened here; 100 ms dropped phones on slow networks.
     this.timer = setTimeout(() => { if (!this.hello) close(); }, HELLO_TIMEOUT_MS);
   }
-  dispose() { this.disposed = true; clearTimeout(this.timer); this.subscriptions.clear(); this.history.clear(); this.readWaiters = []; }
+  dispose() { this.disposed = true; clearTimeout(this.timer); this.subscriptions.clear(); this.history.clear(); this.lanes = null; }
   /**
    * Input, subscriptions and every other write run one at a time in arrival
    * order. Pure reads run beside that lane (bounded), so a slow transcript,
-   * history or listing read never holds up the keystrokes queued behind it.
+   * history or listing read never holds up the keystrokes queued behind it;
+   * slow transfers get a small lane of their own.
    */
   receive(text) {
     if (this.hello && !this.disposed) {
       let request; try { request = JSON.parse(text); } catch { this.close(); return; }
-      if (CONCURRENT_READS.has(request?.method)) { void this.concurrently(() => this.handle(request)).catch(() => this.close()); return; }
+      if (this.aside(request)) return;
       this.queue = this.queue.then(() => this.handle(request)).catch(() => this.close());
       return;
     }
     this.queue = this.queue.then(() => this.process(text)).catch(() => this.close());
   }
-  async concurrently(run) {
-    this.reading ??= 0; this.readWaiters ??= [];
-    if (this.reading >= MAX_CONCURRENT_READS) await new Promise((resolve) => this.readWaiters.push(resolve));
-    this.reading++;
-    try { return await run(); } finally { this.reading--; this.readWaiters.shift()?.(); }
+  /** Starts a read or a slow transfer beside the ordered lane; false for everything else. */
+  aside(request) {
+    const method = request?.method;
+    const lane = CONCURRENT_READS.has(method) ? 'reads' : SLOW_REQUESTS.has(method) ? 'slow' : null;
+    if (!lane) return false;
+    void this.concurrently(() => this.handle(request), lane).catch(() => this.close());
+    return true;
+  }
+  async concurrently(run, lane = 'reads') {
+    this.lanes ??= {};
+    const state = this.lanes[lane] ??= { running: 0, waiters: [] };
+    if (state.running >= (lane === 'slow' ? MAX_SLOW_REQUESTS : MAX_CONCURRENT_READS)) await new Promise((resolve) => state.waiters.push(resolve));
+    state.running++;
+    try { return await run(); } finally { state.running--; state.waiters.shift()?.(); }
   }
   async process(text) {
     if (this.disposed) return;
@@ -112,7 +129,7 @@ export class RelaySession {
     }
     // A read that arrived before the hello was processed still must not hold
     // up the ordered lane behind it.
-    if (CONCURRENT_READS.has(request?.method)) { void this.concurrently(() => this.handle(request)).catch(() => this.close()); return; }
+    if (this.aside(request)) return;
     return this.handle(request);
   }
   async handle(request) {
