@@ -38,7 +38,9 @@ class TerminalInputModule : Module() {
         view.setFontSize(size?.toFloat())
       }
       Prop("editable") { view: TerminalInputView, editable: Boolean? ->
-        view.editText.isEnabled = editable ?: true
+        // Disabling the field clears its focus and hides the keyboard; skip no-op updates.
+        val value = editable ?: true
+        if (view.editText.isEnabled != value) view.editText.isEnabled = value
       }
 
       AsyncFunction("focus") { view: TerminalInputView ->

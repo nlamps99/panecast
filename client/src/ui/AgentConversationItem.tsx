@@ -66,5 +66,5 @@ const styles = StyleSheet.create({
   message: { padding: 12, backgroundColor: colors.surface, borderRadius: 12, gap: 8 }, userMessage: { backgroundColor: colors.surfaceRaised },
   bubble: { alignSelf: 'flex-start', maxWidth: '94%' }, userBubble: { alignSelf: 'flex-end', borderTopRightRadius: 4, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border },
   messageText: { color: colors.ink, fontSize: 14, lineHeight: 22 }, code: { color: colors.ink, fontFamily: fonts.mono, fontSize: 12, lineHeight: 19 },
-  contentToggle: { alignSelf: 'flex-start', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surfaceRaised },
+  contentToggle: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surfaceRaised },
 });

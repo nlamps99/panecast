@@ -1,7 +1,7 @@
 import { RpcCallError, type ConnectionStatus } from '../../protocol/connection';
 import type { PushFrame } from '../../protocol/frames';
 import { TerminalSession, type RpcChannel } from '../terminalSession';
-import { mergeTerminalItems, TerminalConversationStore } from '../terminalConversation';
+import { ECHO_EXPIRY_MS, ECHO_WAIT_MS, mergeTerminalItems, settleSubmissions, TerminalConversationStore, type TerminalChatSubmission } from '../terminalConversation';
 import { terminalPrompt } from '../terminalPrompt';
 
 class Channel implements RpcChannel {
@@ -36,8 +36,60 @@ it('sends exact Chinese text and Enter through the selected terminal, then recon
 });
 
 it('preserves a multi-line draft on older gateways instead of submitting each line separately', async () => {
-  expect((await store.send('first line\nsecond line')).status).toBe('not_sent');
+  const receipt = await store.send('first line\nsecond line');
+  expect(receipt.status).toBe('not_sent'); expect(receipt.message).toContain('版本较旧');
   expect(channel.calls.some(c => ['terminal.paste', 'surface.send_text', 'surface.send_key'].includes(c.method))).toBe(false);
+});
+
+it('tells a plain shell to send one line at a time instead of suggesting an update', async () => {
+  channel.snapshot = { available: false, conversation_id: null, provider: 'terminal', items: [] }; await store.refresh();
+  const receipt = await store.send('first line\nsecond line');
+  expect(receipt.status).toBe('not_sent'); expect(receipt.message).toContain('一次只能发一行'); expect(receipt.message).not.toContain('更新');
+});
+
+it('keeps only the latest command in a plain shell and stops polling quickly once it is delivered', async () => {
+  channel.snapshot = { available: false, conversation_id: null, provider: 'terminal', items: [] }; await store.refresh();
+  const timers = jest.spyOn(global, 'setTimeout');
+  try {
+    expect((await store.send('ls')).status).toBe('sent'); await store.refresh();
+    expect((await store.send('pwd')).status).toBe('sent'); await store.refresh();
+    expect(store.getState().submissions.map(item => item.text)).toEqual(['pwd']);
+    expect(timers.mock.calls.at(-1)?.[1]).toBe(5000);
+  } finally { timers.mockRestore(); }
+});
+
+it('polls quickly only while a conversation message waits for its echo', async () => {
+  const timers = jest.spyOn(global, 'setTimeout');
+  const now = jest.spyOn(Date, 'now');
+  try {
+    now.mockReturnValue(1_000_000);
+    expect((await store.send('hello')).status).toBe('sent'); await store.refresh();
+    expect(timers.mock.calls.at(-1)?.[1]).toBe(1200);
+    now.mockReturnValue(1_000_000 + ECHO_WAIT_MS + 1); await store.refresh();
+    expect(timers.mock.calls.at(-1)?.[1]).toBe(5000);
+    expect(store.getState().submissions).toHaveLength(1);
+  } finally { timers.mockRestore(); now.mockRestore(); }
+});
+
+it('settles sent messages by echo, expiry, retry and shell output', () => {
+  const sent = (id: string, text: string, extra: Partial<TerminalChatSubmission> = {}): TerminalChatSubmission => ({ id, text, status: 'sent', at: 0, base: 100, kind: 'conversation', ...extra });
+  const items = [message('echo', 101, 'hello')];
+  expect(settleSubmissions([sent('a', 'hello'), sent('b', 'later')], { conversation: true, items, active: false, now: 1 }).map(item => item.id)).toEqual(['b']);
+  expect(settleSubmissions([sent('a', 'hello', { base: 200 })], { conversation: true, items, active: false, now: 1 })).toHaveLength(1);
+  expect(settleSubmissions([sent('a', 'waiting')], { conversation: true, items: [], active: false, now: ECHO_EXPIRY_MS + 1 })).toHaveLength(0);
+  expect(settleSubmissions([sent('a', 'waiting')], { conversation: true, items: [], active: true, now: ECHO_EXPIRY_MS + 1 })).toHaveLength(1);
+  expect(settleSubmissions([sent('a', 'failed', { status: 'not_sent' })], { conversation: true, items: [], active: false, now: ECHO_EXPIRY_MS + 1 })).toHaveLength(1);
+  // A shell command never appears in a transcript that starts later.
+  expect(settleSubmissions([sent('a', 'claude', { kind: 'terminal' }), sent('b', 'go', { status: 'sending' })], { conversation: true, items: [], active: false, now: 1 }).map(item => item.id)).toEqual(['b']);
+  expect(settleSubmissions([sent('a', 'ls', { kind: 'terminal' }), sent('b', 'pwd', { kind: 'terminal' }), sent('c', 'cd', { kind: 'terminal', status: 'sending' })], { conversation: false, items: [], active: false, now: 1 }).map(item => item.id)).toEqual(['b', 'c']);
+});
+
+it('replaces a failed message when it is sent again', async () => {
+  channel.isOpen = false;
+  expect((await store.send('retry me')).status).toBe('not_sent');
+  channel.isOpen = true;
+  expect((await store.send('retry me')).status).toBe('sent');
+  expect(store.getState().submissions.map(item => item.status)).toEqual(['sent']);
 });
 
 it('sends multi-line chat as one bracketed paste when the host advertises support', async () => {

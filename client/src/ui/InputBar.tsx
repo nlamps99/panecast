@@ -23,11 +23,12 @@ import {
   uploadParams,
   uploadTransportOf,
 } from '../input/attachments';
+import { remainderAfterSend, stripSent } from '../input/sendRemainder';
 import { translateCommitted } from '../input/translate';
 import { draftKey, inputLibrary, MAX_INPUT_TEXT, useInputLibrary } from '../input/library';
 import { Keys } from '../protocol/keys';
 import { describeError, type SendReceipt, type TerminalSession } from '../session/terminalSession';
-import { useMachine } from '../state/hooks';
+import { useConnectionStatus, useMachine } from '../state/hooks';
 import { setPrefs, usePrefs } from '../state/prefs';
 import { KeyBar, useKeyboardProfileEditor } from './KeyBar';
 import { useKeyboardVisible } from './useKeyboardVisible';
@@ -48,6 +49,11 @@ type AttachState = { kind: 'idle' } | { kind: 'busy'; label: string } | { kind: 
 
 const ATTACH_IDLE: AttachState = { kind: 'idle' };
 
+/** How long a delivery note stays over the terminal. */
+const DELIVERED_NOTE_MS = 1500;
+/** The small links in the shortcut row keep their look but take a 44 pt touch. */
+const LINK_SLOP = { top: 5, bottom: 5, left: 8, right: 8 };
+
 /** SF Symbol on iOS, Material Symbol on Android and the web. */
 const ATTACH_ICON = { ios: 'photo.badge.plus', android: 'add_photo_alternate', web: 'attach_file' } as const;
 
@@ -59,6 +65,8 @@ type Props = {
   inputRef: React.RefObject<TerminalInputHandle | null>;
   presentation?: 'terminal' | 'chat';
   onSubmitLine?: (text: string) => Promise<SendReceipt>;
+  /** A short screen (a phone on its side): leave out the shortcut row so the terminal keeps its rows. */
+  compactHeight?: boolean;
 };
 
 /**
@@ -75,7 +83,7 @@ type Props = {
  * relay saved it at goes into the command draft, or to the terminal in live
  * mode.
  */
-export function InputBar({ session, disabled, error, inputRef, presentation = 'terminal', onSubmitLine }: Props) {
+export function InputBar({ session, disabled, error, inputRef, presentation = 'terminal', onSubmitLine, compactHeight = false }: Props) {
   const { inputMode, desktopInputMode } = usePrefs();
   const desktop = desktopBridge() !== null;
   const chat = presentation === 'chat';
@@ -86,6 +94,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   // While a phone types, the keys and the input are all that stay below the terminal.
   const keyboardVisible = useKeyboardVisible();
   const { channel, computer } = useMachine();
+  // The session's channel: subscribe, so the offline note and live typing follow reconnects.
+  const connected = useConnectionStatus(channel).state === 'open';
   const target = session.getState().target;
   const library = inputLibrary(computer?.id ?? 'demo');
   const libraryState = useInputLibrary(library);
@@ -99,10 +109,15 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   const restoring = useRef(true);
   const mounted = useRef(true);
   const [hint, setHint] = useState<string | null>(null);
+  // Sending and delivery notes float above the input instead of taking a terminal row.
+  const [note, setNote] = useState<string | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hasText, setHasText] = useState(false);
   const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT);
   const [attach, setAttach] = useState<AttachState>(ATTACH_IDLE);
   const draft = useRef({ text: '', composing: false });
+  /** A sent line still waiting to be cut from the input (see `settleSent`). */
+  const pendingClear = useRef<string | null>(null);
   const attaching = useRef(false);
   // An upload outlives the render that started it; read the mode when it lands.
   const modeRef = useRef(mode);
@@ -127,36 +142,79 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
     return () => { mounted.current = false; };
   }, [library, savedKey, mode, inputRef]);
 
+  useEffect(() => () => { if (noteTimer.current) clearTimeout(noteTimer.current); }, []);
+
+  const showNote = (text: string | null, duration?: number) => {
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    noteTimer.current = null;
+    setNote(text);
+    if (text && duration) noteTimer.current = setTimeout(() => { noteTimer.current = null; if (mounted.current) setNote(null); }, duration);
+  };
+
+  /**
+   * Takes what was sent out of the input, keeping anything typed while it was
+   * on its way. While the IME is composing (or the text moved under the edit)
+   * the cut waits for the next change, so the sent line is never left in
+   * front of the new typing to be sent again.
+   */
+  const settleSent = async (sent: string, state: { text: string; composing: boolean }) => {
+    const input = inputRef.current;
+    if (!input || !mounted.current) return;
+    const result = await stripSent(input, sent, state);
+    pendingClear.current = result === 'pending' ? sent : null;
+    if (result === 'done' && mounted.current) {
+      const rest = state.text.slice(sent.length);
+      draft.current = { text: rest, composing: false };
+      setHasText(rest.length > 0);
+    }
+  };
+  const clearSent = async (text: string) => {
+    const now = await inputRef.current?.getState();
+    if (now && mounted.current) await settleSent(text, now);
+  };
+
   const clearAttachError = () => setAttach((current) => (current.kind === 'error' ? ATTACH_IDLE : current));
 
   const submit = async (text: string): Promise<SendReceipt | undefined> => {
     const current = session.getState().target;
-    if (!mounted.current || !ready || sendingRef.current || disabled || !target || current?.workspaceId !== target.workspaceId || current.surfaceId !== target.surfaceId) return;
+    if (!mounted.current || !ready || disabled || !target || current?.workspaceId !== target.workspaceId || current.surfaceId !== target.surfaceId) return;
+    if (sendingRef.current) { setHint('上一条还在发送，发完后再按一次发送'); return; }
     if (attaching.current) { setHint('附件正在上传，完成后再发送'); return; }
     if (draft.current.composing) {
       setHint('输入法还在选字，先选好再发送');
       return;
     }
     if (text.length > MAX_INPUT_TEXT) { setHint(`输入最多 ${MAX_INPUT_TEXT.toLocaleString()} 个字符，请缩短后发送`); return; }
-    setHint('正在发送…');
-    clearAttachError();
     const line = text.replace(/[\r\n]+$/, '');
-    if (chat && !line.trim()) { setHint(null); return; }
+    if (chat && !line.trim()) return;
+    setHint(null);
+    clearAttachError();
     library.setDraft(savedKey, text);
+    // The input stays editable and focused while a line is on its way, so the
+    // keyboard stays up; `sendingRef` keeps a second Return from sending twice.
     sendingRef.current = true;
     setSending(true);
-    const receipt = await (onSubmitLine ? onSubmitLine(line) : session.submitLine(line));
-    if (receipt.status === 'sent') {
-      if (target) library.remember(line, target.workspaceId);
-      if (library.getState().drafts[savedKey] === text) library.setDraft(savedKey, '');
-      if (mounted.current && !expanded) {
-        draft.current = { text: '', composing: false };
-        setHasText(false);
-        await inputRef.current?.clear();
+    // Chat bubbles carry their own receipts.
+    if (!chat) showNote('正在发送…');
+    let receipt: SendReceipt | undefined;
+    try {
+      receipt = await (onSubmitLine ? onSubmitLine(line) : session.submitLine(line));
+      if (receipt.status === 'sent') {
+        if (target) library.remember(line, target.workspaceId);
+        // The saved draft may already hold typing that followed the line.
+        const saved = library.getState().drafts[savedKey];
+        if (saved !== undefined) { const rest = remainderAfterSend(saved, text); if (rest !== null) library.setDraft(savedKey, rest); }
+        // Best effort: the line is already delivered, so a failed cut must not report a failed send.
+        if (mounted.current && !expanded) await clearSent(text).catch(() => undefined);
       }
+    } finally {
+      sendingRef.current = false;
+      if (mounted.current) { setSending(false); if (!receipt) showNote(null); }
     }
-    sendingRef.current = false;
-    if (mounted.current) { setSending(false); setHint(receipt.message); }
+    if (mounted.current) {
+      if (receipt.status === 'sent') showNote(chat ? null : receipt.message, DELIVERED_NOTE_MS);
+      else { showNote(null); setHint(receipt.message); }
+    }
     return receipt;
   };
 
@@ -249,7 +307,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   };
 
   const dragging = useWebAttachments({
-    enabled: ready && !disabled && !sending && attach.kind !== 'busy' && channel.isOpen,
+    enabled: ready && !disabled && !sending && attach.kind !== 'busy' && connected,
     files: files => { void attachFiles(files); },
     error: message => { if (attaching.current) setHint(message); else setAttach({ kind: 'error', message }); },
   });
@@ -341,18 +399,20 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   return (
     <View>
       {dragging ? <View style={{ padding: 14, borderWidth: 1, borderColor: colors.green, borderRadius: 10, backgroundColor: colors.surfaceRaised }}><Text style={{ color: colors.green, textAlign: 'center' }}>松开文件，上传到 {computer?.name ?? '当前电脑'}</Text></View> : null}
+      {note ? <View style={styles.noteWrap}><Text style={styles.note} accessibilityLiveRegion="polite">{note}</Text></View> : null}
       {message ? <Text style={[styles.message, messageStyle]}>{message}</Text> : null}
-      {desktop || !keyboardVisible ? <View style={[styles.libraryRow, !desktop && styles.phoneLibraryRow]}>
+      {/* Landscape hides the row in terminal mode, whose keys sit outside it; chat mode keeps it for 终端按键. */}
+      {!(compactHeight && !chat) && (desktop || !keyboardVisible) ? <View style={[styles.libraryRow, !desktop && styles.phoneLibraryRow]}>
         {desktop ? <Text style={styles.libraryText}>{mode === 'live' ? '直接输入 · Tab、方向键、Ctrl 快捷键' : 'Enter 发送 · Shift+Enter 换行'}</Text> : null}
-        {chat && !desktop ? <Pressable onPress={() => setKeysOpen(!keysOpen)} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
-        <Pressable onPress={sheet.open} disabled={!ready} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
+        {chat && !desktop ? <Pressable onPress={() => setKeysOpen(!keysOpen)} style={styles.libraryButton} hitSlop={LINK_SLOP} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
+        <Pressable onPress={sheet.open} disabled={!ready} style={!desktop && styles.libraryButton} hitSlop={desktop ? undefined : LINK_SLOP} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
         {desktop && !chat ? <Pressable onPress={() => switchMode(mode === 'live' ? 'line' : 'live')} disabled={!ready || sending || attachBusy} accessibilityRole="button"><Text style={styles.libraryText}>{mode === 'live' ? '编辑命令' : '直接输入'}</Text></Pressable> : null}
-        {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
+        {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} style={!desktop && styles.libraryButton} hitSlop={desktop ? undefined : LINK_SLOP} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
         {libraryState.error ? <Text style={styles.messageError}>{libraryState.error}</Text> : null}
-        {!session.isConnected ? <Text style={styles.libraryText}>离线 · 可以继续写草稿</Text> : null}
+        {!connected ? <Text style={styles.libraryText}>离线 · 可以继续写草稿</Text> : null}
         {phoneKeys ? profileEditor.button : null}
       </View> : null}
-      {phoneKeys ? <KeyBar session={session} disabled={disabled || !session.isConnected || sending} /> : null}
+      {phoneKeys ? <KeyBar session={session} disabled={disabled || !connected || sending} /> : null}
       {phoneKeys ? profileEditor.editor : null}
       <View style={styles.row}>
         {!chat && !desktop ? <View style={styles.segment} accessibilityRole="tablist">
@@ -362,6 +422,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
               onPress={() => switchMode(item)}
               disabled={sending || !ready}
               style={[styles.segmentItem, mode === item && styles.segmentItemActive]}
+              hitSlop={{ top: 4, bottom: 4 }}
               accessibilityRole="tab"
               accessibilityState={{ selected: mode === item }}
               accessibilityLabel={item === 'line' ? '命令输入：整行发送' : '逐字输入：打一个字发一个字'}
@@ -378,8 +439,9 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             mode={mode}
             // Phones put newlines in chat messages and send with the button; desktops keep Enter to send, Shift-Enter for a newline.
             submitOnEnter={!chat || desktop}
-            editable={!disabled && ready && !sending && (mode === 'line' || session.isConnected)}
-            placeholder={chat ? '发消息到当前终端…' : mode === 'live' ? desktop ? '直接操作终端，支持中文输入…' : '打字直接发到终端' : '输入命令'}
+            // Not tied to `sending`: a UITextView or EditText that stops being editable gives up focus and drops the keyboard.
+            editable={!disabled && ready && (mode === 'line' || connected)}
+            placeholder={mode === 'line' && !connected ? '离线 · 可以先写草稿' : chat ? '发消息到当前终端…' : mode === 'live' ? desktop ? '直接操作终端，支持中文输入…' : '打字直接发到终端' : '输入命令'}
             placeholderColor={colors.muted}
             textColor={colors.ink}
             caretColor={colors.green}
@@ -395,6 +457,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
               const nextHasText = state.text.length > 0;
               if (nextHasText !== hasText) setHasText(nextHasText);
               if (hint && !state.composing) setHint(null);
+              if (pendingClear.current && !state.composing) void settleSent(pendingClear.current, state);
             }}
             onSubmit={(text) => void submit(text)}
             onCommitText={sendCommitted}
@@ -403,7 +466,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
               const key = terminalHardwareKey(event, { windows: desktopOnWindows(),
                 selection: typeof window !== 'undefined' && window.getSelection()?.isCollapsed === false });
               if (!key) return false;
-              if (!disabled && ready && !sending && session.isConnected) {
+              if (!disabled && ready && !sending && connected) {
                 if (key.name === 'enter' && attaching.current) setHint('附件正在上传，完成后再发送');
                 else session.sendKey(key);
               }
@@ -430,12 +493,13 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
           <Pressable
             onPress={() => void submitCurrent().catch(() => setHint('暂时无法发送，草稿已保留'))}
             disabled={disabled || !ready || sending || attachBusy || (chat && !hasText)}
-            style={({ pressed }) => [styles.send, !hasText && styles.sendEmpty, pressed && styles.sendPressed]}
+            // An empty command line sends Enter, so it says so instead of looking disabled.
+            style={({ pressed }) => [styles.send, !hasText && (chat ? styles.sendEmpty : styles.sendEnter), pressed && styles.sendPressed]}
             accessibilityRole="button"
             accessibilityLabel={chat ? '发送消息到当前终端' : hasText ? '发送命令' : '发送回车'}
             hitSlop={6}
           >
-            <Text style={[styles.sendText, !hasText && styles.sendTextEmpty]}>发送</Text>
+            <Text style={[styles.sendText, !hasText && (chat ? styles.sendTextEmpty : styles.sendTextEnter)]}>{hasText || chat ? '发送' : '回车'}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -451,7 +515,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             void inputRef.current?.focus();
           }
         })} />
-      {expanded ? <ExpandedComposer initialText={expanded.text} title="编辑输入" connected={session.isConnected} inputRef={expandedInput}
+      {expanded ? <ExpandedComposer initialText={expanded.text} title="编辑输入" connected={connected} inputRef={expandedInput}
         uploading={attachBusy} attachmentMessage={dragging ? `松开文件，上传到 ${computer?.name ?? '当前电脑'}` : message}
         onChange={(state) => {
           if (!mounted.current) return;
@@ -464,8 +528,11 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
 
 const styles = StyleSheet.create({
   libraryRow: { paddingHorizontal: 12, paddingTop: 4, flexDirection: 'row', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
-  phoneLibraryRow: { justifyContent: 'flex-start', columnGap: 16 },
+  phoneLibraryRow: { justifyContent: 'flex-start', alignItems: 'center', columnGap: 16, paddingTop: 0 },
   libraryText: { color: colors.muted, fontSize: 12, paddingVertical: 4 },
+  libraryButton: { minHeight: 34, justifyContent: 'center' },
+  noteWrap: { position: 'absolute', right: 12, bottom: '100%', marginBottom: 6, pointerEvents: 'none' },
+  note: { color: colors.inkDim, fontSize: 12, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.surfaceRaised },
   message: { color: colors.yellow, fontSize: 12, paddingHorizontal: 14, paddingTop: 4 },
   messageHint: { color: colors.yellow },
   messageBusy: { color: colors.inkDim },
@@ -518,4 +585,6 @@ const styles = StyleSheet.create({
   sendPressed: { opacity: 0.7 },
   sendText: { color: colors.canvas, fontSize: 14, fontWeight: '600' },
   sendTextEmpty: { color: colors.muted },
+  sendEnter: { backgroundColor: colors.surfaceRaised, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.green },
+  sendTextEnter: { color: colors.green },
 });

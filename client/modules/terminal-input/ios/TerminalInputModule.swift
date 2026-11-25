@@ -35,7 +35,10 @@ public class TerminalInputModule: Module {
         view.setFont(name: nil, size: size.map { CGFloat($0) })
       }
       Prop("editable") { (view: TerminalInputView, editable: Bool?) in
-        view.textView.isEditable = editable ?? true
+        // Turning editing off resigns first responder and drops the keyboard,
+        // so only touch the view when the value really changes.
+        let value = editable ?? true
+        if view.textView.isEditable != value { view.textView.isEditable = value }
       }
 
       AsyncFunction("focus") { (view: TerminalInputView) in

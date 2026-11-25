@@ -37,14 +37,15 @@ export function TerminalDecisionCard({ decision, screen, session, enabled, onSho
       {button('确认当前选择', 'enter')}{button('取消', 'escape')}
     </View>
     {message ? <Text style={styles.error}>{message}</Text> : null}
-    <Pressable onPress={onShowTerminal} accessibilityRole="button"><Text style={styles.link}>查看完整终端 →</Text></Pressable>
+    <Pressable onPress={onShowTerminal} accessibilityRole="button" style={styles.footer}><Text style={styles.link}>查看完整终端 →</Text></Pressable>
   </View>;
 }
 const styles = StyleSheet.create({
   card: { marginHorizontal: 10, marginVertical: 6, padding: 12, gap: 7, borderRadius: 12, backgroundColor: colors.surfaceRaised },
   heading: { color: colors.yellow, fontSize: 12, fontWeight: '600' }, title: { color: colors.ink, fontSize: 14, lineHeight: 20 },
-  options: { maxHeight: 150 }, option: { paddingVertical: 9, paddingHorizontal: 8, borderRadius: 7 }, selected: { backgroundColor: colors.surface },
+  options: { maxHeight: 180 }, option: { minHeight: 44, justifyContent: 'center', paddingVertical: 9, paddingHorizontal: 8, borderRadius: 7 }, selected: { backgroundColor: colors.surface },
   optionText: { color: colors.ink, fontSize: 13, lineHeight: 20 }, row: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  button: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 7, backgroundColor: colors.surface }, link: { color: colors.green, fontSize: 12 },
+  button: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 7, backgroundColor: colors.surface }, link: { color: colors.green, fontSize: 13 },
+  footer: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' },
   disabled: { opacity: 0.4 }, error: { color: colors.red, fontSize: 12, lineHeight: 18 },
 });

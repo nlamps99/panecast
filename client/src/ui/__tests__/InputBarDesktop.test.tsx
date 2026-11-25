@@ -6,7 +6,12 @@ import { InputBar } from '../InputBar';
 
 let mockDesktop = true;
 let mockComputerId = 0;
-const mockChannel = { isOpen: true };
+const mockChannel = {
+  status: { state: 'open' } as { state: string }, listeners: new Set<() => void>(),
+  get isOpen() { return this.status.state === 'open'; },
+  onStatus(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; },
+  set(state: string) { this.status = { state }; for (const listener of this.listeners) listener(); },
+};
 jest.mock('react-native', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require('react') as typeof import('react');
@@ -24,7 +29,14 @@ jest.mock('../../../modules/terminal-input', () => ({
 jest.mock('../../platform/desktop', () => ({ desktopBridge: () => mockDesktop ? { version: 1 } : null, desktopOnWindows: () => false }));
 jest.mock('../../platform/alert', () => ({ Alert: {} }));
 jest.mock('../../input/attachImage', () => ({}));
-jest.mock('../../state/hooks', () => ({ useMachine: () => ({ channel: mockChannel, computer: { id: `input-test-${mockComputerId}` } }) }));
+jest.mock('../../state/hooks', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useSyncExternalStore } = require('react') as typeof import('react');
+  return {
+    useMachine: () => ({ channel: mockChannel, computer: { id: `input-test-${mockComputerId}` } }),
+    useConnectionStatus: (source: typeof mockChannel) => useSyncExternalStore((listener: () => void) => source.onStatus(listener), () => source.status, () => source.status),
+  };
+});
 jest.mock('../KeyBar', () => ({ KeyBar: () => 'PHONE_KEYS', useKeyboardProfileEditor: () => ({ button: 'PHONE_PROFILE', editor: null }) }));
 let mockKeyboard = false;
 jest.mock('../useKeyboardVisible', () => ({ useKeyboardVisible: () => mockKeyboard }));
@@ -59,7 +71,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  mockDesktop = true; mockComputerId++; jest.clearAllMocks();
+  mockDesktop = true; mockComputerId++; jest.clearAllMocks(); mockChannel.set('open');
   setPrefs({ inputMode: 'line', desktopInputMode: 'live' });
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
 });
@@ -138,4 +150,63 @@ it('puts the key profile in the shortcut row and hides that row while the phone 
     expect(container.textContent).not.toContain('PHONE_PROFILE');
     expect(container.textContent).toContain('PHONE_KEYS');
   } finally { mockKeyboard = false; }
+});
+
+it('keeps the phone command input editable while a line is on its way, then clears only what was sent', async () => {
+  mockDesktop = false;
+  let deliver!: (receipt: { status: 'sent'; message: string }) => void;
+  (session.submitLine as jest.Mock).mockImplementationOnce(() => new Promise(resolve => { deliver = resolve; }));
+  await act(async () => root.render(<Harness />));
+  await text('ls -la');
+  await key('Enter');
+  const textarea = container.querySelector('textarea')!;
+  expect(textarea.disabled).toBe(false);
+  expect(container.textContent).toContain('正在发送…');
+  await key('Enter');
+  expect(session.submitLine).toHaveBeenCalledTimes(1);
+  await text('ls -la && pwd');
+  await act(async () => deliver({ status: 'sent', message: '已送达终端' }));
+  expect(textarea.value).toBe(' && pwd');
+  expect(container.textContent).toContain('已送达终端');
+});
+
+it('cuts the sent line only after pinyin typed during the send is chosen, so it is not sent twice', async () => {
+  mockDesktop = false;
+  let deliver!: (receipt: { status: 'sent'; message: string }) => void;
+  (session.submitLine as jest.Mock).mockImplementationOnce(() => new Promise(resolve => { deliver = resolve; }));
+  await act(async () => root.render(<Harness />));
+  await text('git status');
+  await key('Enter');
+  const textarea = container.querySelector('textarea')!;
+  const composition = (type: string) => act(async () => { textarea.dispatchEvent(new dom.window.CompositionEvent(type, { bubbles: true })); });
+  await composition('compositionstart');
+  await text('git statusnihao');
+  await act(async () => deliver({ status: 'sent', message: '已送达终端' }));
+  expect(textarea.value).toBe('git statusnihao');
+  textarea.value = 'git status你好';
+  await composition('compositionend');
+  expect(textarea.value).toBe('你好');
+  await key('Enter');
+  expect((session.submitLine as jest.Mock).mock.calls.at(-1)).toEqual(['你好']);
+});
+
+it('labels an empty phone command line as Enter and leaves out the shortcut row on a short screen', async () => {
+  mockDesktop = false;
+  await act(async () => root.render(<Harness />));
+  expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent === '回车')).toBe(true);
+  await text('pwd');
+  expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent === '发送')).toBe(true);
+  await act(async () => root.render(<InputBar session={session} disabled={false} error={null} inputRef={inputRef} compactHeight />));
+  expect(container.textContent).not.toContain('常用输入');
+  expect(container.textContent).toContain('PHONE_KEYS');
+});
+
+it('follows the connection: offline after a drop, back to normal after the reconnect', async () => {
+  mockDesktop = false;
+  await act(async () => root.render(<Harness />));
+  expect(container.textContent).not.toContain('离线');
+  await act(async () => mockChannel.set('waiting'));
+  expect(container.textContent).toContain('离线 · 可以继续写草稿');
+  await act(async () => mockChannel.set('open'));
+  expect(container.textContent).not.toContain('离线');
 });

@@ -7,7 +7,12 @@ import { terminalKey, type TerminalHead, type TerminalRepository } from './termi
 import { terminalDecision } from './terminalPrompt';
 import { mergeTerminalItems } from './terminalMerge';
 
-export type TerminalChatSubmission = { id: string; text: string; status: 'sending' | SendReceipt['status']; at: number; base: number; message?: string };
+/**
+ * A chat message sent from the phone, shown until the transcript echoes it.
+ * `kind` records what the terminal was when it was sent: a bound conversation
+ * echoes its messages; an ordinary shell (`terminal`) never does.
+ */
+export type TerminalChatSubmission = { id: string; text: string; status: 'sending' | SendReceipt['status']; at: number; base: number; message?: string; kind?: 'conversation' | 'terminal' };
 export type TerminalConversationState = {
   target: SurfaceTarget | null; conversationId: string | null; generation: string; provider: string; name: string;
   available: boolean | null; items: AgentItem[]; revision: string | null; cursor: string | null; headSequence: number;
@@ -21,6 +26,33 @@ const same = (a: SurfaceTarget | null, b: SurfaceTarget | null) => a?.workspaceI
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const optionalText = (value: unknown): string | null => typeof value === 'string' ? value : null;
 const clean = (value: string) => value.replace(/\r\n/g, '\n').trim();
+/** How long after a send the transcript is polled quickly for its echo. */
+export const ECHO_WAIT_MS = 30_000;
+/** An idle conversation that still has not echoed a message by now never will. */
+export const ECHO_EXPIRY_MS = 10 * 60_000;
+const FAST_POLL_MS = 1200, IDLE_POLL_MS = 5000;
+
+/**
+ * Which sent messages stay on screen. A conversation's message waits for its
+ * transcript echo (an idle conversation gives up after ECHO_EXPIRY_MS). An
+ * ordinary shell has no transcript: only its latest command stays, as the
+ * heading of the output shown below it.
+ */
+export function settleSubmissions(submissions: readonly TerminalChatSubmission[], context: { conversation: boolean; items: readonly AgentItem[]; active: boolean; now: number }): TerminalChatSubmission[] {
+  const matched = new Set<string>();
+  const latestShell = context.conversation ? undefined : submissions.findLast(item => item.status !== 'sending')?.id;
+  return submissions.filter(submission => {
+    if (submission.status === 'sending') return true;
+    if (!context.conversation) return submission.id === latestShell;
+    // A shell command is not part of a transcript that appears later.
+    if (submission.kind === 'terminal') return false;
+    if (submission.status === 'not_sent') return true;
+    const echo = context.items.find(item => !matched.has(item.id) && item.type === 'userMessage' && (item.sequence ?? 0) >= submission.base && clean(itemText(item)) === clean(submission.text));
+    if (echo) { matched.add(echo.id); return false; }
+    return context.active || context.now - submission.at < ECHO_EXPIRY_MS;
+  });
+}
+
 const initial = (target: SurfaceTarget | null): TerminalConversationState => ({ target, conversationId: null, generation: '', provider: 'terminal', name: '终端输出', available: null,
   items: [], revision: null, cursor: null, headSequence: 0, loading: false, loadingOlder: false, active: false, error: null, historyError: null, blocked: false, branch: null, submissions: [], output: '' });
 
@@ -114,7 +146,14 @@ export class TerminalConversationStore {
   }
   private schedule() {
     if (this.timer) clearTimeout(this.timer);
-    if (this.active && !this.disposed) this.timer = setTimeout(() => { this.timer = null; void this.refresh(); }, this.state.active || this.state.submissions.length ? 1200 : 5000);
+    if (this.active && !this.disposed) this.timer = setTimeout(() => { this.timer = null; void this.refresh(); }, this.pollDelay());
+  }
+  /** Quick polls only while a reply or a message's echo is due. */
+  private pollDelay(): number {
+    const now = Date.now();
+    const awaiting = this.state.submissions.some(item => item.status === 'sending'
+      || (this.state.available !== false && item.kind !== 'terminal' && item.status !== 'not_sent' && now - item.at < ECHO_WAIT_MS));
+    return this.state.active || awaiting ? FAST_POLL_MS : IDLE_POLL_MS;
   }
   refresh(): Promise<void> {
     if (this.head) return this.head;
@@ -150,12 +189,8 @@ export class TerminalConversationStore {
       const unchanged = !cursor && !changed && (raw.unchanged === true || Boolean(raw.revision && raw.revision === this.state.revision));
       const parsed = !unchanged && Array.isArray(raw.items) ? raw.items.map(agentItem).filter((item): item is AgentItem => item !== null) : [];
       const items = raw.available !== true ? [] : unchanged ? this.state.items : mergeTerminalItems(changed ? [] : this.state.items, parsed);
-      const matched = new Set<string>();
-      const submissions = (changed && this.state.conversationId && id !== this.state.conversationId ? [] : this.state.submissions).filter(submission => {
-        const echo = submission.status !== 'not_sent' && items.find(item => !matched.has(item.id) && item.type === 'userMessage' && (item.sequence ?? 0) >= submission.base && clean(itemText(item)) === clean(submission.text));
-        if (echo) matched.add(echo.id);
-        return !echo;
-      });
+      const submissions = settleSubmissions(changed && this.state.conversationId && id !== this.state.conversationId ? [] : this.state.submissions,
+        { conversation: raw.available === true, items, active: !cursor ? raw.active === true : this.state.active, now: Date.now() });
       this.update({ conversationId: id, generation: epoch, provider: optionalText(raw.provider) ?? 'terminal', name: optionalText(raw.name) ?? '终端输出',
         inputMethod: raw.input_method === 'terminal.paste' ? 'terminal.paste' : undefined,
         available: raw.available === true, items, submissions: submissions.length === this.state.submissions.length ? this.state.submissions : submissions, fromCache: false, loading: false, loadingOlder: cursor || changed ? false : this.state.loadingOlder, error: null, blocked: false,
@@ -178,15 +213,23 @@ export class TerminalConversationStore {
   async send(text: string): Promise<SendReceipt> {
     const target = this.state.target, current = this.terminal.getState().target;
     if (!text.trim()) return { status: 'not_sent', message: '请输入消息' };
-    if (/[\r\n]/.test(text) && this.state.inputMethod !== 'terminal.paste') return { status: 'not_sent', message: '电脑端尚未提供多行消息发送，请更新网关后重试；草稿已保留' };
+    if (/[\r\n]/.test(text) && this.state.inputMethod !== 'terminal.paste') {
+      // Only a bound conversation on an older computer gains multi-line sends by updating.
+      return { status: 'not_sent', message: this.state.available === true
+        ? '电脑上的 Panecast 版本较旧，还不能发多行消息。可以合成一行发送，或更新电脑端；草稿已保留'
+        : '这个终端一次只能发一行。请去掉换行后发送，或分几次发送；草稿已保留' };
+    }
     const screen = this.terminal.getState();
     if (!screen.fromCache && terminalDecision(plainTerminalRows(screen.screen.rows))) return { status: 'not_sent', message: '终端正在等待选择，请先使用上方的提问卡片；草稿已保留' };
     if (!target || !same(target, current) || this.state.blocked) return { status: 'not_sent', message: '终端已切换，草稿已保留' };
     const selection = this.terminal.selectionVersion;
     const id = `terminal-input:${Date.now()}:${++this.serial}`;
-    const submission: TerminalChatSubmission = { id, text, at: Date.now(), base: this.state.headSequence, status: 'sending' };
-    if (this.state.available === false) this.fallbackBaseline = plainTerminalRows(this.terminal.getState().screen.rows);
-    this.update({ submissions: [...this.state.submissions, submission].slice(-40), ...(this.state.available === false ? { output: '' } : {}) });
+    const shell = this.state.available === false;
+    const submission: TerminalChatSubmission = { id, text, at: Date.now(), base: this.state.headSequence, status: 'sending', kind: shell ? 'terminal' : 'conversation' };
+    if (shell) this.fallbackBaseline = plainTerminalRows(this.terminal.getState().screen.rows);
+    // A retry replaces the failed bubble; in a shell the new command starts fresh output.
+    const kept = this.state.submissions.filter(item => item.status !== 'not_sent' && !(shell && item.status !== 'sending'));
+    this.update({ submissions: [...kept, submission].slice(-40), ...(shell ? { output: '' } : {}) });
     const receipt = await this.terminal.submitLine(text, { paste: this.state.inputMethod === 'terminal.paste' });
     this.repository?.invalidate(target);
     if (!this.disposed && selection === this.terminal.selectionVersion && same(target, this.state.target)) {
