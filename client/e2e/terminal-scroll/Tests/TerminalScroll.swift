@@ -47,6 +47,19 @@ final class TerminalScroll: XCTestCase {
     return visible.map { $0.1 }
   }
 
+  /** `terminal.scroll` deltas once no new request has arrived for 1.5 s. */
+  private func settledLines() throws -> [Int] {
+    let deadline = Date().addingTimeInterval(15)
+    var last: [Int] = [], since = Date()
+    while Date() < deadline {
+      let lines = (try stats()["calls"] as! [[String: Any]]).map { $0["lines"] as! Int }
+      if lines != last { last = lines; since = Date() }
+      else if Date().timeIntervalSince(since) > 1.5 { return lines }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    return last
+  }
+
   private func fling(_ output: XCUIElement) {
     let start = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
     let end = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
@@ -80,23 +93,39 @@ final class TerminalScroll: XCTestCase {
     let primaryShot = XCTAttachment(screenshot: app.screenshot())
     primaryShot.name = "Primary history after one fling with delayed network"; primaryShot.lifetime = .keepAlways; add(primaryShot)
 
+    // A full-screen mouse program without a session record (vim, htop) scrolls itself.
+    // Phones float ↑↓ at the right edge, and a drag past the screen's own top sends
+    // one wheel unit per request. Nothing is stitched locally any more (4c052e9).
     _ = try stats("/latency?ms=500")
     app.otherElements["程序终端"].firstMatch.tap()
-    let anchor = app.staticTexts["APP_HISTORY_1025"].firstMatch
-    XCTAssertTrue(anchor.waitForExistence(timeout: 10))
-    let touch = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-    let moved = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
-    touch.press(forDuration: 0.05, thenDragTo: moved, withVelocity: XCUIGestureVelocity(100), thenHoldForDuration: 0.2)
-    let anchorY = anchor.frame.minY
-    try prepared("calls", minimum: 3)
-    XCTAssertTrue(anchor.exists && anchor.isHittable, "Prefetch must retain the screen being read")
-    XCTAssertEqual(anchor.frame.minY, anchorY, accuracy: 1, "Remote captures must not move a visible row")
-    _ = try stats("/latency?ms=1800")
-    fling(output)
+    XCTAssertTrue(app.staticTexts["APP_HISTORY_1025"].firstMatch.waitForExistence(timeout: 10))
+    let older = app.buttons["向上滚动程序"], newer = app.buttons["向下滚动程序"]
+    XCTAssertTrue(older.waitForExistence(timeout: 10), "Floating program-scroll buttons")
+    XCTAssertTrue(newer.exists)
+    XCTAssertGreaterThan(older.frame.minX, output.frame.midX, "The buttons sit at the right edge")
+    let railShot = XCTAttachment(screenshot: app.screenshot())
+    railShot.name = "Program without a session record shows ↑↓"; railShot.lifetime = .keepAlways; add(railShot)
+    _ = try stats("/reset")
+    older.tap()
+    XCTAssertTrue(app.staticTexts["APP_HISTORY_974"].firstMatch.waitForExistence(timeout: 10), "↑ scrolls the program back")
+    XCTAssertEqual(try settledLines(), [3])
+    newer.tap()
+    XCTAssertTrue(app.staticTexts["APP_HISTORY_1025"].firstMatch.waitForExistence(timeout: 10), "↓ scrolls it forward again")
+    XCTAssertEqual(try settledLines(), [3, -3])
+
+    _ = try stats("/reset")
+    var dragLines: [Int] = []
+    for _ in 0..<4 {
+      fling(output)
+      dragLines = try settledLines()
+      if !dragLines.isEmpty { break }
+    }
+    XCTAssertFalse(dragLines.isEmpty, "Dragging down past the top of the screen scrolls the program")
+    XCTAssertTrue(dragLines.allSatisfy { $0 == 1 }, "A touch drag sends one wheel unit per request: \(dragLines)")
     let applicationNumbers = visibleNumbers(app, output: output, prefix: "APP_HISTORY_")
     XCTAssertFalse(applicationNumbers.isEmpty)
-    XCTAssertLessThan(applicationNumbers.min()!, 995, "The same native fling must enter earlier cached application history")
+    XCTAssertLessThan(applicationNumbers.min()!, 1000, "The program shows older rows after the drag")
     let appShot = XCTAttachment(screenshot: app.screenshot())
-    appShot.name = "Application history after one fling with delayed network"; appShot.lifetime = .keepAlways; add(appShot)
+    appShot.name = "Program scrolled by a drag"; appShot.lifetime = .keepAlways; add(appShot)
   }
 }

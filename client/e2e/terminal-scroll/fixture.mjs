@@ -34,6 +34,8 @@ class Session extends RelaySession {
     if (method === 'surface.subscribe') { this.subscribed.add(params.surface_id); this.screen(params.surface_id); return {}; }
     if (method === 'surface.unsubscribe') { this.subscribed.delete(params.surface_id); return {}; }
     if (['surface.focus', 'workspace.select', 'surface.send_key'].includes(method)) return {};
+    // Neither surface has a session record, as the gateway answers for vim or htop.
+    if (method === 'terminal.conversation') return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
     if (method === 'terminal.replay') return { render_grid: { active_screen: params.surface_id === application ? 'alternate' : 'primary', columns: 80, rows: 47,
       modes: [{ ansi: false, code: 1000, on: params.surface_id === application }] } };
     if (method === 'terminal.scroll') {

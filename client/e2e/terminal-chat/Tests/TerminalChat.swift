@@ -14,7 +14,7 @@ final class TerminalChat: XCTestCase {
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4493&relay=qa-chat&code=qa-pair-only")
       app.buttons["连接"].tap()
     }
-    if app.buttons["返回工作区"].exists { app.buttons["返回工作区"].tap() }
+    if app.buttons["返回"].exists { app.buttons["返回"].tap() }
     let workspace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "终端对话测试，")).firstMatch
     XCTAssertTrue(workspace.waitForExistence(timeout: 20)); workspace.tap()
     if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }
@@ -54,7 +54,7 @@ final class TerminalChat: XCTestCase {
       input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4493&relay=qa-chat&code=qa-pair-only")
       app.buttons["连接"].tap()
     }
-    if app.buttons["返回工作区"].exists { app.buttons["返回工作区"].tap() }
+    if app.buttons["返回"].exists { app.buttons["返回"].tap() }
     let workspace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "终端对话测试，")).firstMatch
     XCTAssertTrue(workspace.waitForExistence(timeout: 20)); workspace.tap()
     if app.buttons["以后再说"].waitForExistence(timeout: 2) { app.buttons["以后再说"].tap() }

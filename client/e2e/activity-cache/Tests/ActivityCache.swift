@@ -33,7 +33,7 @@ final class ActivityCache: XCTestCase {
     XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
     input.typeText("cmux://pair?server=http%3A%2F%2F127.0.0.1%3A4497&relay=qa-activity&code=qa-pair-only")
     app.buttons["连接"].tap()
-    if app.buttons["返回工作区"].waitForExistence(timeout: 5) { app.buttons["返回工作区"].tap() }
+    if app.buttons["返回"].waitForExistence(timeout: 5) { app.buttons["返回"].tap() }
     dismissOffer(app)
 
     // The list shows which terminal is working, without opening it.
@@ -69,7 +69,7 @@ final class ActivityCache: XCTestCase {
     dismissOffer(app)
     XCTAssertTrue(app.staticTexts["CACHED_SCREEN_0"].firstMatch.waitForExistence(timeout: 10), "cached screen while the computer is offline")
     shot(app, "Cached terminal while offline")
-    app.buttons["返回工作区"].tap()
+    app.buttons["返回"].tap()
     dismissOffer(app)
     XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "运行状态测试，")).firstMatch.waitForExistence(timeout: 5), "cached workspace list while offline")
     // The card's × is not a separate accessibility element on iOS; the screenshot shows it dimmed.

@@ -15,6 +15,9 @@ let mockReadOnly = false;
 let mockShowKeys = false;
 let mockOS = 'ios';
 let mockCompact = false;
+type MockPan = { enabled?: boolean; onActivate?: () => void; onUpdate?: (event: { changeY: number }) => void; onDeactivate?: (event: { canceled: boolean; velocityY: number }) => void };
+let mockPan: MockPan = {};
+let mockPlaceholder: { text: string | null; action: { label: string; onPress: () => void } | null } = { text: null, action: null };
 
 jest.mock('react-native', () => {
   // A host adapter keeps the real TerminalView, session and history behavior
@@ -35,6 +38,7 @@ jest.mock('react-native', () => {
     StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1, absoluteFill: {} } };
 });
 jest.mock('react-native-gesture-handler', () => ({ usePinchGesture: () => ({}), useNativeGesture: () => ({}),
+  usePanGesture: (config: MockPan) => { mockPan = config; return {}; }, useSimultaneousGestures: () => ({}),
   GestureDetector: ({ children }: { children: ReactNode }) => children }));
 jest.mock('../../state/prefs', () => ({ usePrefs: () => ({ terminalWrap: mockWrap, keyHaptics: false, extraKeyRow: true }), setPrefs: jest.fn(), clampFontSize: (value: number) => value }));
 jest.mock('expo-haptics', () => ({}));
@@ -80,6 +84,7 @@ beforeAll(() => {
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockOS = 'ios'; mockCompact = false; mockWrap = true; mockReadOnly = false; mockShowKeys = false; mockNative.clear(); mockScrollToOffset.mockClear(); mockScrollTo.mockClear();
+  mockPan = {}; mockPlaceholder = { text: null, action: null };
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   channel = new Channel(); session = new TerminalSession(channel);
 });
@@ -87,7 +92,7 @@ afterEach(async () => { await act(async () => root.unmount()); session.dispose()
 afterAll(() => dom.window.close());
 function Harness() {
   const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
-  return <><TerminalView session={session} state={state} fontSize={13} onFontSizeChange={() => {}} placeholder={null} onTap={() => {}} readOnly={mockReadOnly} compact={mockCompact} />{mockShowKeys ? <KeyBar session={session} /> : null}</>;
+  return <><TerminalView session={session} state={state} fontSize={13} onFontSizeChange={() => {}} placeholder={mockPlaceholder.text} placeholderAction={mockPlaceholder.action} onTap={() => {}} readOnly={mockReadOnly} compact={mockCompact} />{mockShowKeys ? <KeyBar session={session} /> : null}</>;
 }
 function callback(id: string, name: string, event: unknown) { (mockNative.get(id)?.[name] as (event: unknown) => void)(event); }
 function scroll(offset: number, content = 2000) { return { nativeEvent: { contentOffset: { x: 0, y: offset }, contentSize: { width: 390, height: content }, layoutMeasurement: { width: 390, height: 480 } } }; }
@@ -404,4 +409,72 @@ it('lets a read-only viewer read the record but never scroll a program', async (
   await wheel(-200);
   expect(container.querySelector('[data-testid="terminal-application-older"]')).toBeNull();
   expect(scrolls()).toEqual([]);
+});
+
+async function programOnPhone(rows: string[]) {
+  mockCompact = true;
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? application : method === 'terminal.conversation' ? { available: false, provider: 'terminal' } : {});
+  await mount(rows);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(session.getState().applicationScroll?.record).toBe(false);
+}
+async function drag(...changes: number[]) {
+  await act(async () => { mockPan.onActivate?.(); for (const changeY of changes) mockPan.onUpdate?.({ changeY }); });
+  await act(async () => { mockPan.onDeactivate?.({ canceled: false, velocityY: 0 }); await new Promise((resolve) => setTimeout(resolve, 150)); });
+}
+
+it('scrolls a full-screen program without a session record when the phone terminal is dragged', async () => {
+  await programOnPhone(Array.from({ length: 20 }, (_, i) => `htop ${i}`));
+  expect(mockPan.enabled).toBe(true);
+  // Finger down reveals older output: 17-px rows, one unit per 51 px, one unit per request.
+  await drag(30, 30, 50);
+  expect(scrolls()).toEqual([1, 1]);
+  await drag(-60);
+  expect(scrolls()).toEqual([1, 1, -1]);
+  expect(session.getState().browse).toBeNull();
+  // The ↑↓ buttons float on the phone too, without the desktop's wheel sentence.
+  const rail = container.querySelector('[data-testid="terminal-application-scroll"]');
+  expect(rail?.closest('[data-testid="terminal-floating-status"]')).toBeNull();
+  expect(container.textContent).not.toContain('滚轮直接滚动程序');
+  await act(async () => (mockNative.get('terminal-application-older')?.onPress as () => void)());
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+  expect(scrolls()).toEqual([1, 1, -1, 3]);
+});
+
+it('lets a wrapped program screen taller than the phone scroll locally before scrolling the program', async () => {
+  await programOnPhone(Array.from({ length: 47 }, (_, i) => `vim ${i}`));
+  // 47 rows × 17 px against a 480-px viewport: about 319 px of local range.
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(150, 47 * 17)));
+  await drag(60, 60);
+  expect(scrolls()).toEqual([]);
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(47 * 17 - 480, 47 * 17)));
+  await drag(60);
+  expect(scrolls()).toEqual([1]);
+});
+
+it('never scrolls a program from a read-only phone, and says so when dragged', async () => {
+  mockReadOnly = true;
+  await programOnPhone(Array.from({ length: 20 }, (_, i) => `htop ${i}`));
+  expect(mockPan.enabled).toBe(false);
+  expect(container.querySelector('[data-testid="terminal-application-older"]')).toBeNull();
+  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(0, 340)));
+  expect(container.querySelector('[data-testid="terminal-program-notice"]')?.textContent).toContain('只读');
+  expect(scrolls()).toEqual([]);
+});
+
+it('keeps phone drags local for ordinary shells', async () => {
+  mockCompact = true;
+  await mount();
+  expect(mockPan.enabled).toBe(false);
+});
+
+it('shows a retry button under the placeholder of an empty terminal', async () => {
+  const retry = jest.fn();
+  mockPlaceholder = { text: '打不开这个终端：超时', action: { label: '重试', onPress: retry } };
+  channel.rows = [];
+  await act(async () => { session.setTarget({ workspaceId: 'cmux-workspace', surfaceId: 'cmux-surface' }); root.render(<Harness />); });
+  await act(async () => callback('terminal-output', 'onLayout', { nativeEvent: { layout: { width: 390, height: 520 } } }));
+  expect(container.querySelector('[data-testid="terminal-placeholder"]')?.textContent).toContain('打不开这个终端');
+  await act(async () => (mockNative.get('terminal-placeholder-action')?.onPress as () => void)());
+  expect(retry).toHaveBeenCalledTimes(1);
 });

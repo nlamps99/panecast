@@ -13,7 +13,7 @@ import {
   type TextStyle,
   type ScrollViewInstance,
 } from 'react-native';
-import { GestureDetector, useNativeGesture, usePinchGesture } from 'react-native-gesture-handler';
+import { GestureDetector, useNativeGesture, usePanGesture, usePinchGesture, useSimultaneousGestures } from 'react-native-gesture-handler';
 
 import type { TerminalSession, TerminalState } from '../session/terminalSession';
 import { DEFAULT_ATTR } from '../terminal/ansi';
@@ -28,6 +28,7 @@ import { clampFontSize, setPrefs, usePrefs } from '../state/prefs';
 import { colors, fonts, MONO_ADVANCE_EM } from './theme';
 import { TerminalTools } from './TerminalTools';
 import { useTerminalWheel } from '../input/terminalWheel';
+import { PROGRAM_ROWS_PER_UNIT, PROGRAM_TOUCH_MAX_QUEUED, programDragTravel, programFlingTravel, programScrollUnits } from '../terminal/programScroll';
 
 const SIDE_PADDING = 8;
 
@@ -43,6 +44,8 @@ type Props = {
   onFontSizeChange: (size: number) => void;
   /** Shown while there is nothing to draw yet. */
   placeholder: string | null;
+  /** A button under the placeholder, such as "重试" after the terminal could not be opened. */
+  placeholderAction?: { label: string; onPress: () => void } | null;
   /** Tap on terminal text: focus desktop input or hide the phone keyboard. */
   onTap: () => void;
   readOnly?: boolean;
@@ -67,7 +70,7 @@ export type TerminalViewHandle = { openTools: () => void };
  * with `surface.history`. Back at the bottom the live screen resumes. Pinch
  * changes the font size.
  */
-export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, onTap, readOnly = false, active = true, compact = false, ref }: Props) {
+export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, placeholderAction = null, onTap, readOnly = false, active = true, compact = false, ref }: Props) {
   const [width, setWidth] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -93,6 +96,9 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const wheeling = useRef(false);
   const expanders = useRef(new Map<string, () => void>());
   const wheelCarry = useRef(0);
+  const touchCarry = useRef(0);
+  const [programNotice, setProgramNotice] = useState<string | null>(null);
+  const programNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollRange = useRef(0);
   const historyRunway = useRef(0);
   const lastScrollSample = useRef({ at: 0, offset: 0 });
@@ -108,6 +114,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const applicationScroll = state.applicationScroll;
   const applicationEnabled = Boolean(applicationScroll);
   useEffect(() => () => session.stopApplicationScroll(), [session]);
+  useEffect(() => () => { if (programNoticeTimer.current) clearTimeout(programNoticeTimer.current); }, []);
   useEffect(() => {
     if (active && state.subscription === 'live') void session.inspectScrollMode().then(() => session.prepareHistory());
   }, [session, state.subscription, active]);
@@ -204,6 +211,42 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     },
   });
 
+  // Phones: a full-screen program without a session record (htop, vim,
+  // lazygit) scrolls itself, like a mouse wheel in any terminal. A wrapped
+  // screen taller than the viewport scrolls locally first; only travel past
+  // its edge goes to the program, one wheel unit per request.
+  const programTouch = Platform.OS !== 'web' && !desktop && !readOnly && active && !toolsOpen && applicationScroll?.record === false;
+  const sendProgramTravel = (pixels: number) => {
+    const range = Math.max(scrollRange.current, lines.length * lineHeight - viewportHeight, 0);
+    const travel = programDragTravel(pixels, lastFromBottom.current, range);
+    if (!travel) return;
+    const next = programScrollUnits(touchCarry.current, travel, lineHeight * PROGRAM_ROWS_PER_UNIT);
+    touchCarry.current = next.carry;
+    if (next.units) session.scrollApplication(next.units, { batch: 1, maxQueued: PROGRAM_TOUCH_MAX_QUEUED });
+  };
+  const programPan = usePanGesture({
+    runOnJS: true,
+    enabled: programTouch,
+    maxPointers: 1,
+    activeOffsetY: [-6, 6],
+    failOffsetX: [-24, 24],
+    simultaneousWith: nativeScroll,
+    onActivate: () => {
+      touchCarry.current = 0;
+      // A new touch drops unsent momentum and clears a failed step ("请再次滑动重试").
+      session.stopApplicationScroll(true);
+    },
+    // Finger down (positive) reveals older output, as the wheel does.
+    onUpdate: (event) => sendProgramTravel(event.changeY),
+    onDeactivate: (event) => { if (!event.canceled) sendProgramTravel(programFlingTravel(event.velocityY, viewportHeight)); },
+  });
+  const viewportGesture = useSimultaneousGestures(pinch, programPan);
+  const flashProgramNotice = (text: string) => {
+    setProgramNotice(text);
+    if (programNoticeTimer.current) clearTimeout(programNoticeTimer.current);
+    programNoticeTimer.current = setTimeout(() => setProgramNotice(null), 3000);
+  };
+
   const onLayout = (event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width);
 
   const beginDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -215,6 +258,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     if (program) {
       // Reading the record changes nothing on the computer, so read-only viewers can too.
       if (program.record !== false) { session.startApplicationHistory(); retryApplicationHistory(); ensureHistoryRunway(); }
+      else if (readOnly && compact) flashProgramNotice('只读：不能滚动这个程序');
       return;
     }
     if (!session.getState().browse) {
@@ -306,11 +350,9 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const moveApplication = (lines: number) => session.scrollApplication(lines);
   const passWheel = (pixels: number) => {
     // About one wheel unit (three of the program's rows) per three rows of wheel travel.
-    wheelCarry.current += pixels / (lineHeight * 3);
-    const units = Math.trunc(wheelCarry.current);
-    if (!units) return;
-    wheelCarry.current -= units;
-    moveApplication(units);
+    const next = programScrollUnits(wheelCarry.current, pixels, lineHeight * PROGRAM_ROWS_PER_UNIT);
+    wheelCarry.current = next.carry;
+    if (next.units) moveApplication(next.units);
   };
 
   const reachedHistoryEdge = () => {
@@ -378,15 +420,19 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   // at the bottom left, shown only while there is something to say.
   const historyStatus = !compact || browse;
   const statusText = compact ? styles.floatingStatusText : styles.historyStatusText;
+  // Phones: ↑↓ float at the right edge, away from a program's bottom-left
+  // mode line; dragging the terminal does the same.
+  const programButtons = applicationScroll?.record === false && !readOnly;
   const status = <>
     {state.restoringReading || state.readingNotice ? <Text style={[styles.readingNotice, compact && styles.floatingNotice]}>{state.restoringReading ? '正在恢复上次阅读的位置…' : state.readingNotice}</Text> : null}
-    {applicationScroll?.record === false && historyStatus ? <View testID="terminal-application-scroll" style={[styles.historyStatus, compact && styles.floatingStatus]}>
+    {applicationScroll?.record === false && !compact ? <View testID="terminal-application-scroll" style={styles.historyStatus}>
       <Text style={statusText}>{readOnly ? '这个程序的滚动需要终端控制权限' : '滚轮直接滚动程序（没有可读取的会话记录）'}</Text>
-      {!readOnly ? <>
-        <Pressable testID="terminal-application-older" style={styles.historyLoad} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
-        <Pressable testID="terminal-application-newer" style={styles.historyLoad} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
+      {programButtons ? <>
+        <Pressable testID="terminal-application-older" style={styles.historyLoad} hitSlop={LOAD_SLOP} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
+        <Pressable testID="terminal-application-newer" style={styles.historyLoad} hitSlop={LOAD_SLOP} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
       </> : null}
     </View> : null}
+    {compact && programNotice ? <Text testID="terminal-program-notice" style={[styles.readingNotice, styles.floatingNotice]}>{programNotice}</Text> : null}
     {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError, compact && styles.floatingNotice]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
     {applicationScroll?.record !== false && historyStatus ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, compact ? styles.floatingStatus : styles.stableHistoryStatus]}>
       <Text style={statusText}>
@@ -397,11 +443,11 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
           : `已加载 ${browse.olderRows.length} 行历史${browse.exhausted ? ' · 已到本次起点' : ''}`}
       </Text>
       {browse && !browse.exhausted ? <Pressable testID="terminal-history-load" disabled={browse.loading || state.restoringReading}
-        style={styles.historyLoad} onPress={() => void session.loadOlder({ retry: Boolean(browse.error) })} accessibilityRole="button">
+        style={styles.historyLoad} hitSlop={LOAD_SLOP} onPress={() => void session.loadOlder({ retry: Boolean(browse.error) })} accessibilityRole="button">
         <Text style={styles.historyLoadText}>{browse.restartRequired ? '重新加载' : '加载更早'}</Text>
       </Pressable> : null}
     </View> : null}
-    {browse?.error ? <Pressable testID="terminal-history-retry" style={[styles.historyRetry, compact && styles.floatingNotice]} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
+    {browse?.error ? <Pressable testID="terminal-history-retry" style={[styles.historyRetry, compact && styles.floatingNotice]} hitSlop={LOAD_SLOP} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
       <Text style={styles.edgeError}>{browse.error} · {browse.restartRequired ? '重新加载历史' : '重试'}</Text>
     </Pressable> : null}
   </>;
@@ -452,7 +498,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
         </Pressable>
       </View> : null}
       {!compact ? status : null}
-      <GestureDetector gesture={pinch}>
+      <GestureDetector gesture={viewportGesture}>
         <View testID="terminal-viewport" style={styles.fill} onLayout={(event) => setViewportHeight(event.nativeEvent.layout.height)}>
           {terminalWrap ? terminalList : (
             <ScrollView ref={horizontal} testID="terminal-horizontal-scroll" horizontal directionalLockEnabled nestedScrollEnabled alwaysBounceVertical={false} style={styles.fill}
@@ -464,11 +510,23 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
         </View>
       </GestureDetector>
       {lines.length === 0 && placeholder ? (
-        <View style={styles.placeholder} pointerEvents="none">
+        <View testID="terminal-placeholder" style={styles.placeholder} pointerEvents="box-none">
           <Text style={styles.placeholderText}>{placeholder}</Text>
+          {placeholderAction ? <Pressable testID="terminal-placeholder-action" onPress={placeholderAction.onPress} style={({ pressed }) => [styles.placeholderButton, pressed && styles.placeholderButtonPressed]}
+            accessibilityRole="button" accessibilityLabel={placeholderAction.label}>
+            <Text style={styles.placeholderButtonText}>{placeholderAction.label}</Text>
+          </Pressable> : null}
         </View>
       ) : null}
       {compact ? <View testID="terminal-floating-status" style={styles.floating} pointerEvents="box-none">{status}</View> : null}
+      {compact && programButtons ? (
+        <View testID="terminal-application-scroll" style={styles.programRail} pointerEvents="box-none">
+          <Pressable testID="terminal-application-older" style={({ pressed }) => [styles.programButton, pressed && styles.programButtonPressed]} hitSlop={4} onPress={() => moveApplication(3)}
+            accessibilityRole="button" accessibilityLabel="向上滚动程序" accessibilityHint="也可以在终端上下滑动"><Text style={styles.programButtonText}>↑</Text></Pressable>
+          <Pressable testID="terminal-application-newer" style={({ pressed }) => [styles.programButton, pressed && styles.programButtonPressed]} hitSlop={4} onPress={() => moveApplication(-3)}
+            accessibilityRole="button" accessibilityLabel="向下滚动程序" accessibilityHint="也可以在终端上下滑动"><Text style={styles.programButtonText}>↓</Text></Pressable>
+        </View>
+      ) : null}
       {pinchSize !== null ? (
         <View style={styles.sizeBadge} pointerEvents="none">
           <Text style={styles.sizeBadgeText}>
@@ -477,7 +535,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
         </View>
       ) : null}
       {browse ? (
-        <Pressable style={styles.jump} onPress={jumpToLive} accessibilityRole="button" accessibilityLabel="回到最新输出">
+        <Pressable style={styles.jump} hitSlop={JUMP_SLOP} onPress={jumpToLive} accessibilityRole="button" accessibilityLabel="回到最新输出">
           <Text style={styles.jumpText}>{browse.liveChanged ? '有新输出' : '回到底部'} ↓</Text>
         </Pressable>
       ) : null}
@@ -596,17 +654,21 @@ function HistoryEdge({ state, session }: { state: TerminalState; session: Termin
     content = <Text style={styles.edgeText}>正在加载更早的输出…</Text>;
   } else if (browse.error) {
     content = (
-      <Pressable onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
+      <Pressable style={styles.edgeButton} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
         <Text style={[styles.edgeText, styles.edgeError]}>{browse.error}（{browse.restartRequired ? '点按重新加载' : '点按重试'}）</Text>
       </Pressable>
     );
   } else if (browse.exhausted) {
     content = <Text style={styles.edgeText}>— 已到本次可读取的最早输出 —</Text>;
   } else {
-    content = <Pressable onPress={() => void session.loadOlder()} accessibilityRole="button"><Text style={styles.edgeText}>继续上滑或点按加载更早的输出</Text></Pressable>;
+    content = <Pressable style={styles.edgeButton} onPress={() => void session.loadOlder()} accessibilityRole="button"><Text style={styles.edgeText}>继续上滑或点按加载更早的输出</Text></Pressable>;
   }
   return <View style={styles.edge}>{content}</View>;
 }
+
+// Small history buttons keep their look; the slop brings each touch area to about 44 pt.
+const LOAD_SLOP = { top: 9, bottom: 9, left: 6, right: 6 };
+const JUMP_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const styles = StyleSheet.create({
   toolRow: { flexDirection: 'row', justifyContent: 'space-between' },
@@ -637,11 +699,29 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.canvas },
   fill: { flex: 1, minHeight: 0 },
   content: { paddingHorizontal: SIDE_PADDING, paddingTop: 4 },
-  edge: { paddingVertical: 12, alignItems: 'center' },
+  edge: { minHeight: 48, paddingVertical: 2, alignItems: 'center', justifyContent: 'center' },
+  edgeButton: { minHeight: 44, paddingHorizontal: 16, justifyContent: 'center' },
   edgeText: { color: colors.muted, fontSize: 12 },
   edgeError: { color: colors.red },
-  placeholder: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center' },
-  placeholderText: { color: colors.muted, fontSize: 14 },
+  placeholder: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', gap: 12, paddingHorizontal: 32 },
+  placeholderText: { color: colors.muted, fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  placeholderButton: { minWidth: 96, minHeight: 44, paddingHorizontal: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surfaceRaised },
+  placeholderButtonPressed: { backgroundColor: colors.divider },
+  placeholderButtonText: { color: colors.blue, fontSize: 15, fontWeight: '600' },
+  programRail: { position: 'absolute', top: 0, bottom: 0, right: 6, justifyContent: 'center', gap: 10 },
+  programButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceRaised,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    opacity: 0.9,
+  },
+  programButtonPressed: { backgroundColor: colors.divider },
+  programButtonText: { color: colors.ink, fontSize: 17 },
   sizeBadge: {
     position: 'absolute',
     top: 10,

@@ -44,15 +44,15 @@ export function TerminalTools({ visible, onClose, state, session }: { visible: b
       <Text style={s.note}>{message || `已加载 ${rows.length} 行，显示第 ${rows.length ? start + 1 : 0}–${end} 行。长按文字可跨行选择。`}</Text>
       {state.browse?.error ? <Text style={s.error}>{state.browse.error}</Text> : null}
       <Text selectable style={s.output}>{rows.slice(start, end).map((line, index) => <Text key={start + index} style={search && hits.includes(start + index) ? s.hit : undefined}>{line}{start + index < end - 1 ? '\n' : ''}</Text>)}</Text>
-      {links.map((url) => <Pressable key={url} onPress={() => void Linking.openURL(url).catch(() => setMessage('无法打开这个链接'))} accessibilityRole="link"><Text style={s.link}>{url}</Text></Pressable>)}
+      {links.map((url) => <Pressable key={url} onPress={() => void Linking.openURL(url).catch(() => setMessage('无法打开这个链接'))} accessibilityRole="link" style={s.linkTarget}><Text style={s.link}>{url}</Text></Pressable>)}
     </View>
   </Sheet>;
 }
 function Button({ label, disabled, onPress }: { label: string; disabled?: boolean; onPress(): void }) {
-  return <Pressable disabled={disabled} onPress={onPress} style={[s.button, disabled && s.disabled]} accessibilityRole="button"><Text style={s.label}>{label}</Text></Pressable>;
+  return <Pressable disabled={disabled} onPress={onPress} hitSlop={4} style={[s.button, disabled && s.disabled]} accessibilityRole="button"><Text style={s.label}>{label}</Text></Pressable>;
 }
 const s = StyleSheet.create({
   body: { padding: 14, gap: 12 }, row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }, search: { color: colors.ink, backgroundColor: colors.surfaceSunken, padding: 12, borderRadius: 8 },
   note: { color: colors.muted, fontSize: 12 }, output: { color: colors.ink, fontFamily: fonts.mono, fontSize: 12, lineHeight: 18 }, hit: { backgroundColor: colors.surfaceRaised, color: colors.yellow },
-  button: { padding: 8, borderRadius: 6, backgroundColor: colors.surfaceRaised }, disabled: { opacity: 0.4 }, label: { color: colors.ink, fontSize: 12 }, link: { color: colors.blue, fontSize: 13 }, error: { color: colors.red, fontSize: 12 },
+  button: { minHeight: 36, paddingHorizontal: 12, justifyContent: 'center', borderRadius: 6, backgroundColor: colors.surfaceRaised }, disabled: { opacity: 0.4 }, label: { color: colors.ink, fontSize: 12 }, link: { color: colors.blue, fontSize: 13 }, linkTarget: { minHeight: 36, justifyContent: 'center' }, error: { color: colors.red, fontSize: 12 },
 });

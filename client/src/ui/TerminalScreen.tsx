@@ -6,7 +6,6 @@ import { desktopBridge } from '../platform/desktop';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { TerminalInputHandle } from '../../modules/terminal-input';
-import type { ConnectionStatus } from '../protocol/connection';
 import { HostStatusStore } from '../session/hostStatus';
 import { SurfaceActions } from '../session/surfaceActions';
 import { canCloseTerminal, pickDefaultTarget } from '../session/surfaces';
@@ -15,7 +14,7 @@ import { actionErrorText, workspaceActionsFor } from '../session/workspaceAction
 import { describeError } from '../session/terminalSession';
 import { TerminalConversationStore } from '../session/terminalConversation';
 import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
-import { backToWorkspaces } from '../state/navigation';
+import { backToWorkspaces, showWorkspaces } from '../state/navigation';
 import { clampFontSize, FONT_SIZE_MAX, FONT_SIZE_MIN, setPrefs, usePrefs } from '../state/prefs';
 import { sessionMemory } from '../state/sessionMemory';
 import { BatteryBadge } from './BatteryBadge';
@@ -24,7 +23,7 @@ import { InputBar } from './InputBar';
 import { ProjectBrowser } from './ProjectBrowser';
 import { SharedFilesBar, SharedFilesSheet } from './SharedFiles';
 import { SharedFilesStore } from '../session/sharedFiles';
-import { statusBanner, statusColor, statusLabel } from './status';
+import { isGuest, statusBanner, statusColor, statusLabel } from './status';
 import { Sheet, SheetRow, useSheet } from './Sheet';
 import { terminalColumns, TerminalView, type TerminalViewHandle } from './TerminalView';
 import { TerminalChatView } from './TerminalChatView';
@@ -35,6 +34,7 @@ import { onDesktopCommand, useDesktopShell } from './desktopShell';
 import { CloseButton } from './CloseButton';
 import { activityKey } from '../session/terminalActivity';
 import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBadge';
+import { bannerAction, placeholderLabel, terminalPlaceholder, type PlaceholderAction } from './terminalPlaceholder';
 
 /**
  * The terminal tab. Top to bottom: back to the list, the workspace and its
@@ -47,6 +47,9 @@ import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBa
  * On a phone the title row also holds the chat/terminal switch and a "⋯"
  * menu (files, search and copy, wrapping, text size), so the rows that held
  * them go to the terminal. The desktop keeps them in rows of their own.
+ *
+ * A phone in landscape keeps only one short title row: the terminal chips
+ * move into the "⋯" menu and the input bar drops its shortcut row.
  */
 export function TerminalScreen() {
   const { width, height } = useWindowDimensions();
@@ -63,7 +66,7 @@ export function TerminalScreen() {
 
 function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const machine = useMachine();
   const { channel, session } = machine;
   const status = useConnectionStatus(channel);
@@ -72,6 +75,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const { fontSize, inputMode, desktopInputMode, terminalPresentation, terminalWrap } = usePrefs();
   const desktop = desktopBridge() !== null;
   const compact = !desktop;
+  // Phone landscape: about 390 pt of height, so every row of chrome costs terminal lines.
+  const landscape = compact && !sidebar && windowWidth > windowHeight && windowHeight < 500;
   const menu = useSheet();
   const terminalView = useRef<TerminalViewHandle>(null);
   const chat = terminalPresentation === 'chat';
@@ -80,6 +85,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const desktopShell = useDesktopShell();
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
+  const [pickAttempt, setPickAttempt] = useState(0);
   const [projectOpen, setProjectOpen] = useState(false);
   // A window someone shared: its folder's files open with this device's own apps.
   const shared = Boolean(machine.computer?.share);
@@ -148,7 +154,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [isOpen, channel, session]);
+  }, [isOpen, channel, session, pickAttempt]);
 
   // The list may show another cmux window; the open terminal keeps its own titles.
   const workspace = workspaces.find((w) => w.id === target?.workspaceId) ?? (target ? known.workspaces[target.workspaceId] : undefined);
@@ -181,44 +187,68 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
 
   const siblings = target ? (surfaces[target.workspaceId] ?? known.surfaces[target.workspaceId] ?? []) : [];
   const surface = siblings.find((s) => s.id === target?.surfaceId);
-  const banner = statusBanner(status) ?? state.subscriptionError ?? targetError;
+  const placeholder = terminalPlaceholder({ status, hasTarget: Boolean(target), subscription: state.subscription, subscriptionError: state.subscriptionError, targetError });
+  // With nothing on screen the message and its button sit in the middle of
+  // the terminal; the banner would only repeat them.
+  const emptyTerminal = !chat && state.screen.rows.length === 0 && !state.browse;
+  const guest = isGuest(machine);
+  const statusProblem = statusBanner(status, guest);
+  const banner = statusProblem ?? (emptyTerminal ? null : state.subscriptionError ?? targetError);
+  const fix = banner ? bannerAction({ status, subscription: state.subscription, subscriptionError: state.subscriptionError, targetError }) : null;
+  // One button for one fix: an empty terminal already shows it in the middle.
+  const bannerFix = fix && !(emptyTerminal && placeholder.action === fix) ? fix : null;
+  const runPlaceholderAction = (action: PlaceholderAction) => {
+    // Skips the reconnect backoff, like returning to the app does.
+    if (action === 'reconnect') (channel as { wake?: () => void }).wake?.();
+    else if (action === 'retryTerminal') session.retrySubscription();
+    else { setTargetError(null); setPickAttempt((attempt) => attempt + 1); }
+  };
   // The last reading stays in the store while disconnected; it is stale, so hide it.
   const showBattery = isOpen && battery !== null;
   const side = { paddingLeft: insets.left, paddingRight: insets.right };
   const presentationTabs = (['chat', 'terminal'] as const).map(mode => <Pressable key={mode} onPress={() => setPrefs({ terminalPresentation: mode })}
+    // The segment is 30 pt tall; the slop makes each half a 44 pt target.
+    hitSlop={compact ? SEGMENT_SLOP : undefined}
     style={[compact ? styles.segmentTab : styles.presentationTab, mode === terminalPresentation && styles.presentationSelected]} accessibilityRole="tab" accessibilityState={{ selected: mode === terminalPresentation }}
     accessibilityLabel={mode === 'chat' ? '对话模式' : '终端模式'}>
     <Text style={[styles.presentationText, mode === terminalPresentation && styles.presentationTextSelected]}>{mode === 'chat' ? '对话' : '终端'}</Text>
   </Pressable>);
   const changeFontSize = (delta: number) => setPrefs({ fontSize: clampFontSize(fontSize + delta) });
+  const chipsShown = !keyboardVisible && !landscape && Boolean(target) && siblings.length > 0;
   // The phone's terminal spans the window, less the safe area.
   const columns = sidebar ? null : terminalColumns(windowWidth - insets.left - insets.right, fontSize);
 
   return (
     // Android too: edge-to-edge (forced from API 35) stops adjustResize from shrinking the window.
     <KeyboardAvoidingView nativeID="panecast-terminal" style={styles.screen} behavior="padding">
-      <View style={[styles.header, compact && styles.compactHeader, side, { paddingTop: insets.top }]}>
-        <View style={[styles.titleRow, desktopShell && styles.desktopTitleRow]}>
+      <View style={[styles.header, compact && styles.compactHeader, chipsShown && styles.headerWithChips, landscape && styles.landscapeHeader, side, { paddingTop: insets.top }]}>
+        <View style={[styles.titleRow, desktopShell && styles.desktopTitleRow, landscape && styles.landscapeTitleRow]}>
           {desktopShell ? null : <Pressable
             onPress={backToWorkspaces}
             style={({ pressed }) => [styles.back, pressed && styles.pressed]}
             hitSlop={6}
             accessibilityRole="button"
-            accessibilityLabel="返回工作区"
+            accessibilityLabel="返回"
           >
             <Icon name="back" size={17} color={colors.ink} />
           </Pressable>}
-          <View style={styles.titleText}>
+          {landscape ? <View style={[styles.titleText, styles.subtitleRow]}>
+            <View style={[styles.dot, { backgroundColor: machine.mode === 'demo' ? colors.yellow : statusColor(status) }]} />
+            <Text style={[styles.title, styles.landscapeTitle]} numberOfLines={1}>
+              {workspace?.title ?? '终端'}
+              <Text style={styles.subtitle}>{`  ${status.state === 'open' ? (surface?.title ?? '') : statusLabel(status, guest)}`}</Text>
+            </Text>
+          </View> : <View style={styles.titleText}>
             <Text style={styles.title} numberOfLines={1}>
               {workspace?.title ?? '终端'}
             </Text>
             <View style={styles.subtitleRow}>
               <View style={[styles.dot, { backgroundColor: machine.mode === 'demo' ? colors.yellow : statusColor(status) }]} />
               <Text style={styles.subtitle} numberOfLines={1}>
-                {status.state === 'open' ? (surface?.title ?? '') : statusLabel(status)}
+                {status.state === 'open' ? (surface?.title ?? '') : statusLabel(status, guest)}
               </Text>
             </View>
-          </View>
+          </View>}
           {compact ? <View style={styles.segment} accessibilityRole="tablist">{presentationTabs}</View> : null}
           {!compact && target ? <Pressable onPress={showFiles} style={styles.back} accessibilityRole="button" accessibilityLabel={shared ? '查看分享目录里的文件' : '查看项目文件与 Git 改动'}><Text style={{ color: colors.blue, fontSize: 13 }}>文件</Text></Pressable> : null}
           {showBattery || machine.mode === 'demo' ? (
@@ -232,8 +262,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
             <Text style={styles.moreText}>⋯</Text>
           </Pressable> : null}
         </View>
-        {!keyboardVisible && target && siblings.length > 0 ? (
-          <>
+        {chipsShown && target ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chips, compact && styles.compactChips]}>
               {siblings.map((item) => {
                 const selected = item.id === target.surfaceId;
@@ -246,7 +275,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
                     // The last terminal took its workspace with it. Without a sidebar there
                     // is nothing left to show here, so return to the list instead of
                     // following some other terminal that cmux has focused.
-                    if (!desktop && !sidebar && session.getState().target === null) backToWorkspaces();
+                    if (!desktop && !sidebar && session.getState().target === null) showWorkspaces();
                   }, error => setTargetError(describeError(error)));
                 };
                 return (
@@ -258,6 +287,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
                     }}
                     onLongPress={close}
                     disabled={busy}
+                    hitSlop={CHIP_SLOP}
                     style={styles.terminalChipLabel}
                     accessibilityRole="tab"
                     accessibilityLabel={item.title}
@@ -277,6 +307,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
               <Pressable
                 onPress={() => void actions.create(target.workspaceId)}
                 disabled={running !== null || readOnly}
+                hitSlop={CHIP_SLOP}
                 style={({ pressed }) => [styles.chip, styles.newChip, pressed && styles.newChipPressed, running === 'close' && styles.chipBusy]}
                 accessibilityRole="button"
                 accessibilityLabel="新建终端"
@@ -292,20 +323,25 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
                 <Text style={styles.newChipText}>新建</Text>
               </Pressable>
             </ScrollView>
-            {actionError ? (
-              <Text style={styles.actionError} numberOfLines={2}>
-                {actionError}
-              </Text>
-            ) : null}
-            {workspaceActionState.error?.workspaceId === target.workspaceId ? <Text style={styles.actionError}>{actionErrorText(workspaceActionState.error)}</Text> : null}
-          </>
         ) : null}
+        {target && actionError ? (
+          <Text style={styles.actionError} numberOfLines={2}>
+            {actionError}
+          </Text>
+        ) : null}
+        {target && workspaceActionState.error?.workspaceId === target.workspaceId ? <Text style={styles.actionError}>{actionErrorText(workspaceActionState.error)}</Text> : null}
       </View>
       {!compact ? <View style={[styles.presentation, side]} accessibilityRole="tablist">
         {presentationTabs}
         {chat ? <Text style={styles.chatHint} numberOfLines={1}>直接发送到当前终端</Text> : null}
       </View> : null}
-      {banner ? <Text style={[styles.banner, side]}>{banner}</Text> : null}
+      {banner ? <View style={[styles.bannerRow, side]}>
+        <Text style={[styles.banner, landscape && styles.landscapeBanner]} numberOfLines={landscape ? 2 : undefined}>{banner}</Text>
+        {bannerFix ? <Pressable onPress={() => runPlaceholderAction(bannerFix)} hitSlop={8} style={({ pressed }) => [styles.bannerButton, pressed && styles.pressed]}
+          accessibilityRole="button" accessibilityLabel={placeholderLabel(bannerFix)}>
+          <Text style={styles.bannerButtonText}>{placeholderLabel(bannerFix)}</Text>
+        </Pressable> : null}
+      </View> : null}
       <View style={[styles.terminal, side]}>
         {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} readOnly={readOnly} onShowTerminal={() => setPrefs({ terminalPresentation: 'terminal' })} /> : <TerminalView
           ref={terminalView}
@@ -317,7 +353,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
           state={state}
           fontSize={fontSize}
           onFontSizeChange={(size) => setPrefs({ fontSize: size })}
-          placeholder={placeholderFor(status, Boolean(target))}
+          placeholder={placeholder.text}
+          placeholderAction={placeholder.action ? { label: placeholder.label ?? '重试', onPress: () => runPlaceholderAction(placeholder.action!) } : null}
           onTap={() => {
             if (!desktop) void inputRef.current?.blur();
             else if (!readOnly && window.getSelection()?.isCollapsed !== false) void inputRef.current?.focus();
@@ -325,15 +362,20 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
         />}
       </View>
       <View style={[styles.bottom, side, { paddingBottom: keyboardVisible ? 0 : Math.max(insets.bottom - 10, 0) }]}>
-        {readOnly ? <Text style={{ color: colors.yellow, padding: 12 }}>这个连接源只允许读取</Text> : null}
+        {readOnly ? <Text style={[styles.readOnly, landscape && styles.landscapeReadOnly]}>这个来源只允许读取</Text> : null}
         {sharedFiles && target ? <SharedFilesBar store={sharedFiles} onShowAll={() => setFilesOpen(true)} /> : null}
         <InputBar key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}:${terminalPresentation}:${desktop ? desktopInputMode : inputMode}`} session={session} disabled={!target || readOnly} error={state.input.error} inputRef={inputRef}
-          presentation={terminalPresentation} onSubmitLine={chat ? text => conversation.send(text) : undefined} />
+          presentation={terminalPresentation} onSubmitLine={chat ? text => conversation.send(text) : undefined} compactHeight={landscape} />
       </View>
       {sharedFiles ? <SharedFilesSheet store={sharedFiles} visible={filesOpen} onClose={() => setFilesOpen(false)} /> : null}
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
       {compact ? <Sheet visible={menu.visible} title="终端" onClose={() => menu.close()} onClosed={menu.onClosed}>
-        {target ? <SheetRow title={shared ? '分享目录里的文件' : '项目文件与 Git 改动'} detail={shared ? '点文件用本机应用打开' : '浏览目录，查看未提交的改动'} divided={false} onPress={() => menu.close(showFiles)} /> : null}
+        {landscape && target && siblings.length > 1 ? siblings.map((item, index) => (
+          <SheetRow key={item.id} icon="terminal" title={item.title} divided={index > 0} selected={item.id === target.surfaceId}
+            accessibilityLabel={`切换到终端 ${item.title}`}
+            onPress={() => menu.close(() => { actions.clearError(); session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id }); })} />
+        )) : null}
+        {target ? <SheetRow title={shared ? '分享目录里的文件' : '项目文件与 Git 改动'} detail={shared ? '点文件用本机应用打开' : '浏览目录，查看未提交的改动'} divided={landscape && siblings.length > 1} onPress={() => menu.close(showFiles)} /> : null}
         {!chat ? <>
           <SheetRow icon="search" title="搜索 · 复制输出" divided={Boolean(target)} accessibilityLabel="搜索和复制终端输出" onPress={() => menu.close(() => terminalView.current?.openTools())} />
           <SheetRow title="自动折行" detail={terminalWrap ? '按手机宽度折行，续行与上一行的正文对齐' : '保留电脑上的原始列宽，左右滑动查看'}
@@ -355,11 +397,10 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   );
 }
 
-function placeholderFor(status: ConnectionStatus, hasTarget: boolean): string | null {
-  if (status.state === 'connecting' || status.state === 'idle') return '正在连接电脑…';
-  if (status.state !== 'open') return null;
-  return hasTarget ? '正在读取终端…' : '正在查找终端…';
-}
+const SEGMENT_SLOP = { top: 7, bottom: 7 };
+// Chips are 30 pt; the slop reaches into the chip row's own padding (a
+// scroll view clips touches outside its bounds).
+const CHIP_SLOP = { top: 4, bottom: 4 };
 
 const styles = StyleSheet.create({
   layout: { flex: 1, flexDirection: 'row', backgroundColor: colors.canvas },
@@ -371,8 +412,17 @@ const styles = StyleSheet.create({
   segmentTab: { paddingHorizontal: 10, justifyContent: 'center', borderRadius: 6 },
   moreText: { color: colors.ink, fontSize: 20, lineHeight: 22, fontWeight: '700' },
   compactHeader: { paddingBottom: 6 },
+  // The chip row's bottom padding replaces most of the header's, so the
+  // chips' touch area grows without the header growing.
+  headerWithChips: { paddingBottom: 2 },
+  landscapeHeader: { paddingBottom: 2 },
+  landscapeTitleRow: { paddingTop: 2 },
+  landscapeTitle: { flexShrink: 1 },
+  landscapeBanner: { paddingVertical: 4 },
+  readOnly: { color: colors.yellow, padding: 12 },
+  landscapeReadOnly: { paddingVertical: 4 },
   compactBadges: { marginRight: 0 },
-  compactChips: { paddingTop: 4 },
+  compactChips: { paddingTop: 4, paddingBottom: 4 },
   sizeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 54, paddingHorizontal: 18, paddingVertical: 9, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.divider },
   sizeText: { flex: 1, gap: 2 },
   sizeTitle: { color: colors.ink, fontSize: 16 },
@@ -406,7 +456,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     overflow: 'hidden',
   },
-  chips: { gap: 6, paddingHorizontal: 12, paddingTop: 8 },
+  chips: { gap: 6, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6 },
   terminalChip: { maxWidth: 230, height: 30, flexDirection: 'row', alignItems: 'center', borderRadius: 8, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.divider },
   terminalChipLabel: { flexShrink: 1, height: 28, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12 },
   chip: {
@@ -429,14 +479,17 @@ const styles = StyleSheet.create({
   newChipSpinner: { transform: [{ scale: 0.7 }] },
   newChipText: { color: colors.green, fontSize: 13, fontWeight: '600' },
   actionError: { color: colors.red, fontSize: 12, lineHeight: 16, paddingHorizontal: 12, paddingTop: 6 },
+  bannerRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surfaceRaised },
   banner: {
+    flex: 1,
     color: colors.yellow,
     fontSize: 13,
     lineHeight: 18,
     paddingHorizontal: 14,
     paddingVertical: 8,
-    backgroundColor: colors.surfaceRaised,
   },
+  bannerButton: { minHeight: 32, paddingHorizontal: 12, marginRight: 8, borderRadius: 8, justifyContent: 'center' },
+  bannerButtonText: { color: colors.blue, fontSize: 13, fontWeight: '600' },
   terminal: { flex: 1 },
   bottom: {
     backgroundColor: colors.surfaceSunken,

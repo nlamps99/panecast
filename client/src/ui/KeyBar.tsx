@@ -120,7 +120,8 @@ export function useKeyboardProfileEditor(session: TerminalSession) {
   const computerId = machine.computer?.id ?? 'demo', workspaceId = session.getState().target?.workspaceId ?? null;
   const profile = selectedKeyboardProfile(profiles, computerId, workspaceId);
   return {
-    button: <Pressable onPress={editor.open} style={styles.profile} accessibilityRole="button" accessibilityLabel={`快捷键配置：${profile.name}，点按自定义`}>
+    // 12 pt text in a short row: the slop makes it a finger-sized target.
+    button: <Pressable onPress={editor.open} style={styles.profile} hitSlop={PROFILE_SLOP} accessibilityRole="button" accessibilityLabel={`快捷键配置：${profile.name}，点按自定义`}>
       <Text style={styles.profileText} numberOfLines={1}>{profile.name} · 自定义按键 ›</Text>
     </Pressable>,
     editor: <KeyboardProfileEditor visible={editor.visible} onClose={() => editor.close()} onClosed={editor.onClosed} computerId={computerId} workspaceId={workspaceId} />,
@@ -208,6 +209,8 @@ function tapHaptic(): void {
       : Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   done.catch(() => {});
 }
+
+const PROFILE_SLOP = { top: 10, bottom: 8, left: 8, right: 8 };
 
 const styles = StyleSheet.create({
   profile: { flexShrink: 1, marginLeft: 'auto' },

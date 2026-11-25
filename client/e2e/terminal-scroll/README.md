@@ -7,17 +7,18 @@ On macOS, use a canonical project path such as `/private/tmp/panecast-terminal-u
 in both XcodeGen and xcodebuild so generated source paths stay valid.
 
 This exercises the actual terminal screen and native gestures for ordinary
-scrollback and an alternate-screen application with sticky header/footer rows.
+scrollback and an alternate-screen mouse program with sticky header/footer rows.
 Normal requests take 500 ms; before a fling the fixture delays network frames
 by 1.8 seconds. The test checks that visible text scrolls past the initial screen
-using locally prepared rows. It also verifies that remote application captures
-preserve the vertical position of a visible row while building the history.
-The regression concerns text movement and continuity, rather than wheel counts.
+using locally prepared rows, without skipping or repeating a row.
 It never controls an existing user terminal or starts a model request.
 
-The application fixture multiplies wheel input by nine and changes header,
-footer, and progress rows between captures. This reproduces the old alignment
-failure caused by scrolling a complete screen without overlap. The client must
-keep visible rows fixed and use reliable overlap even when status text redraws.
-The fixture also emits a cleared-prefix intermediate frame before the complete
-draw. The client must wait for the real revealed text before committing it.
+The program terminal has no session record: the fixture answers
+`terminal.conversation` with `available: false`, as the gateway does for vim or
+htop. Since 4c052e9 full-screen history comes from the session record and
+screens are no longer stitched, so a program without one scrolls itself. On a
+phone the test taps the floating ↑↓ at the right edge (one `terminal.scroll` of
+3 lines each way), then drags down past the top of the screen and checks that
+each request carries one wheel unit and that older program rows appear. The
+fixture multiplies wheel input by nine and emits a cleared-prefix frame before
+the complete draw.

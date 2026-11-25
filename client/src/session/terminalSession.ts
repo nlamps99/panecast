@@ -160,6 +160,7 @@ export class TerminalSession {
   private inspectingScroll = false;
   private scrollModeChecked = false;
   private queuedScroll = 0;
+  private scrollBatch = SCROLL_BATCH_LINES;
   private scrollingApplication = false;
   private scrollInFlight = 0;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -265,6 +266,12 @@ export class TerminalSession {
       });
     }
     if (target) void this.subscribeCurrent();
+  }
+
+  /** "重试" after the terminal could not be opened: subscribe to the same target again. */
+  retrySubscription(): void {
+    if (this.disposed || !this.state.target || this.replacing || this.state.subscription === 'subscribing' || this.state.subscription === 'live') return;
+    void this.subscribeCurrent();
   }
 
   /** Subscribes to the current target, retrying while the relay attaches the session. */
@@ -775,12 +782,19 @@ export class TerminalSession {
     }
   }
 
-  /** Scroll the selected application without injecting text or changing pane focus. */
-  scrollApplication(lines: number): void {
+  /**
+   * Scroll the selected application without injecting text or changing pane focus.
+   * A touch drag passes `batch: 1` (one wheel unit per request, so the program
+   * follows the finger) and a small `maxQueued`, dropping what the network
+   * cannot keep up with instead of scrolling on after the finger lifts.
+   */
+  scrollApplication(lines: number, options: { maxQueued?: number; batch?: number } = {}): void {
     if (!this.state.applicationScroll || !this.state.target || !this.channel.isOpen || this.disposed || !Number.isFinite(lines)) return;
     if (this.state.applicationScroll.error) return;
+    const limit = Math.max(1, Math.trunc(options.maxQueued ?? 120));
+    this.scrollBatch = Math.max(1, Math.min(SCROLL_BATCH_LINES, Math.trunc(options.batch ?? SCROLL_BATCH_LINES)));
     if (this.queuedScroll && Math.sign(lines) !== Math.sign(this.queuedScroll)) this.queuedScroll = 0;
-    this.queuedScroll = Math.max(-120, Math.min(120, this.queuedScroll + Math.trunc(lines)));
+    this.queuedScroll = Math.max(-limit, Math.min(limit, this.queuedScroll + Math.trunc(lines)));
     if (this.queuedScroll) this.pumpApplicationScroll();
   }
 
@@ -794,7 +808,7 @@ export class TerminalSession {
     const target = this.state.target, size = this.state.applicationScroll;
     if (!target || !size || !this.channel.isOpen || this.disposed) return;
     const generation = this.scrollGeneration;
-    const lines = Math.sign(this.queuedScroll) * Math.min(SCROLL_BATCH_LINES, Math.abs(this.queuedScroll));
+    const lines = Math.sign(this.queuedScroll) * Math.min(this.scrollBatch, Math.abs(this.queuedScroll));
     this.queuedScroll -= lines;
     this.scrollInFlight++;
     this.lastScrollSentAt = Date.now();

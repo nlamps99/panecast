@@ -82,3 +82,37 @@ it('drops queued gestures on a target switch and does not replay an uncertain fa
   expect(call.mock.calls.filter(([m]) => m === 'terminal.scroll')).toHaveLength(2);
   session.dispose();
 });
+
+it('sends a touch drag one wheel unit per request and drops what the network cannot keep up with', async () => {
+  jest.useFakeTimers();
+  const { session, call } = fixture();
+  call.mockResolvedValue(application); await session.inspectScrollMode();
+  const finishes: (() => void)[] = [];
+  call.mockImplementation(async (method) => method === 'terminal.scroll' ? new Promise<void>((resolve) => { finishes.push(resolve); }) : {});
+  const deltas = () => call.mock.calls.filter(([m]) => m === 'terminal.scroll').map(([, p]) => p?.delta_lines);
+  for (let i = 0; i < 20; i++) session.scrollApplication(1, { batch: 1, maxQueued: 6 });
+  await jest.advanceTimersByTimeAsync(200);
+  // Four in flight, at most six waiting: the rest of the fast drag is dropped.
+  expect(deltas()).toEqual([1, 1, 1, 1]);
+  for (const finish of finishes.splice(0)) finish();
+  await jest.advanceTimersByTimeAsync(400);
+  for (const finish of finishes.splice(0)) finish();
+  await jest.advanceTimersByTimeAsync(400);
+  expect(deltas().every((delta) => delta === 1)).toBe(true);
+  expect(deltas().length).toBeLessThanOrEqual(10);
+  session.dispose(); jest.useRealTimers();
+});
+
+it('subscribes again on retry after the terminal could not be opened', async () => {
+  const { session, call } = fixture();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  (session as unknown as { update(patch: object): void }).update({ subscription: 'error', subscriptionError: 'timeout' });
+  call.mockClear();
+  session.retrySubscription();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(call.mock.calls.filter(([m]) => m === 'surface.subscribe')).toHaveLength(1);
+  expect(session.getState().subscription).toBe('live');
+  session.retrySubscription();
+  expect(call.mock.calls.filter(([m]) => m === 'surface.subscribe')).toHaveLength(1);
+  session.dispose();
+});

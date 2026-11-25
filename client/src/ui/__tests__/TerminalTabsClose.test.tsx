@@ -27,7 +27,7 @@ jest.mock('../../state/hooks', () => {
   return { useMachine: () => mockMachine, useConnectionStatus: () => ({ state: mockMachine.channel.isOpen ? 'open' : 'idle' }),
     useStore: (store: { subscribe: (fn: () => void) => () => void; getState: () => unknown }) => React.useSyncExternalStore(store.subscribe, store.getState, store.getState) };
 });
-jest.mock('../../state/navigation', () => ({ backToWorkspaces: () => mockBack() }));
+jest.mock('../../state/navigation', () => ({ backToWorkspaces: jest.fn(), showWorkspaces: () => mockBack() }));
 jest.mock('../../state/prefs', () => ({ setPrefs: jest.fn(), clampFontSize: (size: number) => size, FONT_SIZE_MIN: 9, FONT_SIZE_MAX: 20,
   usePrefs: () => ({ fontSize: 13, inputMode: 'line', desktopInputMode: 'line', terminalPresentation: 'terminal', terminalWrap: true, tabletSidebar: false }) }));
 jest.mock('../Sheet', () => {
