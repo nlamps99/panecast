@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Panecast · 使用与帮助</title>
+  <style>
+    :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#131722;color:#e9edf4;line-height:1.8}body{max-width:800px;margin:0 auto;padding:40px 24px 64px}a{color:#b0d77f}h1{font-size:32px;line-height:1.3;margin:20px 0}h2{font-size:21px;margin:36px 0 12px}p,li{color:#b5bfd1}li{padding:4px 0}strong{color:#e9edf4}.brand{font-weight:650;letter-spacing:-.5px;color:#b0d77f}.note{padding:14px 18px;background:#212838;border-left:3px solid #e4b46c;border-radius:4px}.command{border:1px solid #374055;border-radius:8px;background:#101520;overflow:hidden}.bar{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;color:#9ca7bd;font-size:12px}button{font:inherit;color:#b0d77f;background:transparent;border:1px solid #44513b;border-radius:5px;padding:5px 12px;cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid #b0d77f;outline-offset:3px}pre{margin:0;padding:6px 16px 20px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.9 "SFMono-Regular",Consolas,monospace}code{font-family:"SFMono-Regular",Consolas,monospace}footer{margin-top:40px;padding-top:20px;border-top:1px solid #30364a;font-size:13px;color:#9ca7bd}@media(max-width:480px){body{padding:26px 18px 40px}h1{font-size:27px}}
+  </style>
+</head>
+<body>
+  <div class="brand"><a href="./" style="text-decoration:none;color:inherit">panecast.</a></div>
+  <h1>Panecast 使用与帮助</h1>
+  <p>Panecast 让你在手机和平板上查看、操作电脑上的终端，支持 cmux、tmux 和 Codex。</p>
+
+  <h2>先看看演示</h2>
+  <p>第一次打开 App 时，在连接页面点 <strong>「还没有电脑可连？先看看演示」</strong>。演示不需要账号、电脑或网络，可以体验工作区、终端输入和收件箱。</p>
+
+  <h2>连接自己的电脑</h2>
+  <ol>
+    <li>在电脑浏览器打开 <a href="./">ningzx.cn/panecast</a>，按页面上的命令安装 Panecast。</li>
+    <li>在电脑的终端里运行 <code>panecast setup</code>，按提示登录或注册账号；再运行 <code>panecast start</code>，让它在后台运行。</li>
+    <li>在手机上点「账号登录与电脑管理」，登录同一个账号，电脑会自动出现。不想登录账号的话，在电脑上运行 <code>panecast pair</code>，用手机扫它显示的二维码。</li>
+  </ol>
+  <p class="note">电脑需要开着、不休眠。经服务器连接时，终端内容会经过服务器，目前不是端到端加密，请只使用你信任的服务器。</p>
+
+  <h2>打开别人分享的窗口</h2>
+  <p>对方在电脑上运行 <code>panecast share</code> 后，会给你一把 <code>pcs1.</code> 开头的分享密钥。在连接页面点「没法扫码，或者有分享密钥？点这里粘贴」，粘贴后连接即可。密钥失效时，请向对方要一把新的。</p>
+
+  <h2>常见问题</h2>
+  <p><strong>连不上电脑</strong></p>
+  <ul>
+    <li>确认电脑开着、没有休眠，并在电脑上运行 <code>panecast status</code> 查看后台服务是否在运行；没有运行时执行 <code>panecast start</code>。</li>
+    <li>检查手机网络。同一 Wi-Fi 下直连时，请在 iOS「设置 → 隐私与安全性 → 本地网络」里允许 Panecast。</li>
+    <li>在 App 的「设置 → 连接诊断」运行自检，可以看到是哪一段连不上。</li>
+  </ul>
+  <p><strong>中文还没输完就发出去了</strong></p>
+  <p>输入框会等输入法确认后再发送。如果还能复现，请附上输入法名称、系统版本和操作步骤反馈给我们。</p>
+  <p><strong>收不到后台通知</strong></p>
+  <p>App 打开或刚切到后台时，新通知会马上提醒。App 在后台久了还能不能收到，要看电脑是否开启了 Apple 推送。可以在「设置 → 通知」里发一条测试通知看看。</p>
+  <p><strong>TestFlight 里没有新版本</strong></p>
+  <p>确认已接受测试邀请，打开 TestFlight 进入 Panecast 检查更新。测试版有有效期，过期后需要安装新的版本。</p>
+
+  <h2>反馈问题</h2>
+  <p>请在 <a href="https://github.com/nlamps99/panecast/issues">GitHub Issues</a> 提交，写上 Panecast 版本、系统版本、设备型号、连接方式和复现步骤。</p>
+  <p class="note">不要公开配对二维码、分享密钥、令牌或含有私人信息的终端内容。安全问题请使用 <a href="https://github.com/nlamps99/panecast/security/advisories/new">私密漏洞报告</a>。</p>
+  <footer><a href="./privacy.html">隐私政策</a> · <a href="./">下载 Panecast</a></footer>
+</body>
+</html>

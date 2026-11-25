@@ -15,7 +15,7 @@ import { SourceNavigation } from '../../state/sourceNavigation';
 import { conversationCache } from '../../session/conversationCache';
 import { openSurface } from '../../state/navigation';
 
-const modes = { terminal: '终端', history: '仅历史', attach: '共享会话服务', managed: '独立会话服务' };
+const modes = { terminal: '终端', history: '仅历史', attach: '连到正在运行的 Codex', managed: '由 Panecast 运行' };
 const statuses = { online: '在线', offline: '离线', revoked: '未授权', unknown: '检查中' };
 
 export default function SourcesScreen() {
@@ -89,7 +89,7 @@ function SourcesContent() {
   return (
     <KeyboardAvoidingView behavior="padding" style={[styles.screen, { paddingTop: insets.top + 12, paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>{state.thread ? 'Codex 会话' : source ? source.name : '连接源'}</Text>
+        <Text style={styles.title}>{state.thread ? 'Codex 会话' : source ? source.name : '来源'}</Text>
         {source ? <Button label="返回" onPress={() => { navigation.cancel(); navigation.markCompleted(`${computerId}:saved:`); if (routeSourceId) router.setParams({ sourceId: undefined, threadId: undefined }); if (state.thread) void store.selectSource(source.id); else { sessionMemory.rememberSource(computerId, null); void store.selectSource(null); } }} /> : <Button label="刷新" onPress={() => void store.refresh()} />}
       </View>
       <ComputerSwitcher />
@@ -98,9 +98,9 @@ function SourcesContent() {
       {state.loading && !state.turns.length ? <ActivityIndicator color={colors.green} style={{ marginVertical: 8 }} /> : null}
       {!source ? (
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={styles.help}>一台电脑，一次配对。这里集中显示电脑端已配置的终端和 Codex 来源。</Text>
-          {state.supported === false ? <Text style={styles.help}>当前连接使用单一终端 relay。安装统一网关后，这里会显示 cmux、tmux 和 Codex；已有终端仍可从工作区打开。</Text> : null}
-          {state.supported && !state.sources.length ? <Text style={styles.help}>还没有配置连接源。请在电脑端添加并授权来源，然后刷新。</Text> : null}
+          <Text style={styles.help}>这台电脑上能连的终端和 Codex 都列在这里。</Text>
+          {state.supported === false ? <Text style={styles.help}>这台电脑上的 Panecast 版本较旧，只能连一种终端。在电脑上安装新版 Panecast 后，这里会显示 cmux、tmux 和 Codex；现在的终端仍可以从「工作区」打开。</Text> : null}
+          {state.supported && !state.sources.length ? <Text style={styles.help}>这台电脑上还没有可连的终端或 Codex。在电脑上打开 cmux、tmux 或用过 Codex 后，一分钟内会自动出现，也可以点右上角的「刷新」。</Text> : null}
           {state.sources.map((item) => (
             <Pressable key={item.id} onPress={() => void open(item)} disabled={!item.enabled || (item.status !== 'online' && !store.hasCachedSource(item.id))} style={styles.card} accessibilityRole="button" accessibilityLabel={`打开 ${item.name}`}>
               <View style={styles.row}><Text style={styles.cardTitle}>{item.name}</Text><Text style={{ color: item.status === 'online' ? colors.green : colors.muted }}>{item.status !== 'online' && store.hasCachedSource(item.id) ? '本机记录' : statuses[item.status]}</Text></View>
@@ -108,7 +108,7 @@ function SourcesContent() {
               {item.error ? <Text style={styles.error}>{item.error}</Text> : null}
             </Pressable>
           ))}
-          <Text style={styles.help}>来源的读取、操作权限和撤销由电脑端管理。Codex 标为“仅历史”时，可以查看保存的对话；实时操作需要连接承载原会话的服务。</Text>
+          <Text style={styles.help}>能不能操作、能看哪些来源，由电脑上的设置决定。标为「仅历史」的 Codex 只能看保存的对话，要继续对话，得连到正在运行的 Codex。</Text>
         </ScrollView>
       ) : state.thread ? (
         <Conversation key={`${source.id}:${state.thread.id}`} source={source} store={store} connected={connection.state === 'open'} />

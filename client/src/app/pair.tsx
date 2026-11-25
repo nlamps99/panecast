@@ -1,7 +1,7 @@
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import { Redirect, router, useCanGoBack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { appStore, PairingError } from '../state/appStore';
@@ -9,6 +9,8 @@ import { useAppState } from '../state/hooks';
 import { storageSupported } from '../state/pairingStorage';
 import { Icon } from '../ui/Icon';
 import { ConnectionGuide } from '../ui/ConnectionGuide';
+import { describePairingInput } from '../ui/pairingInput';
+import { SignedOutNotice } from '../ui/SignedOutNotice';
 import { colors, fonts } from '../ui/theme';
 import { desktopBridge } from '../platform/desktop';
 
@@ -25,6 +27,7 @@ const RETRY_SAME_CODE_MS = 4_000;
  */
 export default function PairScreen() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const presented = useCanGoBack();
   const { phase, computers } = useAppState();
   const { computer: repairId } = useLocalSearchParams<{ computer?: string }>();
@@ -33,7 +36,8 @@ export default function PairScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const desktop = desktopBridge() !== null;
-  const [manual, setManual] = useState(desktop);
+  // A guest's key cannot be re-scanned; they paste the new one the owner sends.
+  const [manual, setManual] = useState(desktop || Boolean(repairing?.share));
   const [manualText, setManualText] = useState('');
   const handling = useRef(false);
   const rejected = useRef<{ data: string; at: number } | null>(null);
@@ -99,7 +103,12 @@ export default function PairScreen() {
     camera = (
       <View style={styles.center}>
         <Text style={styles.body}>需要相机权限来扫描电脑上的配对二维码。</Text>
-        <Pressable style={styles.button} onPress={requestPermission} accessibilityRole="button">
+        <Pressable
+          style={styles.button}
+          // Once denied, iOS never asks again; only the Settings app can turn the camera back on.
+          onPress={() => { if (permission.canAskAgain) void requestPermission(); else void Linking.openSettings(); }}
+          accessibilityRole="button"
+        >
           <Text style={styles.buttonText}>{permission.canAskAgain ? '允许使用相机' : '去设置里打开相机权限'}</Text>
         </Pressable>
       </View>
@@ -115,6 +124,15 @@ export default function PairScreen() {
     );
   }
 
+  // The camera gets about a third of the screen, so a 4.7-inch phone still
+  // shows the paste link, the demo and any error without scrolling.
+  const cameraSize = Math.round(Math.min(windowWidth - insets.left - insets.right - 40, 700, Math.max(180, windowHeight * 0.36)));
+  const recognised = manual ? describePairingInput(manualText) : null;
+  let instructions;
+  if (repairing?.share) instructions = <>「{repairing.name}」的分享密钥已失效。请向分享给你的人要一把新的密钥，粘贴到下面。</>;
+  else if (repairing) instructions = <>「{repairing.name}」的配对已失效。在这台电脑上运行 <Text style={styles.code}>panecast pair</Text>，{desktop ? '粘贴它显示的配对链接。' : '重新扫描它显示的二维码。'}</>;
+  else instructions = <>登录和电脑相同的账号，电脑会自动出现。也可以在电脑上运行 <Text style={styles.code}>panecast pair</Text>，{desktop ? '粘贴它显示的配对链接。' : '扫描它显示的二维码。'}</>;
+
   // Scrolls so the paste field and 配对 stay reachable above the keyboard (both platforms draw edge to edge).
   return (
     <KeyboardAvoidingView style={styles.fill} behavior="padding">
@@ -125,21 +143,11 @@ export default function PairScreen() {
       keyboardDismissMode="on-drag"
     >
       <Header title={title} presented={presented} />
+      <SignedOutNotice signIn={false} />
       <Pressable style={styles.button} onPress={() => router.push('/account')} accessibilityRole="button"><Text style={styles.buttonText}>账号登录与电脑管理</Text></Pressable>
-      <ConnectionGuide />
-      <Text style={styles.body}>
-        {repairing ? `「${repairing.name}」的配对已失效。在这台 Mac 上` : '在 Mac 上'}运行 <Text style={styles.code}>cmux-relay pair</Text>
-        {desktop ? '，然后粘贴它显示的配对链接。' : '，然后扫描它显示的二维码。'}
-      </Text>
-      <Text style={styles.body}>别人给了你某个窗口的分享密钥（pcs1. 开头）？直接粘贴到下面，不用配对。</Text>
-      {desktop ? null : <View style={styles.cameraBox}>{camera}</View>}
-      {busy ? (
-        <View style={styles.status}>
-          <ActivityIndicator color={colors.ink} />
-          <Text style={styles.body}>正在连接…</Text>
-        </View>
-      ) : null}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <Text style={styles.body}>{instructions}</Text>
+      {repairing?.share ? null : <ConnectionGuide />}
+      {desktop || manual ? null : <View style={[styles.cameraBox, { width: cameraSize, height: cameraSize }]}>{camera}</View>}
       {manual ? (
         <View style={styles.manual}>
           <TextInput
@@ -149,11 +157,15 @@ export default function PairScreen() {
             placeholderTextColor={colors.muted}
             autoCapitalize="none"
             autoCorrect={false}
+            // The link and the key are credentials; the line below says what was pasted instead.
             secureTextEntry
             returnKeyType="go"
             onSubmitEditing={() => manualText && !busy && void attempt(manualText)}
             style={styles.manualInput}
           />
+          {recognised ? (
+            <Text style={[styles.recognised, !recognised.ok && styles.unrecognised]} accessibilityLiveRegion="polite">{recognised.text}</Text>
+          ) : null}
           <Pressable
             style={[styles.button, (!manualText || busy) && styles.buttonDim]}
             disabled={!manualText || busy}
@@ -163,8 +175,20 @@ export default function PairScreen() {
             <Text style={styles.buttonText}>连接</Text>
           </Pressable>
         </View>
+      ) : null}
+      {busy ? (
+        <View style={styles.status}>
+          <ActivityIndicator color={colors.ink} />
+          <Text style={styles.body}>正在连接…</Text>
+        </View>
+      ) : null}
+      {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
+      {desktop ? null : manual ? (
+        <Pressable onPress={() => { setManual(false); setError(null); }} accessibilityRole="button" style={styles.linkButton}>
+          <Text style={styles.link}>改用扫码</Text>
+        </Pressable>
       ) : (
-        <Pressable onPress={() => setManual(true)} accessibilityRole="button">
+        <Pressable onPress={() => { setManual(true); setError(null); }} accessibilityRole="button" style={styles.linkButton}>
           <Text style={styles.link}>没法扫码，或者有分享密钥？点这里粘贴</Text>
         </Pressable>
       )}
@@ -211,8 +235,7 @@ const styles = StyleSheet.create({
   body: { color: colors.inkDim, fontSize: 15, lineHeight: 22 },
   code: { fontFamily: fonts.mono, color: colors.green },
   cameraBox: {
-    aspectRatio: 1,
-    width: '100%',
+    alignSelf: 'center',
     borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: colors.surfaceSunken,
@@ -225,7 +248,10 @@ const styles = StyleSheet.create({
   buttonDim: { opacity: 0.5 },
   buttonText: { color: colors.canvas, fontSize: 15, fontWeight: '600' },
   link: { color: colors.blue, fontSize: 14 },
-  demo: { marginTop: 'auto', alignSelf: 'center', paddingVertical: 8 },
+  linkButton: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center' },
+  demo: { marginTop: 'auto', alignSelf: 'center', minHeight: 44, justifyContent: 'center' },
+  recognised: { color: colors.green, fontSize: 13, lineHeight: 18 },
+  unrecognised: { color: colors.yellow },
   manual: { gap: 8 },
   manualInput: {
     color: colors.ink,

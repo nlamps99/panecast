@@ -2,6 +2,7 @@ import { Tabs, router, usePathname } from 'expo-router';
 import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { appStore } from '../../state/appStore';
+import { rememberTab } from '../../state/navigation';
 import { DesktopSidebar } from '../../ui/DesktopSidebar';
 import { useDesktopShell } from '../../ui/desktopShell';
 import { useDesktopShortcuts } from '../../ui/useDesktopShortcuts';
@@ -30,6 +31,8 @@ export default function TabsLayout() {
     // The desktop sidebar already lists the workspaces; the window shows a terminal.
     else if (desktop && pathname === '/') router.replace('/terminal');
   }, [computer?.id, pathname, desktop]);
+  // The terminal's back button returns to whichever tab opened it.
+  useEffect(() => { rememberTab(pathname); }, [pathname]);
   const { unread } = useStore(inbox);
   // The layout lives as long as the connection, so the history-lines pref follows changes here.
   useLiveLinesPref(session);

@@ -1,4 +1,4 @@
-import { Platform, Pressable, Switch, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { pushSummary, type PushSummary } from '../../notifications/controller';
@@ -10,11 +10,12 @@ import { localTimeZone, useNotificationRules } from '../../notifications/prefere
 import { Sheet, useSheet } from '../Sheet';
 import { colors } from '../theme';
 import { ActionRow, Section, settingsStyles as s } from './Section';
+import { formatClock, HOUR_CHOICES, MINUTE_CHOICES, withHour, withMinute } from './quietHours';
 import { desktopBridge } from '../../platform/desktop';
 import { desktopNotifications, testDesktopNotification } from '../../notifications/desktop';
 
 const IOS_FOOTNOTE =
-  '后台通知由电脑通过 Apple 推送发送。新版服务器支持直接转发推送登记，无需回到同一 Wi-Fi。电脑需要配置 Apple 推送；可用测试通知验证。';
+  'App 打开或刚切到后台时，新通知会马上提醒。App 在后台久了还能不能收到，要看电脑是否开启了 Apple 推送；可以发一条测试通知看看。';
 const ANDROID_FOOTNOTE =
   'Android 版不依赖 Google 推送服务：App 退到后台但还连着电脑时，新通知会出现在系统通知栏；App 被系统关掉后就收不到了。';
 
@@ -112,14 +113,14 @@ function NotificationRules() {
     <View style={[s.row, s.divided]}><View style={s.rowText}><Text style={s.rowTitle}>免打扰时段</Text><Text style={s.rowDetail}>{rules.quiet_hours.time_zone} · 起止相同表示全天</Text></View><Switch value={rules.quiet_hours.enabled} disabled={!loaded} onValueChange={(enabled) => store.update({ quiet_hours: { ...rules.quiet_hours, enabled } })} accessibilityLabel="免打扰时段" /></View>
     {rules.quiet_hours.enabled ? <>
       <View style={s.row}>
-        <TimeField key={`start:${rules.quiet_hours.start_minutes}`} label="开始" minutes={rules.quiet_hours.start_minutes} onSave={(start_minutes) => store.update({ quiet_hours: { ...rules.quiet_hours, start_minutes } })} />
-        <TimeField key={`end:${rules.quiet_hours.end_minutes}`} label="结束" minutes={rules.quiet_hours.end_minutes} onSave={(end_minutes) => store.update({ quiet_hours: { ...rules.quiet_hours, end_minutes } })} />
+        <TimeButton label="开始" minutes={rules.quiet_hours.start_minutes} disabled={!loaded} onSave={(start_minutes) => store.update({ quiet_hours: { ...rules.quiet_hours, start_minutes } })} />
+        <TimeButton label="结束" minutes={rules.quiet_hours.end_minutes} disabled={!loaded} onSave={(end_minutes) => store.update({ quiet_hours: { ...rules.quiet_hours, end_minutes } })} />
       </View>
       <ActionRow label="使用手机当前时区" onPress={() => store.update({ quiet_hours: { ...rules.quiet_hours, time_zone: localTimeZone() } })} />
     </> : null}
     <View style={[s.row, s.divided]}><View style={s.rowText}><Text style={s.rowTitle}>合并重复提醒</Text><Text style={s.rowDetail}>同一项目、同样内容，1 分钟内只提醒一次</Text></View><Switch value={rules.dedupe_seconds > 0} disabled={!loaded} onValueChange={(enabled) => store.update({ dedupe_seconds: enabled ? 60 : 0 })} accessibilityLabel="合并重复提醒" /></View>
     <View style={s.row}><Text style={s.rowDetail}>{Platform.OS === 'ios' && machine.computer
-      ? acknowledged ? '通知规则已同步到电脑，本机和后台推送均按规则提醒。' : '本机规则已启用；电脑尚未确认后台推送规则，请连接后重新注册。旧 relay 需要升级。'
+      ? acknowledged ? '通知规则已同步到电脑，本机和后台推送都按规则提醒。' : '这台手机已按规则提醒。电脑还没确认这些规则，后台推送可能不受规则限制；连上电脑后会自动同步，一直不同步的话请在电脑上更新 Panecast。'
       : '规则应用于本机提醒；手动设置的稍后提醒和测试通知不受免打扰规则影响。'}</Text></View>
     {error ? <View style={s.row}><Text style={s.rowDetail}>{error}</Text></View> : null}
     <Sheet title="项目静音" visible={sheet.visible} onClose={() => sheet.close()} onClosed={sheet.onClosed}>
@@ -128,12 +129,48 @@ function NotificationRules() {
     </Sheet>
   </>;
 }
-function TimeField({ label, minutes, onSave }: { label: string; minutes: number; onSave(value: number): void }) {
-  const [text, setText] = useState(`${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`);
-  const [invalid, setInvalid] = useState(false);
-  const save = () => { const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim()); if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) { setInvalid(true); return; } setInvalid(false); onSave(Number(match[1]) * 60 + Number(match[2])); };
-  return <View style={s.rowText}><Text style={s.rowDetail}>{label}（HH:mm）</Text><TextInput defaultValue={text} onChangeText={setText} onBlur={save} onSubmitEditing={save} autoCorrect={false} autoCapitalize="none" maxLength={5} accessibilityLabel={`免打扰${label}时间`} style={{ color: colors.ink, backgroundColor: colors.surfaceRaised, padding: 10, borderRadius: 6 }} /><Pressable onPress={save}><Text style={{ color: invalid ? colors.red : colors.blue, fontSize: 12 }}>{invalid ? '请输入有效时间，如 22:00' : '保存时间'}</Text></Pressable></View>;
+/** A time you pick from hour and minute grids instead of typing HH:mm. */
+function TimeButton({ label, minutes, disabled, onSave }: { label: string; minutes: number; disabled: boolean; onSave(value: number): void }) {
+  const sheet = useSheet();
+  const hour = Math.floor(minutes / 60), minute = minutes % 60;
+  return <>
+    <Pressable onPress={sheet.open} disabled={disabled} style={({ pressed }) => [time.button, pressed && s.pressed, disabled && time.dim]}
+      accessibilityRole="button" accessibilityLabel={`免打扰${label}时间`} accessibilityValue={{ text: formatClock(minutes) }} accessibilityHint="轻点修改">
+      <Text style={s.rowDetail}>{label}</Text>
+      <Text style={time.value}>{formatClock(minutes)}</Text>
+    </Pressable>
+    <Sheet title={`免打扰${label}时间 · ${formatClock(minutes)}`} visible={sheet.visible} onClose={() => sheet.close()} onClosed={sheet.onClosed}>
+      <View style={time.body}>
+        <Text style={s.rowDetail}>小时</Text>
+        <View style={time.grid}>{HOUR_CHOICES.map((h) => <Choice key={h} label={String(h).padStart(2, '0')} a11y={`${h} 点`} selected={h === hour} onPress={() => onSave(withHour(minutes, h))} />)}</View>
+        <Text style={s.rowDetail}>分钟</Text>
+        <View style={time.grid}>{MINUTE_CHOICES.map((m) => <Choice key={m} label={String(m).padStart(2, '0')} a11y={`${m} 分`} selected={m === minute} onPress={() => onSave(withMinute(minutes, m))} />)}</View>
+        <Pressable onPress={() => sheet.close()} style={time.done} accessibilityRole="button"><Text style={time.doneText}>完成</Text></Pressable>
+      </View>
+    </Sheet>
+  </>;
 }
+
+function Choice({ label, a11y, selected, onPress }: { label: string; a11y: string; selected: boolean; onPress(): void }) {
+  return <Pressable onPress={onPress} style={({ pressed }) => [time.choice, selected && time.selected, pressed && s.pressed]}
+    accessibilityRole="button" accessibilityLabel={a11y} accessibilityState={{ selected }}>
+    <Text style={[time.choiceText, selected && time.selectedText]}>{label}</Text>
+  </Pressable>;
+}
+
+const time = StyleSheet.create({
+  button: { flex: 1, minHeight: 52, justifyContent: 'center', gap: 2, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surfaceRaised },
+  value: { color: colors.ink, fontSize: 20, fontVariant: ['tabular-nums'] },
+  dim: { opacity: 0.5 },
+  body: { padding: 16, gap: 10 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  choice: { width: '15%', flexGrow: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: colors.surfaceRaised },
+  selected: { backgroundColor: colors.green },
+  choiceText: { color: colors.ink, fontSize: 15, fontVariant: ['tabular-nums'] },
+  selectedText: { color: colors.canvas, fontWeight: '600' },
+  done: { minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  doneText: { color: colors.blue, fontSize: 16, fontWeight: '600' },
+});
 
 type Label = { text: string; color: string; detail?: string };
 
@@ -181,9 +218,10 @@ function pushLabel(summary: PushSummary): Label {
           : '服务器已登记，但服务器还不能转发推送',
       };
     case 'broker_relay':
+      // Without Apple push credentials on the computer, alerts still arrive while the app runs.
       return summary.configured
-        ? { text: '电脑已登记', color: colors.green, detail: '经服务器登记成功，可以发送测试通知验证' }
-        : { text: '待配置', color: colors.yellow, detail: '登记已到达电脑，还需要配置 Apple 推送的凭据和环境' };
+        ? { text: '电脑已登记', color: colors.green, detail: '可以发一条测试通知看看' }
+        : { text: '仅在 App 运行时', color: colors.muted, detail: '电脑没有开启 Apple 推送，App 打开或刚切到后台时照常提醒' };
   }
 }
 

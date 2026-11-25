@@ -322,7 +322,7 @@ export class NotificationController {
       if (!response.ok || result.accepted !== true) throw new Error(pushTestError(result.error));
       return 'Apple 已接收测试通知，请检查手机是否收到。接收成功后即可确认这条推送链路。';
     } catch (error) {
-      if (controller.signal.aborted) throw new Error('测试超时，请检查服务器和电脑连接，并确认 relay 已升级');
+      if (controller.signal.aborted) throw new Error('测试超时，请检查网络和电脑连接，并确认电脑上的 Panecast 已更新');
       throw error;
     } finally { clearTimeout(timer); }
   }
@@ -596,7 +596,7 @@ export class NotificationController {
     if (this.deps.os !== 'android') return Promise.resolve();
     this.channelReady ??= Notifications.setNotificationChannelAsync(ANDROID_CHANNEL, {
       name: '收件箱通知',
-      description: 'cmux 发来的通知，比如任务完成、agent 在等你回复',
+      description: '电脑上终端发来的通知，比如任务完成、Claude 或 Codex 在等你回复',
       importance: ANDROID_IMPORTANCE_HIGH,
     }).then(
       () => undefined,
@@ -636,7 +636,7 @@ export class NotificationController {
     if (!this.appActive || this.route === '/terminal' || this.route === '/pair') return;
     this.offerPending = false;
     this.persist({ offered: true });
-    this.deps.confirm('开启通知？', '电脑上的任务完成、或者 agent 在等你回复时，即使没在看 App 也能收到提醒。', [
+    this.deps.confirm('开启通知？', '电脑上的任务完成，或者 Claude、Codex 在等你回复时，即使没在看 App 也能收到提醒。', [
       { text: '以后再说', style: 'cancel' },
       { text: '开启', onPress: () => void this.enable() },
     ]);
@@ -815,9 +815,9 @@ function pushTestError(code: unknown): string {
     push_not_registered: '请先点击「重新注册推送」，再测试',
     invalid_push_token_or_topic: 'Apple 拒绝了推送令牌，请检查电脑上的 App 标识和推送环境后重新注册',
     relay_offline: '电脑离线，请先恢复连接',
-    push_relay_timeout_or_upgrade_required: '电脑没有回复，请确认 relay 已升级并在线',
+    push_relay_timeout_or_upgrade_required: '电脑没有回复，请确认电脑上的 Panecast 正在运行并已更新',
     apns_request_failed_check_relay_config: '电脑无法发送到 Apple，请检查推送配置和网络',
-    not_found: '服务器尚不支持测试推送，请升级 broker 和 relay',
+    not_found: '服务器还不支持测试推送，请更新电脑上的 Panecast',
   };
   return typeof code === 'string' ? messages[code] ?? `推送失败：${code}` : '推送测试失败，请检查电脑端配置';
 }

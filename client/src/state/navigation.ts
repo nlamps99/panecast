@@ -17,8 +17,27 @@ export function openSurface(machine: Machine, workspaceId: string, surfaceId: st
   router.navigate('/terminal');
 }
 
-/** From the terminal back to the workspace list. */
+/**
+ * The tab a terminal was opened from. The tabs navigator's own history goes
+ * back to its first route, so the terminal's back button would always land on
+ * 工作区, even for a terminal opened from 收件箱 or 来源.
+ */
+let terminalOrigin = '/';
+
+/** The tabs layout reports each tab the user lands on, except the terminal itself. */
+export function rememberTab(pathname: string): void {
+  if (pathname !== '/terminal') terminalOrigin = TAB_PATHS.has(pathname) ? pathname : '/';
+}
+const TAB_PATHS = new Set(['/', '/inbox', '/sources', '/settings']);
+
+/** From the terminal back to the tab it was opened from (工作区 unless it came from another tab). */
 export function backToWorkspaces(): void {
+  router.navigate(terminalOrigin as '/');
+}
+
+/** Always to the workspace list, wherever the terminal came from. */
+export function showWorkspaces(): void {
+  terminalOrigin = '/';
   router.navigate('/');
 }
 

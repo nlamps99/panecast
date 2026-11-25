@@ -6,8 +6,9 @@ import { Alert } from '../../platform/alert';
 import { PROTOCOL_VERSION } from '../../protocol/frames';
 import { ActionRow, Section, settingsStyles as s } from './Section';
 
+/** Served with the download page (distribution/site), which loads in China where GitHub often does not. */
 function openHelp(page: 'support' | 'privacy'): void {
-  void Linking.openURL(`https://github.com/nlamps99/panecast/blob/app-store-support/store/${page}.md`).catch(() => {
+  void Linking.openURL(`https://ningzx.cn/panecast/${page}.html`).catch(() => {
     Alert.alert('无法打开页面', '请检查网络连接后重试。');
   });
 }

@@ -209,7 +209,7 @@ export class InboxStore {
       const buffered = this.liveBuffer; this.liveBuffer = [];
       for (const event of buffered) this.ingest(event, false, true);
       this.syncState({ status: unsupported ? 'unsupported' : 'error', gap: this.state.sync?.gap ?? false,
-        message: unsupported ? '电脑尚不支持离线通知补齐，请升级 relay；在线通知仍可接收' : '通知补齐失败，已有记录已保留，点按重试' });
+        message: unsupported ? '电脑上的 Panecast 版本较旧，还不能补齐离线通知，请在电脑上更新；在线通知照常接收' : '通知补齐失败，已有记录已保留，点按重试' });
     }
   }
 

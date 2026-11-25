@@ -29,14 +29,14 @@ export function ProjectBrowser({ target, channel, onClose }: { target: SurfaceTa
       else if (method === 'project.diff') setDiff(result as Diff);
       else setFile(parseProjectFile(result));
     } catch (failure) {
-      if (token === generation.current) setError(`读取失败：${describeError(failure)}。此功能需要新版 relay。`);
+      if (token === generation.current) setError(`读取失败：${describeError(failure)}。这个功能需要更新电脑上的 Panecast。`);
     } finally { if (token === generation.current) setBusy(false); }
   };
   useEffect(() => {
     const token = ++generation.current;
     void channel.call<Directory>('project.list', { workspace_id: target.workspaceId, surface_id: target.surfaceId, path: '' }, 20_000)
       .then((result) => { if (token === generation.current) setDirectory(result); })
-      .catch((failure: unknown) => { if (token === generation.current) setError(`读取失败：${describeError(failure)}。此功能需要新版 relay。`); })
+      .catch((failure: unknown) => { if (token === generation.current) setError(`读取失败：${describeError(failure)}。这个功能需要更新电脑上的 Panecast。`); })
       .finally(() => { if (token === generation.current) setBusy(false); });
     return () => { generation.current = -1; };
   }, [channel, target.workspaceId, target.surfaceId]);

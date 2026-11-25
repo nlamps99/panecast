@@ -8,7 +8,9 @@ jest.mock('../../session/surfaces', () => ({ listSurfaces: jest.fn() }));
 // eslint-disable-next-line import/first
 import { listSurfaces } from '../../session/surfaces';
 // eslint-disable-next-line import/first
-import { openRecentSurface, openSurface } from '../navigation';
+import { backToWorkspaces, openRecentSurface, openSurface, rememberTab, showWorkspaces } from '../navigation';
+// eslint-disable-next-line import/first
+import { router } from 'expo-router';
 
 function deferred() { let resolve!: (items: Awaited<ReturnType<typeof listSurfaces>>) => void; const promise = new Promise<Awaited<ReturnType<typeof listSurfaces>>>((done) => { resolve = done; }); return { resolve, promise }; }
 const entry = (id: string) => ({ workspaceId: 'w', surfaceId: id, title: id, workspaceTitle: 'w', windowId: null, at: 0 });
@@ -34,4 +36,24 @@ it('a pending recent lookup cannot override a later direct terminal selection', 
   openSurface(mockMachine, 'w', 'b');
   pending.resolve([surface('a')]); await first;
   expect(mockMachine.session.getState().target?.surfaceId).toBe('b');
+});
+
+it('the terminal goes back to the tab that opened it', () => {
+  rememberTab('/inbox');
+  rememberTab('/terminal');
+  backToWorkspaces();
+  expect(router.navigate).toHaveBeenLastCalledWith('/inbox');
+  rememberTab('/sources');
+  backToWorkspaces();
+  expect(router.navigate).toHaveBeenLastCalledWith('/sources');
+  rememberTab('/somewhere-else');
+  backToWorkspaces();
+  expect(router.navigate).toHaveBeenLastCalledWith('/');
+});
+it('showWorkspaces always lands on the list and resets the origin', () => {
+  rememberTab('/inbox');
+  showWorkspaces();
+  expect(router.navigate).toHaveBeenLastCalledWith('/');
+  backToWorkspaces();
+  expect(router.navigate).toHaveBeenLastCalledWith('/');
 });

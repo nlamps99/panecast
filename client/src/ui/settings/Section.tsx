@@ -42,6 +42,7 @@ export function Stepper({ label, a11y, disabled, onPress }: { label: string; a11
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      hitSlop={{ top: 6, bottom: 6 }}
       style={({ pressed }) => [settingsStyles.stepper, (pressed || disabled) && settingsStyles.stepperDim]}
       accessibilityRole="button"
       accessibilityLabel={a11y}

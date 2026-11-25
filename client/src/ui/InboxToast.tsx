@@ -1,6 +1,6 @@
 import { router, usePathname } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AccessibilityInfo, Animated as RNAnimated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInUp, FadeOutUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -15,13 +15,16 @@ import { notificationGroup } from '../notifications/preferences';
 import { desktopBridge } from '../platform/desktop';
 
 const SHOW_MS = 4_000;
+/** An upward drag past this many points dismisses the banner, as with system notifications. */
+const DISMISS_DRAG = 24;
 
 type Shown = { id: string; machine: Machine; seq: number };
 
 /**
  * A short banner at the top of the screen when an inbox item arrives and the
  * user is not on that item's terminal (nor on the inbox). Tapping it opens
- * the terminal. Mount it once inside the root layout, after the navigator: it
+ * the terminal; swiping it up dismisses it, so the header and its buttons
+ * underneath are usable right away. Mount it once inside the root layout, after the navigator: it
  * positions itself absolutely over the screens and lets touches through
  * around the banner. Renders nothing without a connected computer.
  */
@@ -68,6 +71,20 @@ function MachineToast({ machine }: { machine: Machine }) {
     return () => clearTimeout(timer);
   }, [shown]);
 
+  const drag = useMemo(() => new RNAnimated.Value(0), []);
+  const swipe = useMemo(() => PanResponder.create({
+    // Only an upward drag, taken from the Pressable underneath (which lets go); taps still open the item.
+    onMoveShouldSetPanResponderCapture: (_, g) => g.dy < -6 && Math.abs(g.dy) > Math.abs(g.dx),
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderMove: (_, g) => drag.setValue(Math.min(0, g.dy)),
+    onPanResponderRelease: (_, g) => {
+      if (g.dy < -DISMISS_DRAG || g.vy < -0.5) setShown(null);
+      else RNAnimated.spring(drag, { toValue: 0, useNativeDriver: true }).start();
+    },
+    onPanResponderTerminate: () => RNAnimated.spring(drag, { toValue: 0, useNativeDriver: true }).start(),
+  }), [drag]);
+  useEffect(() => { drag.setValue(0); }, [shown, drag]);
+
   // Hide once the item is read (or deleted) elsewhere, or when the user switches computer.
   const item = shown && shown.machine === machine ? items.find((i) => i.id === shown.id) : undefined;
   const visible = item !== undefined && !item.read && pathname !== '/inbox';
@@ -87,11 +104,14 @@ function MachineToast({ machine }: { machine: Machine }) {
     <View style={[styles.host, { top: insets.top + 6, left: insets.left + 12, right: insets.right + 12 }]}>
       {visible && shown ? (
         <Animated.View key={shown.seq} entering={FadeInUp.duration(180)} exiting={FadeOutUp.duration(160)}>
+          <RNAnimated.View style={{ transform: [{ translateY: drag }] }} {...swipe.panHandlers}>
           <Pressable
             onPress={() => open(item)}
             style={({ pressed }) => [styles.card, item.needsInput && styles.cardNeedsInput, pressed && styles.pressed]}
             accessibilityRole="button"
-            accessibilityHint="打开对应的终端"
+            accessibilityHint="打开对应的终端，向上滑动可以关闭"
+            accessibilityActions={[{ name: 'escape', label: '关闭' }]}
+            onAccessibilityAction={(event) => { if (event.nativeEvent.actionName === 'escape') setShown(null); }}
           >
             <View style={styles.top}>
               {item.needsInput ? <Text style={styles.chip}>待回应</Text> : null}
@@ -105,11 +125,12 @@ function MachineToast({ machine }: { machine: Machine }) {
               </Text>
             ) : null}
             {item.body ? (
-              <Text style={styles.body} numberOfLines={2}>
+              <Text style={styles.body} numberOfLines={1}>
                 {item.body}
               </Text>
             ) : null}
           </Pressable>
+          </RNAnimated.View>
         </Animated.View>
       ) : null}
     </View>

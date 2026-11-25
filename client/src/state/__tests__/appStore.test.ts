@@ -330,5 +330,26 @@ describe('account computers', () => {
     expect(store.getState().account).toBeNull();
     expect(active.stopped).toBe(true);
     expect((await loadComputers()).computers).toEqual([]);
+    // The next screen says why, until dismissed or the user signs in again.
+    expect(store.getState().signedOut).toContain('alice');
+    store.dismissSignedOut();
+    expect(store.getState().signedOut).toBeNull();
+  });
+
+  it('signing in again clears the expired-session notice', async () => {
+    const store = await storeWith([]);
+    await store.login(SERVER, 'alice', 'long password', false);
+    request.mockRejectedValueOnce(new accountApi.AccountError(401, 'account_unauthorized'));
+    await expect(store.refreshAccount()).rejects.toThrow();
+    expect(store.getState().signedOut).toBeTruthy();
+    await store.login(SERVER, 'alice', 'long password', false);
+    expect(store.getState().signedOut).toBeNull();
+  });
+
+  it('a logout the user asked for shows no notice', async () => {
+    const store = await storeWith([]);
+    await store.login(SERVER, 'alice', 'long password', false);
+    await store.logout();
+    expect(store.getState().signedOut ?? null).toBeNull();
   });
 });

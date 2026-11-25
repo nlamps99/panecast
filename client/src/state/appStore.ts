@@ -55,6 +55,8 @@ export type AppStoreState = {
   machine: Machine | null;
   account: AccountSession | null;
   accountError: string | null;
+  /** Why the account was signed out without the user asking (its session expired or was revoked). Shown until dismissed. */
+  signedOut?: string | null;
 };
 
 function log(message: string) {
@@ -278,8 +280,13 @@ export class AppStore {
     try { await saveAccount(account); }
     catch (error) { await accountRequest(account.serverUrl, 'logout', 'POST', undefined, account.token).catch(() => {}); throw error; }
     this.accountGeneration++;
-    this.setState({ ...this.state, account, accountError: null });
+    this.setState({ ...this.state, account, accountError: null, signedOut: null });
     await this.refreshAccount();
+  }
+
+  /** Hides the notice about an automatic sign-out. */
+  dismissSignedOut(): void {
+    if (this.state.signedOut) this.setState({ ...this.state, signedOut: null });
   }
 
   refreshAccount(): Promise<void> {
@@ -316,7 +323,11 @@ export class AppStore {
       this.setState({ ...this.state, accountError: null });
     } catch (error) {
       if (generation !== this.accountGeneration) return;
-      if (error instanceof AccountError && error.status === 401) await this.clearAccount();
+      if (error instanceof AccountError && error.status === 401) {
+        await this.clearAccount();
+        this.setState({ ...this.state, signedOut: `账号「${account.user.username}」的登录已过期，已自动退出。它的电脑已从这台手机移除，重新登录后会回来。` });
+        throw error;
+      }
       this.setState({ ...this.state, accountError: error instanceof Error ? error.message : '同步失败，请重试。' });
       throw error;
     }
@@ -346,6 +357,8 @@ export class AppStore {
 
   async deleteAccount(password: string): Promise<void> {
     const account = this.requireAccount();
+    // A refresh landing after the delete would get 401 and report an expired login.
+    this.invalidateAccountRefresh();
     await accountRequest(account.serverUrl, 'me', 'DELETE', { password }, account.token);
     await this.clearAccount();
   }

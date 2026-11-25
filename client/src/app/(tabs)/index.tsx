@@ -1,18 +1,22 @@
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { canManage, windowLabel, type SurfaceInfo, type WorkspaceInfo } from '../../session/surfaces';
 import { actionErrorText, workspaceActionsFor } from '../../session/workspaceActions';
+import type { CloseReason, ConnectionStatus } from '../../protocol/connection';
 import { useConnectionStatus, useMachine, useStore } from '../../state/hooks';
 import { openRecentSurface, openSurface } from '../../state/navigation';
 import { sessionMemory, useSessionMemory } from '../../state/sessionMemory';
 import { Icon } from '../../ui/Icon';
 import { ComputerSwitcher } from '../../ui/ComputerSwitcher';
 import { NameDialog } from '../../ui/NameDialog';
-import { statusBanner } from '../../ui/status';
+import { isGuest, offlineNotice, statusBanner } from '../../ui/status';
+import { appStore } from '../../state/appStore';
+import { SignedOutNotice } from '../../ui/SignedOutNotice';
+import { StatusBarScrim } from '../../ui/StatusBarScrim';
 import { colors, fonts } from '../../ui/theme';
 import { WindowChips } from '../../ui/WindowChips';
 import { WorkspaceMenu, type WorkspaceMenuStage } from '../../ui/WorkspaceMenu';
@@ -22,6 +26,9 @@ import { CloseButton } from '../../ui/CloseButton';
 import { confirmClose } from '../../platform/confirm';
 import { requestWorkspaceClose } from '../../session/closeRequests';
 import { desktopBridge } from '../../platform/desktop';
+
+/** How long the list may say 正在连接 before it explains what might be wrong. */
+const SLOW_CONNECT_MS = 10_000;
 
 /**
  * Phones swipe a card left for 置顶 and 关闭, which keeps the narrow title row
@@ -62,7 +69,11 @@ export default function WorkspacesScreen() {
     if (openCard.current && openCard.current.id !== id) openCard.current.methods.close();
     openCard.current = { id, methods };
   };
-  const banner = statusBanner(status);
+  // Between retries the status is briefly `connecting`; keep showing why the last attempt failed.
+  const steady = useSteadyStatus(status);
+  const banner = machine.mode === 'demo' ? null : statusBanner(steady, isGuest(machine));
+  const slow = useSlowConnect(machine.mode !== 'demo' && status.state !== 'open' && status.state !== 'auth_failed');
+  const offline = machine.mode === 'demo' ? null : offlineNotice(steady, slow);
   const canCreate = status.state === 'open' && !creating && canManage(windows.find((w) => w.id === selectedWindowId));
 
   useFocusEffect(
@@ -93,9 +104,11 @@ export default function WorkspacesScreen() {
   const dismissCreate = () => setCreateDialog((d) => (d ? { ...d, open: false } : d));
 
   return (
+    <View style={styles.screen}>
+    {/* The list starts below the status bar so the pull-to-refresh spinner isn't hidden under the scrim. */}
     <ScrollView
-      style={styles.screen}
-      contentContainerStyle={[styles.content, { paddingTop: insets.top + 12, paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }]}
+      style={[styles.screen, { marginTop: insets.top }]}
+      contentContainerStyle={[styles.content, { paddingTop: 12, paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }]}
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
       refreshControl={
@@ -127,7 +140,16 @@ export default function WorkspacesScreen() {
         <ComputerSwitcher />
       </View>
 
+      <SignedOutNotice />
       {banner ? <Text style={styles.banner}>{banner}</Text> : null}
+      {offline ? (
+        <View style={styles.offline} accessibilityRole="alert">
+          <Text style={styles.offlineText}>{offline}</Text>
+          <Pressable onPress={() => appStore.wake()} style={({ pressed }) => [styles.retry, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="立即重新连接">
+            <Text style={styles.retryText}>重试</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {memory.recent.length > 0 ? <View style={styles.recentBlock}>
         <Text style={styles.recentTitle}>最近访问</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentList}>
@@ -194,7 +216,7 @@ export default function WorkspacesScreen() {
           </Text>
         </View>
       ) : null}
-      {!loaded ? <Text style={styles.emptyText}>{status.state === 'open' ? '正在读取工作区…' : '正在连接电脑…'}</Text> : null}
+      {!loaded && !offline && !banner ? <Text style={styles.emptyText}>{status.state === 'open' ? '正在读取工作区…' : '正在连接电脑…'}</Text> : null}
       {loaded && workspaces.length > 0 && shown.length === 0 ? <Text style={styles.emptyText}>没有匹配「{query}」的工作区</Text> : null}
       {swipe && shown.length > 0 ? <Text style={styles.hint}>{shown.some(w => canManage(w)) ? '向左滑动卡片可以置顶或关闭；长按可以重命名' : '向左滑动卡片可以置顶'}</Text>
         : shown.some(w => canManage(w)) ? <Text style={styles.hint}>点 × 关闭工作区；长按可以重命名</Text> : null}
@@ -233,7 +255,32 @@ export default function WorkspacesScreen() {
         />
       ) : null}
     </ScrollView>
+    <StatusBarScrim />
+    </View>
   );
+}
+
+/** True once `connecting` has lasted SLOW_CONNECT_MS; resets as soon as it stops. */
+function useSlowConnect(connecting: boolean): boolean {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!connecting) return;
+    const timer = setTimeout(() => setSlow(true), SLOW_CONNECT_MS);
+    return () => {
+      clearTimeout(timer);
+      setSlow(false);
+    };
+  }, [connecting]);
+  return connecting && slow;
+}
+
+/** A reconnect attempt keeps the reason the previous one failed, so the banner does not flicker. */
+function useSteadyStatus(status: ConnectionStatus): ConnectionStatus {
+  const [reason, setReason] = useState<CloseReason | null>(null);
+  if (status.state === 'waiting' && status.reason !== reason) setReason(status.reason);
+  if ((status.state === 'open' || status.state === 'auth_failed') && reason !== null) setReason(null);
+  if (status.state === 'connecting' && status.attempt > 0 && reason) return { state: 'waiting', attempt: status.attempt, retryAt: 0, reason };
+  return status;
 }
 
 function ErrorRow({ text, onDismiss }: { text: string; onDismiss: () => void }) {
@@ -438,6 +485,10 @@ const styles = StyleSheet.create({
   },
   dimmed: { opacity: 0.4 },
   banner: { color: colors.yellow, fontSize: 13, lineHeight: 18, padding: 12, borderRadius: 10, backgroundColor: colors.surface },
+  offline: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 12, paddingVertical: 4, borderRadius: 10, backgroundColor: colors.surface, borderLeftWidth: 3, borderLeftColor: colors.orange },
+  offlineText: { flex: 1, color: colors.ink, fontSize: 13, lineHeight: 18, paddingVertical: 8 },
+  retry: { minWidth: 64, minHeight: 44, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  retryText: { color: colors.blue, fontSize: 15, fontWeight: '600' },
   search: {
     flexDirection: 'row',
     alignItems: 'center',

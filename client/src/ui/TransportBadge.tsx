@@ -25,7 +25,7 @@ export function useActiveTransport(channel: unknown): ActiveTransport | null {
 
 export const LAN_HINT = '局域网链路不加密，只在可信网络下使用。';
 
-const LOCAL_LABEL = { text: '本机', a11y: '已直接连接本机网关，不经过服务器' };
+const LOCAL_LABEL = { text: '本机', a11y: '已直接连接这台电脑，不经过服务器' };
 
 const LABELS: Record<ActiveTransport, { text: string; a11y: string }> = {
   lan: { text: '局域网', a11y: '已通过局域网连接，链路未加密' },

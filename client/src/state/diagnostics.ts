@@ -14,7 +14,7 @@ async function health(base: string, name: string, fetchImpl: typeof fetch, broke
     if (!response.ok) return { name, state: 'error', detail: `HTTP ${response.status}，请检查服务是否启动` };
     const body = await response.json();
     if (body.ok !== true) return { name, state: 'warning', detail: '地址可达，但返回内容不符合 Panecast 健康检查' };
-    return { name, state: body.relay_online === false ? 'warning' : 'ok', detail: body.relay_online === false ? '服务器可达，电脑离线；检查电脑上的 relay 是否运行' : '服务可达', ms: Date.now() - started };
+    return { name, state: body.relay_online === false ? 'warning' : 'ok', detail: body.relay_online === false ? '服务器可达，但电脑不在线；请确认电脑上的 Panecast 正在运行' : '服务可达', ms: Date.now() - started };
   } catch { return { name, state: 'error', detail: abort.signal.aborted ? '连接超时；检查网络、地址和防火墙' : '无法访问；检查网络和服务地址' }; }
   finally { clearTimeout(timer); }
 }
@@ -33,12 +33,12 @@ export async function diagnose(machine: Machine, fetchImpl: typeof fetch = servi
     const started = Date.now();
     try {
       const result = await machine.channel.call<{ backend?: string; backend_ready?: boolean }>('relay.diagnostics', {}, 5000);
-      backend = { name: '终端后端', state: result.backend_ready ? 'ok' : 'error', detail: result.backend_ready ? `${result.backend ?? '终端'} 正常` : 'relay 在线，但终端不可用；请打开终端并检查连接权限', ms: Date.now() - started };
+      backend = { name: '终端后端', state: result.backend_ready ? 'ok' : 'error', detail: result.backend_ready ? `${result.backend ?? '终端'} 正常` : '电脑在线，但终端不可用；请打开终端并检查连接权限', ms: Date.now() - started };
     } catch {
       try {
         await machine.channel.call('workspace.list', {}, 5000);
-        backend = { name: '终端后端', state: 'ok', detail: '工作区可读取；升级 relay 可获得更完整的诊断', ms: Date.now() - started };
-      } catch { backend = { name: '终端后端', state: 'error', detail: '无法读取工作区，请检查终端是否运行以及 relay 的访问权限' }; }
+        backend = { name: '终端后端', state: 'ok', detail: '工作区可读取；在电脑上更新 Panecast 可获得更完整的诊断', ms: Date.now() - started };
+      } catch { backend = { name: '终端后端', state: 'error', detail: '无法读取工作区，请检查终端是否运行以及访问权限' }; }
     }
   }
   return [...network, authenticated, backend];

@@ -7,12 +7,21 @@ import { appStore } from '../state/appStore';
 import { useAppState } from '../state/hooks';
 import { storageSupported } from '../state/pairingStorage';
 import { colors } from '../ui/theme';
+import { SignedOutNotice } from '../ui/SignedOutNotice';
+
+const DEFAULT_SERVER = process.env.EXPO_PUBLIC_ACCOUNT_SERVER ?? 'https://panecast.drinklake.com/cmux-remote';
+
+function serverHost(url: string): string {
+  return url.trim().replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || url;
+}
 
 export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const canGoBack = useCanGoBack();
   const { account, accountError, computers } = useAppState();
-  const [server, setServer] = useState(computers.computers[0]?.broker.serverUrl ?? process.env.EXPO_PUBLIC_ACCOUNT_SERVER ?? 'https://panecast.drinklake.com/cmux-remote');
+  const [server, setServer] = useState(computers.computers[0]?.broker.serverUrl ?? DEFAULT_SERVER);
+  // Most people use the default server; a self-hosted one is behind 自定义服务器.
+  const [customServer, setCustomServer] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -58,13 +67,17 @@ export default function AccountScreen() {
         {local.map((computer) => <View key={computer.id} style={s.card}><Text style={s.heading}>{computer.name}</Text><Text style={s.detail}>这台电脑目前只在本机配对。</Text>
           <Action label="绑定到账号" disabled={busy} onPress={() => void run(() => appStore.bindExisting(computer.id))} /></View>)}
         <View style={s.row}><Action label="修改密码" onPress={() => { setManage('password'); setPassword(''); }} disabled={busy} />
-          <Action label="退出登录" onPress={() => void run(() => appStore.logout())} disabled={busy} />
+          <Action label="退出登录" disabled={busy} onPress={() => Alert.alert(
+            '退出登录？',
+            `这台手机上会移除这个账号的${bound.length ? ` ${bound.length} 台` : ''}电脑，以及它们的收件箱、常用输入、快捷键配置和缓存。电脑上的内容不受影响，重新登录后电脑会回来。`,
+            [{ text: '取消', style: 'cancel' }, { text: '退出登录', style: 'destructive', onPress: () => void run(() => appStore.logout()) }],
+          )} />
           <Action label="删除账号" onPress={() => { setManage('delete'); setPassword(''); }} disabled={busy} /></View>
         {manage ? <View style={s.card}>
           <Text style={s.heading}>{manage === 'password' ? '修改密码' : '删除账号'}</Text>
           <Text style={s.detail}>{manage === 'password' ? '修改后，其他设备需要重新登录。' : '账号和绑定关系将永久删除，电脑上的文件和程序会保留。'}</Text>
-          <Field label="当前密码" value={password} onChangeText={setPassword} secure />
-          {manage === 'password' ? <Field label="新密码（至少 12 个字符）" value={newPassword} onChangeText={setNewPassword} secure /> : null}
+          <Field label="当前密码" value={password} onChangeText={setPassword} secure autofill="password" />
+          {manage === 'password' ? <Field label="新密码（至少 12 个字符）" value={newPassword} onChangeText={setNewPassword} secure autofill="newPassword" /> : null}
           <Action label={manage === 'password' ? '保存新密码' : '永久删除账号'} disabled={busy || !password} onPress={() => {
             if (manage === 'password') void run(async () => { await appStore.changePassword(password, newPassword); setManage(null); setPassword(''); setNewPassword(''); setNotice('密码已修改。'); });
             else Alert.alert('永久删除账号？', '删除后无法恢复，需要重新注册和绑定电脑。', [{ text: '取消', style: 'cancel' }, { text: '删除', style: 'destructive', onPress: () => void run(async () => { await appStore.deleteAccount(password); setManage(null); setPassword(''); }) }]);
@@ -72,12 +85,17 @@ export default function AccountScreen() {
           <Action label="取消" onPress={() => { setManage(null); setPassword(''); setNewPassword(''); }} />
         </View> : null}
       </> : <>
-        <Text style={s.detail}>手机和电脑使用同一个账号，随时接着处理远程终端中的工作。</Text>
-        <Field label="服务器地址" value={server} onChangeText={setServer} placeholder="https://你的服务器" />
-        <Text style={s.detail}>填写配对链接中的服务器地址，支持已有的自建中转服务器。</Text>
-        <Field label="用户名" value={username} onChangeText={setUsername} placeholder="字母、数字、点、下划线或短横线" />
-        <Field label={register ? '密码（至少 12 个字符）' : '密码'} value={password} onChangeText={setPassword} secure />
-        {register ? <Field label="再次输入密码" value={confirmation} onChangeText={setConfirmation} secure /> : null}
+        <SignedOutNotice signIn={false} />
+        <Text style={s.detail}>登录电脑上 panecast setup 用的账号，那台电脑就会出现在这里。</Text>
+        <Field label="用户名" value={username} onChangeText={setUsername} placeholder="字母、数字、点、下划线或短横线" autofill="username" />
+        <Field label={register ? '密码（至少 12 个字符）' : '密码'} value={password} onChangeText={setPassword} secure autofill={register ? 'newPassword' : 'password'} />
+        {register ? <Field label="再次输入密码" value={confirmation} onChangeText={setConfirmation} secure autofill="newPassword" /> : null}
+        {customServer ? <>
+          <Field label="服务器地址" value={server} onChangeText={setServer} placeholder="https://你的服务器" />
+          <Text style={s.detail}>自己搭了服务器时才需要改，填配对链接里的服务器地址。</Text>
+        </> : <Pressable accessibilityRole="button" onPress={() => setCustomServer(true)} style={s.serverRow} accessibilityHint="改用自己搭的服务器">
+          <Text style={s.detail}>服务器：{serverHost(server)}</Text><Text style={s.link}>自定义服务器</Text>
+        </Pressable>}
         <Action label={register ? '创建账号' : '登录'} disabled={busy || !server.trim() || !username.trim() || !password} onPress={login} primary />
         <Action label={register ? '已有账号，去登录' : '没有账号，去注册'} disabled={busy} onPress={() => { setRegister(!register); setError(null); }} />
       </>}
@@ -87,8 +105,13 @@ export default function AccountScreen() {
     </ScrollView>
   </KeyboardAvoidingView>;
 }
-function Field({ label, value, onChangeText, secure = false, placeholder }: { label: string; value: string; onChangeText(value: string): void; secure?: boolean; placeholder?: string }) {
-  return <View style={s.field}><Text style={s.detail}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} secureTextEntry={secure} autoCapitalize="none" autoCorrect={false} placeholder={placeholder} placeholderTextColor={colors.muted} style={s.input} maxLength={secure ? 256 : 512} /></View>;
+type Autofill = 'username' | 'password' | 'newPassword';
+const AUTOCOMPLETE = { username: 'username', password: 'current-password', newPassword: 'new-password' } as const;
+
+/** `autofill` lets iOS and Android offer saved passwords and suggest strong new ones. */
+function Field({ label, value, onChangeText, secure = false, placeholder, autofill }: { label: string; value: string; onChangeText(value: string): void; secure?: boolean; placeholder?: string; autofill?: Autofill }) {
+  return <View style={s.field}><Text style={s.detail}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} secureTextEntry={secure} autoCapitalize="none" autoCorrect={false} placeholder={placeholder} placeholderTextColor={colors.muted} style={s.input} maxLength={secure ? 256 : 512}
+    textContentType={autofill ?? 'none'} autoComplete={autofill ? AUTOCOMPLETE[autofill] : 'off'} /></View>;
 }
 function Action({ label, onPress, disabled = false, primary = false }: { label: string; onPress(): void; disabled?: boolean; primary?: boolean }) {
   return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={[s.button, primary && s.primary, disabled && { opacity: 0.5 }]}><Text style={[s.buttonText, primary && { color: colors.canvas }]}>{label}</Text></Pressable>;
@@ -101,4 +124,5 @@ const s = StyleSheet.create({
   input: { color: colors.ink, backgroundColor: colors.surface, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, borderWidth: 1, borderColor: colors.divider },
   button: { paddingVertical: 12, paddingHorizontal: 16, borderRadius: 8, alignItems: 'center' }, primary: { backgroundColor: colors.blue }, buttonText: { color: colors.blue, fontSize: 15, fontWeight: '600' },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 }, error: { color: colors.red, fontSize: 14, lineHeight: 22 },
+  serverRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 44 }, link: { color: colors.blue, fontSize: 14 },
 });

@@ -11,6 +11,7 @@ import { notifications } from '../../notifications/instance';
 import { useMachine, useStore } from '../../state/hooks';
 import { openSurface } from '../../state/navigation';
 import { colors } from '../../ui/theme';
+import { StatusBarScrim } from '../../ui/StatusBarScrim';
 
 type Filter = 'all' | 'unread' | 'pending' | 'resolved';
 
@@ -71,7 +72,7 @@ export default function InboxScreen() {
         <Text style={styles.title}>收件箱</Text>
         <View style={styles.actions}>
           {unread > 0 ? (
-            <Pressable onPress={() => machine.inbox.markAllRead()} style={styles.action} accessibilityRole="button">
+            <Pressable onPress={() => machine.inbox.markAllRead()} style={styles.action} hitSlop={{ top: 4, bottom: 4 }} accessibilityRole="button">
               <Text style={styles.actionText}>全部已读</Text>
             </Pressable>
           ) : null}
@@ -81,7 +82,7 @@ export default function InboxScreen() {
                 await Promise.all(items.map((item) => notifications.cancelReminder(item.reminderId)));
                 machine.inbox.clear();
               }))}
-              style={styles.action}
+              style={styles.action} hitSlop={{ top: 4, bottom: 4 }}
               accessibilityRole="button"
             >
               <Text style={[styles.actionText, styles.danger]}>清空</Text>
@@ -99,13 +100,14 @@ export default function InboxScreen() {
         点按返回对应终端，处理完后标记「已处理」。也可以稍后提醒；阅读通知不会改变处理状态。
       </Text>
       {error ? <Text style={[styles.note, styles.danger]}>{error}</Text> : null}
-      {sync ? <Pressable onPress={() => void machine.inbox.sync()} disabled={sync.status === 'syncing'} accessibilityRole="button"><Text style={[styles.note, (sync.status === 'error' || sync.gap) && styles.danger]}>
+      {sync ? <Pressable onPress={() => void machine.inbox.sync()} disabled={sync.status === 'syncing'} accessibilityRole="button" hitSlop={{ top: 10, bottom: 10 }}><Text style={[styles.note, (sync.status === 'error' || sync.gap) && styles.danger]}>
         {sync.status === 'syncing' ? '正在补齐离线通知…' : sync.message ?? (sync.status === 'ready' ? '离线通知已同步 · 点按刷新' : '点按同步离线通知')}
       </Text></Pressable> : null}
     </View>
   );
 
   return (
+    <View style={styles.screen}>
     <FlatList
       style={styles.screen}
       contentContainerStyle={[
@@ -137,6 +139,8 @@ export default function InboxScreen() {
         />
       )}
     />
+    <StatusBarScrim />
+    </View>
   );
 }
 
@@ -221,8 +225,8 @@ function InboxRow({
           ) : null}
           {item.snoozedUntil && item.snoozedUntil > now ? <Text style={styles.note}>{formatTime(item.snoozedUntil)} 再提醒</Text> : null}
           {item.needsInput ? <View style={styles.rowActions}>
-            <Pressable style={styles.action} onPress={(event) => { event.stopPropagation(); onResolve(); }} accessibilityRole="button"><Text style={styles.actionText}>{item.resolvedAt ? '重新打开' : '标为已处理'}</Text></Pressable>
-            {!item.resolvedAt ? <Pressable style={styles.action} onPress={(event) => { event.stopPropagation(); onSnooze(); }} accessibilityRole="button"><Text style={styles.actionText}>15 分钟后提醒</Text></Pressable> : null}
+            <Pressable style={styles.action} hitSlop={{ top: 4, bottom: 4 }} onPress={(event) => { event.stopPropagation(); onResolve(); }} accessibilityRole="button"><Text style={styles.actionText}>{item.resolvedAt ? '重新打开' : '标为已处理'}</Text></Pressable>
+            {!item.resolvedAt ? <Pressable style={styles.action} hitSlop={{ top: 4, bottom: 4 }} onPress={(event) => { event.stopPropagation(); onSnooze(); }} accessibilityRole="button"><Text style={styles.actionText}>15 分钟后提醒</Text></Pressable> : null}
           </View> : null}
         </View>
       </Pressable>
@@ -235,6 +239,7 @@ function FilterChip({ label, active, onPress }: { label: string; active: boolean
     <Pressable
       onPress={onPress}
       style={[styles.filter, active && styles.filterActive]}
+      hitSlop={{ top: 6, bottom: 6 }}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
     >
@@ -275,7 +280,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { color: colors.ink, fontSize: 28, fontWeight: '700' },
   actions: { flexDirection: 'row', gap: 8 },
-  action: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: colors.surface },
+  action: { paddingHorizontal: 12, minHeight: 36, justifyContent: 'center', borderRadius: 8, backgroundColor: colors.surface },
   actionText: { color: colors.blue, fontSize: 14 },
   danger: { color: colors.red },
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
@@ -283,7 +288,8 @@ const styles = StyleSheet.create({
   handled: { color: colors.green, fontSize: 11 },
   filter: {
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    minHeight: 32,
+    justifyContent: 'center',
     borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.divider,

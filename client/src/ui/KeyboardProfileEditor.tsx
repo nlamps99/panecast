@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { keyboardProfiles, projectKeyboardKey, selectedKeyboardProfile, SHORTCUTS, useKeyboardProfiles, type KeyboardProfile } from '../input/keyboardProfiles';
+import { Alert } from '../platform/alert';
 import { Sheet } from './Sheet';
 import { colors } from './theme';
 
@@ -38,7 +39,11 @@ function ProfileEditorBody({ computerId, workspaceId, initialProfile }: { comput
     <View style={styles.row}>
       <Chip label="复制为新配置" disabled={!state.loaded} onPress={() => { const id = store.create(profile); if (id) apply(id); }} />
       {store.canRemove(profile.id)
-        ? <Chip label="删除配置" disabled={!state.loaded} onPress={() => { store.remove(profile.id); setEditingId('default'); }} />
+        ? <Chip label="删除配置" disabled={!state.loaded} onPress={() => Alert.alert(
+          `删除「${profile.name}」？`,
+          '用它的电脑会改回默认配置，用它的项目改为跟随电脑默认。',
+          [{ text: '取消', style: 'cancel' }, { text: '删除', style: 'destructive', onPress: () => { store.remove(profile.id); setEditingId('default'); } }],
+        )} />
         : <Chip label="恢复这组默认键" disabled={!state.loaded} onPress={() => store.reset(profile.id)} />}
     </View>
     <ProfileName key={profile.id + profile.name} profile={profile} onSave={(name) => store.rename(profile.id, name)} />
@@ -72,6 +77,6 @@ const styles = StyleSheet.create({
   chip: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: 8, borderWidth: 1, borderColor: colors.divider, backgroundColor: colors.surfaceRaised }, selected: { borderColor: colors.green },
   label: { color: colors.ink, fontSize: 13 }, title: { color: colors.ink, fontSize: 15, fontWeight: '600' }, note: { color: colors.muted, fontSize: 12, lineHeight: 18 }, error: { color: colors.red, fontSize: 12, padding: 14 },
   keyRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.divider, paddingVertical: 2 },
-  number: { color: colors.muted, fontSize: 12, width: 18 }, keyName: { flex: 1, color: colors.ink, fontSize: 13 }, small: { minWidth: 38, minHeight: 40, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
+  number: { color: colors.muted, fontSize: 12, width: 18 }, keyName: { flex: 1, color: colors.ink, fontSize: 13 }, small: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5 },
   dim: { opacity: 0.35 }, input: { color: colors.ink, backgroundColor: colors.surfaceSunken, padding: 10, borderRadius: 8, fontSize: 14, minWidth: 100 },
 });

@@ -5,6 +5,7 @@ import { sessionMemory } from '../../state/sessionMemory';
 import WorkspacesScreen from '../../app/(tabs)/index';
 
 const mockConfirm = jest.fn();
+let mockStatus: { state: string; attempt?: number; retryAt?: number; reason?: string } = { state: 'open' };
 const inboxState = { unreadByWorkspace: {}, pendingByWorkspace: {} };
 let mockMachine: { channel: RpcChannel; session: TerminalSession; workspaces: WorkspaceStore; computer: null; inbox: object };
 type SwipeProps = { children?: ReactNode; renderRightActions?: () => ReactNode; onSwipeableWillOpen?: () => void; onSwipeableWillClose?: () => void };
@@ -39,7 +40,7 @@ jest.mock('../../platform/desktop', () => ({ desktopBridge: () => null }));
 jest.mock('../../platform/confirm', () => ({ confirmClose: (...args: unknown[]) => mockConfirm(...args) }));
 jest.mock('../../state/hooks', () => {
   const React = jest.requireActual('react') as typeof import('react');
-  return { useMachine: () => mockMachine, useConnectionStatus: () => ({ state: 'open' }),
+  return { useMachine: () => mockMachine, useConnectionStatus: () => mockStatus,
     useStore: (store: { subscribe: (fn: () => void) => () => void; getState: () => unknown }) => React.useSyncExternalStore(store.subscribe, store.getState, store.getState) };
 });
 jest.mock('../../state/navigation', () => ({ openSurface: jest.fn(), openRecentSurface: jest.fn() }));
@@ -49,6 +50,9 @@ jest.mock('../NameDialog', () => ({ NameDialog: () => null }));
 jest.mock('../WorkspaceMenu', () => ({ WorkspaceMenu: () => null }));
 jest.mock('../TerminalActivityBadge', () => ({ TerminalActivityBadge: () => null, useTerminalActivity: () => ({}) }));
 jest.mock('../Icon', () => ({ Icon: () => null }));
+jest.mock('../../state/appStore', () => ({ appStore: { wake: jest.fn() } }));
+jest.mock('../SignedOutNotice', () => ({ SignedOutNotice: () => null }));
+jest.mock('../StatusBarScrim', () => ({ StatusBarScrim: () => null }));
 
 let dom: { window: Window & typeof globalThis };
 let container: HTMLDivElement;
@@ -74,7 +78,7 @@ beforeEach(async () => {
   mockMachine = { channel, session, workspaces, computer: null, inbox: { getState: () => inboxState, subscribe: () => () => {} } };
   await act(async () => root.render(<WorkspacesScreen />));
 });
-afterEach(async () => { await act(async () => root.unmount()); mockMachine.session.dispose(); mockMachine.workspaces.dispose(); container.remove(); sessionMemory.setPinned('demo', 'w2', false); });
+afterEach(async () => { mockStatus = { state: 'open' }; await act(async () => root.unmount()); mockMachine.session.dispose(); mockMachine.workspaces.dispose(); container.remove(); sessionMemory.setPinned('demo', 'w2', false); });
 afterAll(() => dom.window.close());
 
 const labels = () => [...container.querySelectorAll('button')].filter((b) => !b.closest('[aria-hidden="true"]')).map((b) => b.getAttribute('aria-label') ?? '');
@@ -111,4 +115,16 @@ it('asks before closing from the swipe', async () => {
   await swipe('notes');
   await press('关闭工作区 notes');
   expect(mockConfirm).toHaveBeenCalled();
+});
+
+it('offers a retry when the connection drops', async () => {
+  expect(labels()).not.toContain('立即重新连接');
+  mockStatus = { state: 'waiting', attempt: 1, retryAt: 0, reason: 'network' };
+  await act(async () => root.render(<WorkspacesScreen />));
+  await press('立即重新连接');
+  expect(jest.requireMock('../../state/appStore').appStore.wake).toHaveBeenCalled();
+  // A retry in progress keeps the same card instead of flickering away.
+  mockStatus = { state: 'connecting', attempt: 2 };
+  await act(async () => root.render(<WorkspacesScreen />));
+  expect(labels()).toContain('立即重新连接');
 });

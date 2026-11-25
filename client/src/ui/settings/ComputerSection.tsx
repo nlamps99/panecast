@@ -57,7 +57,7 @@ export function ComputerSection() {
         />
       ))}
 
-      {authFailed && currentId ? <ActionRow label="重新配对" onPress={() => openPairing(currentId)} /> : null}
+      {authFailed && currentId ? <ActionRow label={machine.computer?.share ? '粘贴新的分享密钥' : '重新配对'} onPress={() => openPairing(currentId)} /> : null}
       {demo ? <ActionRow label="退出演示" onPress={() => appStore.exitDemo()} /> : null}
       <ActionRow label="添加电脑" divided={demo || computers.computers.length > 0} onPress={() => openPairing()} />
 
@@ -94,7 +94,7 @@ function ComputerRow({
       onPress={onPress}
       style={({ pressed }) => [s.row, divided && s.divided, pressed && s.pressed]}
       accessibilityRole="button"
-      accessibilityLabel={`${computer.name}${current ? `，当前电脑，${statusLabel(status)}` : ''}`}
+      accessibilityLabel={`${computer.name}${current ? `，当前电脑，${statusLabel(status, Boolean(computer.share))}` : ''}`}
       accessibilityHint="改名、切换或移除"
     >
       <Icon name="computer" size={18} color={current ? colors.green : colors.inkDim} />
@@ -109,7 +109,7 @@ function ComputerRow({
       {status ? (
         <>
           <View style={[s.dot, { backgroundColor: statusColor(status) }]} />
-          <Text style={[s.rowValue, status.state === 'auth_failed' && styles.failed]}>{statusLabel(status)}</Text>
+          <Text style={[s.rowValue, status.state === 'auth_failed' && styles.failed]}>{statusLabel(status, Boolean(computer.share))}</Text>
         </>
       ) : null}
       <Icon name="forward" size={13} color={colors.muted} />
@@ -170,14 +170,14 @@ function ManageComputer({
       {current ? null : <SheetRow title="切换到这台电脑" onPress={() => close(() => runOrAlert(() => appStore.select(computer.id)))} />}
       {authFailed ? (
         <SheetRow
-          title="重新配对"
+          title={computer.share ? '粘贴新的分享密钥' : '重新配对'}
           titleColor={colors.blue}
-          detail="配对已失效，需要重新扫码"
+          detail={computer.share ? '分享密钥已失效，请向对方要一把新的' : '配对已失效，需要重新扫码'}
           detailColor={colors.red}
           onPress={() => close(() => openPairing(computer.id))}
         />
       ) : null}
-      <SheetRow title={computer.accountId ? '从账号解除绑定' : '移除这台电脑'} titleColor={colors.red} detail={computer.accountId ? '账号下的所有设备都将断开与它的连接' : '移除后需要重新配对才能连接'} onPress={remove} />
+      <SheetRow title={computer.accountId ? '从账号解除绑定' : '移除这台电脑'} titleColor={colors.red} detail={computer.accountId ? '账号下的所有设备都将断开与它的连接' : computer.share ? '移除后需要新的分享密钥才能再打开' : '移除后需要重新配对才能连接'} onPress={remove} />
     </View>
   );
 }

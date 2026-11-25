@@ -8,7 +8,7 @@ import { openPairing } from '../state/pairingRoute';
 import { runOrAlert } from './computerActions';
 import { Icon } from './Icon';
 import { Sheet, SheetRow, useSheet } from './Sheet';
-import { machineLabel, statusColor, statusLabel } from './status';
+import { isGuest, machineLabel, statusColor, statusLabel } from './status';
 import { TransportBadge } from './TransportBadge';
 import { colors } from './theme';
 
@@ -25,7 +25,7 @@ export function ComputerSwitcher() {
   const demo = machine.mode === 'demo';
   const currentId = machine.computer?.id ?? null;
   const label = machineLabel(machine);
-  const stateText = demo ? '演示' : statusLabel(status);
+  const stateText = demo ? '演示' : statusLabel(status, isGuest(machine));
   const dotColor = demo ? colors.yellow : statusColor(status);
 
   const choose = (computerId: string) => {

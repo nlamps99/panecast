@@ -1,4 +1,4 @@
-import { ScrollView, StyleSheet, Text } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AboutSection } from '../../ui/settings/AboutSection';
@@ -11,6 +11,7 @@ import { TransportPicker } from '../../ui/settings/TransportPicker';
 import { DiagnosticSection } from '../../ui/settings/DiagnosticSection';
 import { KeyboardProfileSection } from '../../ui/settings/KeyboardProfileSection';
 import { colors } from '../../ui/theme';
+import { StatusBarScrim } from '../../ui/StatusBarScrim';
 import { router } from 'expo-router';
 import { ActionRow, Section } from '../../ui/settings/Section';
 
@@ -20,6 +21,7 @@ export default function SettingsScreen() {
   const { machine, account } = useAppState();
   const computer = machine?.mode === 'relay' ? machine.computer : null;
   return (
+    <View style={styles.screen}>
     <ScrollView
       style={styles.screen}
       contentContainerStyle={[styles.content, { paddingTop: insets.top + 12, paddingLeft: insets.left + 16, paddingRight: insets.right + 16 }]}
@@ -35,6 +37,9 @@ export default function SettingsScreen() {
       <UpdateSection />
       <AboutSection />
     </ScrollView>
+    {/* The list scrolls under the status bar; keep the clock off the text. */}
+    <StatusBarScrim />
+    </View>
   );
 }
 

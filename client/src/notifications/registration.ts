@@ -110,7 +110,7 @@ export function describeRegistrationFailure(result: Exclude<RegistrationResult, 
       return '连接超时';
     case 'http':
       if (via === 'broker' && result.status === 503) return '服务器暂时无法连接电脑，请确认电脑在线';
-      if (via === 'broker' && result.status === 504) return '电脑没有回复推送登记，请确认 relay 在线并已升级';
+      if (via === 'broker' && result.status === 504) return '电脑没有回复推送登记，请确认电脑上的 Panecast 正在运行并已更新';
       return `${peer}返回了错误（HTTP ${result.status}）`;
   }
 }

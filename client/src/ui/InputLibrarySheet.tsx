@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { makeId, useInputLibrary, type InputEntry, type InputLibrary } from '../input/library';
 import type { RpcChannel } from '../session/terminalSession';
+import { Alert } from '../platform/alert';
 import { Sheet } from './Sheet';
 import { colors, fonts } from './theme';
 
@@ -24,8 +25,17 @@ export function InputLibrarySheet({ visible, onClose, onClosed, library, workspa
         if (library.put({ id: makeId(), title: e.name ?? e.title ?? e.label ?? '', text: e.text, workspaceId: null, favorite: true, at: Date.now() })) count++;
       }
       setMessage(count ? `已导入 ${count} 条常用输入` : '电脑上没有新的常用输入');
-    } catch { setMessage('电脑未提供常用输入，请升级 relay 后重试'); }
+    } catch { setMessage('电脑上的 Panecast 版本较旧，还不能导入。请在电脑上更新后再试'); }
   };
+  const recentCount = entries.filter((e) => !e.favorite).length;
+  const confirmClearRecent = () => Alert.alert('清除最近输入？', `这台手机上 ${recentCount} 条没收藏的最近输入会被删除，收藏的不受影响。`, [
+    { text: '取消', style: 'cancel' },
+    { text: '清除', style: 'destructive', onPress: () => library.clearRecent() },
+  ]);
+  const confirmRemove = (entry: InputEntry) => Alert.alert('删除这条常用输入？', entry.title || entry.text.slice(0, 80), [
+    { text: '取消', style: 'cancel' },
+    { text: '删除', style: 'destructive', onPress: () => library.remove(entry.id) },
+  ]);
   return (
     <Sheet visible={visible} title={editor ? '编辑常用输入' : '常用输入'} onClose={onClose} onClosed={onClosed}>
       <View style={s.body}>
@@ -36,7 +46,7 @@ export function InputLibrarySheet({ visible, onClose, onClosed, library, workspa
           <View style={s.row}>
             <Pressable style={s.button} onPress={() => setEditor({ id: makeId(), title: '', text: draft, workspaceId, favorite: true, at: Date.now() })}><Text style={s.label}>＋ 新建</Text></Pressable>
             <Pressable style={s.button} onPress={() => void importSnippets()}><Text style={s.label}>从电脑导入</Text></Pressable>
-            {filter === 'recent' ? <Pressable style={s.button} onPress={() => library.clearRecent()}><Text style={s.muted}>清除历史</Text></Pressable> : null}
+            {filter === 'recent' && recentCount > 0 ? <Pressable style={s.button} onPress={confirmClearRecent} accessibilityRole="button"><Text style={s.muted}>清除历史</Text></Pressable> : null}
           </View>
           {message ? <Text style={s.muted}>{message}</Text> : null}
           {!shown.length ? <Text style={s.empty}>还没有记录。可以新建常用输入，或从最近发送的内容中收藏。</Text> : null}
@@ -46,9 +56,9 @@ export function InputLibrarySheet({ visible, onClose, onClosed, library, workspa
               <Text style={s.code} numberOfLines={3}>{e.text}</Text>
             </Pressable>
             <View style={s.row}>
-              <Pressable onPress={() => library.favorite(e.id)} style={s.small} accessibilityLabel={e.favorite ? '取消收藏' : '收藏'}><Text style={s.label}>{e.favorite ? '★' : '☆'}</Text></Pressable>
-              <Pressable onPress={() => setEditor(e)} style={s.small}><Text style={s.muted}>编辑</Text></Pressable>
-              <Pressable onPress={() => library.remove(e.id)} style={s.small}><Text style={s.muted}>删除</Text></Pressable>
+              <Pressable onPress={() => library.favorite(e.id)} style={s.small} accessibilityRole="button" accessibilityLabel={e.favorite ? '取消收藏' : '收藏'}><Text style={s.label}>{e.favorite ? '★' : '☆'}</Text></Pressable>
+              <Pressable onPress={() => setEditor(e)} style={s.small} accessibilityRole="button"><Text style={s.smallText}>编辑</Text></Pressable>
+              <Pressable onPress={() => confirmRemove(e)} style={s.small} accessibilityRole="button"><Text style={s.smallText}>删除</Text></Pressable>
             </View>
           </View>)}
           <Text style={s.muted}>点按填入输入框，编辑后再发送。记录仅保存在这台手机上。</Text>
@@ -68,8 +78,8 @@ function Editor({ entry, onCancel, onSave }: { entry: InputEntry; onCancel(): vo
 }
 const s = StyleSheet.create({
   body: { padding: 14, gap: 12 }, row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' }, grow: { flex: 1 },
-  button: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 8, backgroundColor: colors.surfaceRaised }, active: { borderWidth: 1, borderColor: colors.green },
+  button: { paddingHorizontal: 12, minHeight: 40, justifyContent: 'center', borderRadius: 8, backgroundColor: colors.surfaceRaised }, active: { borderWidth: 1, borderColor: colors.green },
   label: { color: colors.ink, fontSize: 14 }, muted: { color: colors.muted, fontSize: 12 }, code: { color: colors.inkDim, fontFamily: fonts.mono, fontSize: 13, marginTop: 4 },
   input: { color: colors.ink, backgroundColor: colors.surfaceSunken, padding: 12, borderRadius: 8, fontSize: 14 }, multiline: { minHeight: 140, textAlignVertical: 'top' },
-  entry: { gap: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.divider, paddingVertical: 10 }, small: { padding: 6 }, empty: { color: colors.muted, paddingVertical: 20, lineHeight: 21 },
+  entry: { gap: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.divider, paddingVertical: 10 }, small: { minWidth: 44, minHeight: 44, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' }, smallText: { color: colors.muted, fontSize: 13 }, empty: { color: colors.muted, paddingVertical: 20, lineHeight: 21 },
 });

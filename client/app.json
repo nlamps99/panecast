@@ -16,7 +16,7 @@
         "usesNonExemptEncryption": false
       },
       "infoPlist": {
-        "NSLocalNetworkUsageDescription": "在同一个 Wi-Fi 下直接连接电脑上的 relay",
+        "NSLocalNetworkUsageDescription": "在同一个 Wi-Fi 下直接连接你的电脑，速度更快",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         }
