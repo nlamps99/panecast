@@ -11,6 +11,15 @@ const WINDOW = 4 * 1024 * 1024;
 const HEADS_CACHED = 64;
 /** Older pages kept, by size: scrolling back or searching a whole conversation reads them again. */
 const PAGES_CACHED_BYTES = 48 * 1024 * 1024;
+/**
+ * Parsed records of the newest window, kept per transcript (by raw bytes
+ * covered) so a transcript that grew is read and parsed only from where the
+ * last read stopped. A visible terminal is read about once a second while
+ * its agent writes.
+ */
+const TAILS_CACHED_BYTES = 24 * 1024 * 1024;
+/** Bytes before the parsed end that must still match: a rewritten file is read afresh. */
+const TAIL_CHECK = 4096;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const clipped = (value, limit = 16000) => typeof value === 'string' ? value.slice(0, limit) : '';
 const blocks = value => Array.isArray(value) ? value : typeof value === 'string' ? [{ type: 'text', text: value }] : [];
@@ -199,7 +208,60 @@ export function parseConversation(records, provider, sessionId, options = {}) {
 }
 
 export class TerminalConversationReader {
-  constructor(options = {}) { this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.antigravityHome = options.antigravityHome ?? join(this.home, '.gemini', 'antigravity-cli'); this.files = new Map(); this.heads = new Map(); this.pages = new Map(); this.pageBytes = 0; }
+  constructor(options = {}) {
+    this.home = options.home ?? homedir(); this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex'); this.claudeHome = options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(this.home, '.claude'); this.antigravityHome = options.antigravityHome ?? join(this.home, '.gemini', 'antigravity-cli');
+    this.files = new Map(); this.heads = new Map(); this.pages = new Map(); this.pageBytes = 0;
+    this.window = options.window ?? WINDOW; this.tails = new Map(); this.tailBytes = 0; this.tailWork = new Map();
+  }
+  /**
+   * The newest window's records when the transcript only grew since the
+   * last read: the cached records plus those appended, without the ones that
+   * fell out of the window. Null when the file is not the one cached (or
+   * was rewritten); the caller then reads the window afresh.
+   */
+  async appended(key, handle, info, epoch) {
+    const previous = this.tailWork.get(key) ?? Promise.resolve();
+    // One update per transcript at a time; each request has its own handle and size.
+    const work = previous.catch(() => {}).then(() => this.extendTail(key, handle, info, epoch));
+    this.tailWork.set(key, work);
+    try { return await work; } finally { if (this.tailWork.get(key) === work) this.tailWork.delete(key); }
+  }
+  async extendTail(key, handle, info, epoch) {
+    const tail = this.tails.get(key);
+    if (!tail || tail.epoch !== epoch || info.size < tail.end) return null;
+    const probe = Buffer.alloc(tail.check.length);
+    await handle.read(probe, 0, probe.length, tail.end - probe.length);
+    if (!probe.equals(tail.check) || this.tails.get(key) !== tail) return null;
+    if (info.size > tail.end) {
+      const buffer = Buffer.alloc(info.size - tail.end); await handle.read(buffer, 0, buffer.length, tail.end);
+      let index = 0, parsed = 0;
+      while (index < buffer.length) {
+        const end = buffer.indexOf(10, index); if (end < 0) break;
+        try { tail.records.push({ offset: tail.end + index, value: JSON.parse(buffer.toString('utf8', index, end)) }); } catch {}
+        index = end + 1;
+        if (++parsed % 64 === 0) await new Promise(resolve => setImmediate(resolve));
+      }
+      const consumed = buffer.subarray(0, index);
+      tail.check = Buffer.from(consumed.length >= TAIL_CHECK ? consumed.subarray(consumed.length - TAIL_CHECK) : Buffer.concat([tail.check, consumed]).subarray(-TAIL_CHECK));
+      tail.end += index;
+    }
+    const start = Math.max(0, info.size - this.window);
+    let first = 0; while (first < tail.records.length && tail.records[first].offset < start) first++;
+    if (first) tail.records = tail.records.slice(first);
+    if (!tail.records.length) return null;
+    this.keepTail(key, tail);
+    return tail.records.slice();
+  }
+  keepTail(key, tail) {
+    const old = this.tails.get(key);
+    if (old) { this.tails.delete(key); this.tailBytes -= old.bytes; }
+    tail.bytes = tail.end - (tail.records[0]?.offset ?? tail.end);
+    this.tails.set(key, tail); this.tailBytes += tail.bytes;
+    while (this.tailBytes > TAILS_CACHED_BYTES && this.tails.size > 1) {
+      const [oldest, entry] = this.tails.entries().next().value;
+      this.tails.delete(oldest); this.tailBytes -= entry.bytes;
+    }
+  }
   async find(provider, id) {
     // Antigravity keeps each conversation in a folder named by its id.
     if (provider === 'antigravity') {
@@ -259,38 +321,50 @@ export class TerminalConversationReader {
       const pageKey = params.cursor && provider !== 'antigravity' ? `${cacheKey}:${params.cursor}` : null, page = pageKey && this.pages.get(pageKey);
       if (page && page.epoch === epoch) { this.pages.delete(pageKey); this.pages.set(pageKey, page); return page.value; }
       if (page) { this.pages.delete(pageKey); this.pageBytes -= page.bytes; }
-      // Validate the file's own identity, not just its filename.
-      let first = Buffer.alloc(Math.min(info.size, 65536)); await handle.read(first, 0, first.length, 0);
-      if (first.indexOf(10) < 0 && first.length < info.size) { first = Buffer.alloc(Math.min(info.size, 2 * 1024 * 1024)); await handle.read(first, 0, first.length, 0); }
-      const head = first.toString('utf8').split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-      const identity = head.find(r => provider === 'codex' ? r.type === 'session_meta' : r.sessionId);
-      // An Antigravity transcript names no conversation; its folder does (find()).
-      const actualId = provider === 'antigravity' ? id : provider === 'codex' ? identity?.payload?.id ?? identity?.payload?.session_id : identity?.sessionId;
-      if (actualId !== id) throw new RpcError('conversation_identity', '对话记录与当前终端不一致，请刷新后重试');
       const generation = createHash('sha256').update(epoch).digest('hex').slice(0, 16);
-      let before = info.size, leaf;
-      if (params.cursor) {
-        if (typeof params.cursor !== 'string' || params.cursor.length > 4096) throw new RpcError('invalid_params', '历史位置无效');
-        let value; try { value = JSON.parse(Buffer.from(params.cursor, 'base64url').toString('utf8')); } catch {}
-        if (value?.id !== id || value?.epoch !== epoch || !Number.isSafeInteger(value?.before) || value.before <= 0 || value.before > info.size) throw new RpcError('cursor_expired', '对话历史已更新，请刷新后重试');
-        if (value.leaf && (typeof value.leaf !== 'string' || value.leaf.length > 200)) throw new RpcError('invalid_params', '历史位置无效');
-        before = value.before;
-        leaf = value.leaf;
-      }
-      let start = Math.max(0, before - WINDOW), records = [];
-      for (let tries = 0; tries < 4; tries++) {
-        const readStart = start ? start - 1 : 0;
-        const buffer = Buffer.alloc(before - readStart); await handle.read(buffer, 0, buffer.length, readStart);
-        const firstNewline = buffer.indexOf(10);
-        let index = start ? firstNewline < 0 ? buffer.length : firstNewline + 1 : 0;
-        while (index < buffer.length) {
-          const end = buffer.indexOf(10, index); if (end < 0) break;
-          try { records.push({ offset: readStart + index, value: JSON.parse(buffer.toString('utf8', index, end)) }); } catch {}
-          index = end + 1;
-          if (records.length % 64 === 0) await new Promise(resolve => setImmediate(resolve));
+      // The newest window of a transcript that only grew: parse just the new
+      // lines. Antigravity rewrites its transcript in place, so it is read whole.
+      const tailKey = !params.cursor && provider !== 'antigravity' ? `${provider}:${id}` : null;
+      let records = tailKey ? await this.appended(tailKey, handle, info, epoch) : null, start = Math.max(0, info.size - this.window), leaf;
+      if (!records) {
+        // Validate the file's own identity, not just its filename. A cached
+        // window was checked when its file (epoch) was first read.
+        let first = Buffer.alloc(Math.min(info.size, 65536)); await handle.read(first, 0, first.length, 0);
+        if (first.indexOf(10) < 0 && first.length < info.size) { first = Buffer.alloc(Math.min(info.size, 2 * 1024 * 1024)); await handle.read(first, 0, first.length, 0); }
+        const head = first.toString('utf8').split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+        const identity = head.find(r => provider === 'codex' ? r.type === 'session_meta' : r.sessionId);
+        // An Antigravity transcript names no conversation; its folder does (find()).
+        const actualId = provider === 'antigravity' ? id : provider === 'codex' ? identity?.payload?.id ?? identity?.payload?.session_id : identity?.sessionId;
+        if (actualId !== id) throw new RpcError('conversation_identity', '对话记录与当前终端不一致，请刷新后重试');
+        let before = info.size;
+        if (params.cursor) {
+          if (typeof params.cursor !== 'string' || params.cursor.length > 4096) throw new RpcError('invalid_params', '历史位置无效');
+          let value; try { value = JSON.parse(Buffer.from(params.cursor, 'base64url').toString('utf8')); } catch {}
+          if (value?.id !== id || value?.epoch !== epoch || !Number.isSafeInteger(value?.before) || value.before <= 0 || value.before > info.size) throw new RpcError('cursor_expired', '对话历史已更新，请刷新后重试');
+          if (value.leaf && (typeof value.leaf !== 'string' || value.leaf.length > 200)) throw new RpcError('invalid_params', '历史位置无效');
+          before = value.before;
+          leaf = value.leaf;
         }
-        if (records.length || !start) break;
-        before = start; start = Math.max(0, before - WINDOW);
+        start = Math.max(0, before - this.window); records = [];
+        for (let tries = 0; tries < 4; tries++) {
+          const readStart = start ? start - 1 : 0;
+          const buffer = Buffer.alloc(before - readStart); await handle.read(buffer, 0, buffer.length, readStart);
+          const firstNewline = buffer.indexOf(10);
+          let index = start ? firstNewline < 0 ? buffer.length : firstNewline + 1 : 0;
+          while (index < buffer.length) {
+            const end = buffer.indexOf(10, index); if (end < 0) break;
+            try { records.push({ offset: readStart + index, value: JSON.parse(buffer.toString('utf8', index, end)) }); } catch {}
+            index = end + 1;
+            if (records.length % 64 === 0) await new Promise(resolve => setImmediate(resolve));
+          }
+          // The newest window, read up to the file's end: later reads extend it.
+          if (tailKey && tries === 0 && records.length) {
+            const end = readStart + index;
+            this.keepTail(tailKey, { epoch, end, records: records.slice(), check: Buffer.from(buffer.subarray(Math.max(0, index - TAIL_CHECK), index)) });
+          }
+          if (records.length || !start) break;
+          before = start; start = Math.max(0, before - this.window);
+        }
       }
       const parsed = parseConversation(records, provider, id, { leaf });
       const ordered = [...parsed.items].sort((a, b) => a.updatedSequence - b.updatedSequence);

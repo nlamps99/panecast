@@ -101,4 +101,8 @@ async function main() {
   } else throw new Error('Usage: hub serve|pair|sources|notify [--config PATH]');
 }
 
-main().catch(() => { console.error('Hub command failed. Check the command, source authorization, and local configuration.'); process.exitCode = 1; });
+main().catch((error) => {
+  // Name the cause (e.g. EADDRINUSE on a socket) so a crash loop under launchd can be diagnosed from the log.
+  const cause = [error?.code, String(error?.message ?? '').slice(0, 300)].filter(Boolean).join(': ');
+  console.error(`Hub command failed${cause ? ` (${cause})` : ''}. Check the command, source authorization, and local configuration.`); process.exitCode = 1;
+});

@@ -16,14 +16,28 @@ export function unscoped(value) {
 const targets = new Set(['workspace_id', 'surface_id', 'window_id', 'pane_id']);
 const objects = new Set(['workspaces', 'surfaces', 'windows', 'workspace', 'surface', 'window']);
 
+/**
+ * A copy of `value` with its native target IDs scoped to `source`. Every
+ * forwarded screen frame passes through here, so it copies in plain loops:
+ * no entry arrays per object, no call per row of text.
+ */
 export function scopeResult(source, value, objectId = false) {
-  if (Array.isArray(value)) return value.map((item) => scopeResult(source, item, objectId));
+  if (Array.isArray(value)) {
+    const copy = new Array(value.length);
+    for (let i = 0; i < value.length; i++) { const item = value[i]; copy[i] = item && typeof item === 'object' ? scopeResult(source, item, objectId) : item; }
+    return copy;
+  }
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-    typeof item === 'string' && (targets.has(key) || (key === 'id' && objectId))
-      ? scoped(source, item)
-      : scopeResult(source, item, objects.has(key)),
-  ]));
+  const copy = {};
+  for (const key of Object.keys(value)) {
+    const item = value[key];
+    const next = typeof item === 'string' ? (targets.has(key) || (key === 'id' && objectId) ? scoped(source, item) : item)
+      : item && typeof item === 'object' ? scopeResult(source, item, objects.has(key)) : item;
+    // JSON can carry a "__proto__" key; keep it a plain property, as Object.fromEntries did.
+    if (key === '__proto__') Object.defineProperty(copy, key, { value: next, enumerable: true, writable: true, configurable: true });
+    else copy[key] = next;
+  }
+  return copy;
 }
 
 export function targetParams(params) {

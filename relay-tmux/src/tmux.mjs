@@ -24,14 +24,27 @@ export function run(command, args, input, limit = 8 * 1024 * 1024) {
     child.stdin.end(input);
   });
 }
+const TMUX_MODIFIERS = { ctrl: 'C-', control: 'C-', alt: 'M-', opt: 'M-', option: 'M-', meta: 'M-', shift: 'S-' };
+const MODIFIER_PREFIX = /^(ctrl|control|alt|opt|option|meta|shift)[-+](?=.)/;
+/**
+ * Panecast's own key names (`ctrl-up`, `pgup`) and the names cmux's
+ * `surface.send_key` takes (`ctrl+up`, `pageup`, `page_up`, `return`), so one
+ * client can drive both kinds of terminal.
+ */
+const TMUX_NAMED = { enter: 'Enter', return: 'Enter', tab: 'Tab', backtab: 'BTab', escape: 'Escape', esc: 'Escape',
+  up: 'Up', down: 'Down', left: 'Left', right: 'Right', arrowup: 'Up', arrowdown: 'Down', arrowleft: 'Left', arrowright: 'Right',
+  arrow_up: 'Up', arrow_down: 'Down', arrow_left: 'Left', arrow_right: 'Right', home: 'Home', end: 'End',
+  pgup: 'PPage', pageup: 'PPage', page_up: 'PPage', pgdn: 'NPage', pagedown: 'NPage', page_down: 'NPage',
+  backspace: 'BSpace', delete: 'DC', del: 'DC', forward_delete: 'DC', insert: 'IC', space: 'Space' };
 export function tmuxKey(value) {
   if (typeof value !== 'string' || value.length > 64) throw new RpcError('invalid_key', '无效按键');
   let rest = value.toLowerCase(), prefix = '';
-  for (const [name, code] of [['ctrl-', 'C-'], ['alt-', 'M-'], ['shift-', 'S-']]) {
-    if (rest.startsWith(name)) { prefix += code; rest = rest.slice(name.length); }
+  for (let match; (match = MODIFIER_PREFIX.exec(rest));) {
+    const code = TMUX_MODIFIERS[match[1]];
+    if (!prefix.includes(code)) prefix += code;
+    rest = rest.slice(match[0].length);
   }
-  const named = { enter: 'Enter', tab: 'Tab', escape: 'Escape', esc: 'Escape', up: 'Up', down: 'Down', left: 'Left', right: 'Right', home: 'Home', end: 'End', pgup: 'PPage', pgdn: 'NPage', backspace: 'BSpace', delete: 'DC' };
-  const key = named[rest] ?? (/^[\x20-\x7e]$/.test(rest) ? rest : /^f(?:[1-9]|1[0-2])$/.test(rest) ? rest.toUpperCase() : null);
+  const key = TMUX_NAMED[rest] ?? (/^[\x20-\x7e]$/.test(rest) ? rest : /^f(?:[1-9]|1[0-2])$/.test(rest) ? rest.toUpperCase() : null);
   if (!key) throw new RpcError('invalid_key', 'tmux 不支持这个组合键');
   return prefix + key;
 }
@@ -77,6 +90,13 @@ export class TmuxBackend {
     const output = await this.tmux(['capture-pane', '-p', '-e', '-J', '-t', surface.id, '-S', `-${count}`]);
     const rows = output.replace(/\n$/, '').split('\n').slice(-count);
     return { surface, rows };
+  }
+  /** Several keys in one `send-keys`, in order; none is sent unless all are valid. */
+  async sendKeys(p, keys) {
+    const names = keys.map(tmuxKey);
+    await this.surface(p);
+    await this.tmux(['send-keys', '-t', p.surface_id, '--', ...names]);
+    return {};
   }
   async dispatch(method, p = {}) {
     switch (method) {

@@ -22,6 +22,7 @@ export function renderPlist({ label, launcher, config, logDirectory, path }) {
 <key>ProgramArguments</key><array><string>${xml(launcher)}</string><string>serve</string><string>--config</string><string>${xml(config)}</string></array>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
+<key>ProcessType</key><string>Interactive</string>
 <key>StandardOutPath</key><string>${xml(join(logDirectory, 'stdout.log'))}</string>
 <key>StandardErrorPath</key><string>${xml(join(logDirectory, 'stderr.log'))}</string>
 </dict></plist>\n`;

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import net from 'node:net';
 import { WebSocket } from 'ws';
+import { lineFramer } from './rpc.mjs';
 
 const SUBCOMMANDS = new Set(['daemon', 'proxy', 'generate-ts', 'generate-json-schema', 'help']);
 const exec = promisify(execFile);
@@ -92,17 +93,9 @@ export async function runDesktopBridge({ executable, socketPath, args, input = p
     transport.on('message', (data) => {
       if (!output.write(data.toString() + '\n')) { transport.pause(); output.once('drain', () => transport?.resume()); }
     });
-    let buffer = '';
     input.setEncoding('utf8');
-    onData = (chunk) => {
-      buffer += chunk;
-      if (Buffer.byteLength(buffer) > 32 * 1024 * 1024) { finish(1); return; }
-      let newline;
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-        if (line.trim() && transport.readyState === WebSocket.OPEN) transport.send(line);
-      }
-    };
+    onData = lineFramer((line) => { if (line.trim() && transport.readyState === WebSocket.OPEN) transport.send(line); },
+      { maxBytes: 32 * 1024 * 1024, onOverflow: () => finish(1) });
     onEnd = () => finish(0);
     input.on('data', onData); input.once('end', onEnd);
     return await finished;

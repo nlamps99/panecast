@@ -17,8 +17,25 @@ export const HELLO_TIMEOUT_MS = 5000;
 const hash = (value) => createHash('sha256').update(String(value)).digest();
 const equal = (a, b) => timingSafeEqual(hash(a), hash(b));
 const clamp = (n, fallback, max) => Number.isInteger(n) ? Math.min(max, Math.max(1, n)) : fallback;
+/**
+ * Ticks an unchanged terminal sits out: none for the first second, then one
+ * poll in two (500 ms at the default 250 ms), then one in four (1 s at most,
+ * so output after a quiet spell still shows promptly). Input to the terminal
+ * (`wake`) and any change bring it back to every tick.
+ */
+export const idleSkip = (idle) => idle < 4 ? 0 : idle < 8 ? 1 : 3;
+/** Bytes a session's transport may hold unsent before screen polling waits. */
+export const SCREEN_HIGH_WATER = 4 * 1024 * 1024;
+/** How often the broker link is pinged; a ping unanswered by the next one ends it. */
+export const BROKER_HEARTBEAT_MS = 10_000;
 const json = (response, status, body) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); };
 const bearer = (request) => /^Bearer (.+)$/i.exec(request.headers.authorization ?? '')?.[1];
+// The kernel accepts on a live socket even while its owner is too busy to read.
+const socketAnswers = (path) => new Promise((res) => {
+  const probe = net.connect(path), done = (answers) => { clearTimeout(timer); probe.destroy(); res(answers); };
+  const timer = setTimeout(() => done(true), 1000);
+  probe.once('connect', () => done(true)); probe.once('error', () => done(false));
+});
 /** Reads that change nothing; they may overtake the ordered input lane. */
 export const CONCURRENT_READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.history', 'surface.read_text', 'terminal.replay',
   'terminal.conversation', 'terminal.conversation.batch', 'project.list', 'project.read', 'project.diff', 'relay.info', 'relay.snippets',
@@ -50,13 +67,24 @@ export function inputItems(params) {
   });
 }
 
-/** Sends the items one after another; a failure reports how many already arrived. */
-export async function sendInputItems(items, target, call) {
+/**
+ * Sends the items in order. Consecutive text goes upstream as one
+ * `surface.send_text` (the same bytes, one call instead of one per item); with
+ * `sendKeys`, consecutive keys go as one call too. A failure reports how many
+ * items already arrived: a run that fails counts as not sent.
+ */
+export async function sendInputItems(items, target, call, sendKeys) {
   let sent = 0;
-  for (const item of items) {
-    try { await call(item.text !== undefined ? 'surface.send_text' : 'surface.send_key', { ...target, ...item }); }
-    catch (error) { const failure = new RpcError(error.code ?? 'input_failed', error.message ?? '发送失败'); failure.data = { sent }; throw failure; }
-    sent++;
+  while (sent < items.length) {
+    const text = items[sent].text !== undefined;
+    let end = sent + 1;
+    if (text || sendKeys) while (end < items.length && (items[end].text !== undefined) === text) end++;
+    try {
+      if (text) await call('surface.send_text', { ...target, text: end - sent === 1 ? items[sent].text : items.slice(sent, end).map((item) => item.text).join('') });
+      else if (end - sent > 1) await sendKeys(items.slice(sent, end).map((item) => item.key));
+      else await call('surface.send_key', { ...target, key: items[sent].key });
+    } catch (error) { const failure = new RpcError(error.code ?? 'input_failed', error.message ?? '发送失败'); failure.data = { sent }; throw failure; }
+    sent = end;
   }
   return { sent };
 }
@@ -155,7 +183,11 @@ export class RelaySession {
     if (method === 'surface.history') return this.historyPage(p);
     if (method === 'surface.input') {
       const items = inputItems(p); await this.backend.surface(p);
-      return sendInputItems(items, { workspace_id: p.workspace_id, surface_id: p.surface_id }, (name, params) => this.backend.dispatch(name, params));
+      const target = { workspace_id: p.workspace_id, surface_id: p.surface_id };
+      try {
+        return await sendInputItems(items, target, (name, params) => this.backend.dispatch(name, params),
+          typeof this.backend.sendKeys === 'function' ? (keys) => this.backend.sendKeys(target, keys) : undefined);
+      } finally { this.wake(p.surface_id); }
     }
     if (method === 'notification.create') {
       await this.backend.surface(p);
@@ -163,10 +195,14 @@ export class RelaySession {
       await this.notify(notification); return notification;
     }
     if (method === 'file.upload') return saveUpload(this.config.upload_directory ?? join(homedir(), 'Downloads', 'cmux-remote'), p);
-    const result = await this.backend.dispatch(method, p);
+    let result;
+    try { result = await this.backend.dispatch(method, p); }
+    finally { if (method === 'surface.send_text' || method === 'surface.send_key') this.wake(p.surface_id); }
     if (/^(workspace|surface)\.(create|close|rename)$/.test(method)) this.notify({ category: method.split('.')[0], name: `${method}d`, workspace_id: p.workspace_id });
     return result;
   }
+  /** Input makes the terminal answer: poll it at full rate again. */
+  wake(surfaceId) { const sub = this.subscriptions.get(surfaceId); if (sub) { sub.idle = 0; sub.skip = 0; } }
   async historyPage(p) {
     const limit = clamp(p.limit, 200, 1000);
     let snapshot, end, id, first = false, anchor;
@@ -183,12 +219,17 @@ export class RelaySession {
     return { rows: snapshot.rows.slice(start, end), next_cursor: start ? `${id}:${start}` : null, ...(first ? { anchor_rows: anchor } : {}) };
   }
   async poll(sub) {
-    if (sub.busy || this.disposed) return; sub.busy = true;
+    if (sub.busy || this.disposed) return;
+    // A transport still sending earlier screens gets no new one; the next
+    // poll diffs against what was actually sent.
+    if (sub.last && this.congested?.()) return;
+    sub.busy = true;
     try {
       const { rows, surface } = await this.backend.capture(sub, sub.lines);
       if (this.disposed || this.subscriptions.get(sub.surface_id) !== sub) return;
       const current = { rows, cursor: screenCursor(rows, surface), cols: surface.cols };
-      if (JSON.stringify(current) === JSON.stringify(sub.last)) return;
+      if (JSON.stringify(current) === JSON.stringify(sub.last)) { sub.idle = (sub.idle ?? 0) + 1; sub.skip = idleSkip(sub.idle); return; }
+      sub.idle = 0; sub.skip = 0;
       const previous = sub.last; sub.last = current;
       if (previous && previous.rows.length === rows.length && previous.cols === surface.cols) {
         const ops = rows.flatMap((text, y) => text === previous.rows[y] ? [] : [{ op: 'row', y, text }]);
@@ -198,7 +239,12 @@ export class RelaySession {
     } catch { /* A closed pane is reconciled by the workspace refresh. */ }
     finally { sub.busy = false; }
   }
-  tick() { for (const sub of this.subscriptions.values()) void this.poll(sub); }
+  tick() {
+    for (const sub of this.subscriptions.values()) {
+      if (sub.skip > 0) { sub.skip--; continue; }
+      void this.poll(sub);
+    }
+  }
 }
 
 export async function createTmuxRelay(config, options = {}) {
@@ -221,7 +267,12 @@ export async function createTmuxRelay(config, options = {}) {
       const events = retained && retained.category !== frame.category ? [frame, retained]
         : [retained ? { ...frame, payload: { ...frame.payload, ...retained.payload } } : frame];
       // A guest of a shared window never sees the computer's notifications.
-      for (const event of events) for (const session of sessions.values()) if (session.hello && !session.guest) session.send(event);
+      // What the journal keeps (notifications, lifecycle) goes to everyone; a
+      // stream event only to sessions that ask for it (a Codex thread's view).
+      for (const event of events) for (const session of sessions.values()) {
+        if (!session.hello || session.guest || (!retained && session.wantsEvent?.(event) === false)) continue;
+        session.send(event);
+      }
       return retained;
     });
     publishing = publish.then(() => {});
@@ -230,14 +281,18 @@ export async function createTmuxRelay(config, options = {}) {
   function notify(payload) {
     return ingestEvent({ type: 'event', category: payload.category ?? 'notification', name: payload.name ?? 'notification.created', payload });
   }
-  function createSession(id, send, close, meta = {}) {
+  function createSession(id, send, close, meta = {}, congested = null) {
     sessions.get(id)?.dispose();
     // Only a host that knows its shared windows may accept a guest; anything else refuses it.
-    const session = meta.guest
-      ? options.createSession?.({ send, close, notify, meta }) ?? null
-      : options.createSession ? options.createSession({ send, close, notify, meta }) : new RelaySession(backend, config, send, close, notify);
+    let session = null;
+    try {
+      session = meta.guest
+        ? options.createSession?.({ send, close, notify, meta }) ?? null
+        : options.createSession ? options.createSession({ send, close, notify, meta }) : new RelaySession(backend, config, send, close, notify);
+    } catch { session = null; }
     if (!session || (meta.guest && !session.guest)) { session?.dispose(); close(); return null; }
     session.inboxSync = (params) => journal.page(params, meta.guest ? () => false : options.allowInboxEvent);
+    if (congested) session.congested = congested;
     sessions.set(id, session); return session;
   }
   function remove(id) { sessions.get(id)?.dispose(); sessions.delete(id); }
@@ -251,17 +306,33 @@ export async function createTmuxRelay(config, options = {}) {
     // Only a host that confines guests to their shared window asks the broker for them.
     if (options.guestSessions) url.searchParams.set('features', 'guest-sessions');
     const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${config.broker.relay_token}` }, maxPayload: MAX_MESSAGE, handshakeTimeout: 10_000 });
-    tunnel = socket; let openedAt = 0, alive = true;
-    const send = (envelope) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope)); };
+    tunnel = socket; let openedAt = 0, alive = true, flushed = 0, flushedAtPing = 0, readAtPing;
+    const counted = (error) => { if (!error) flushed++; };
+    // Bytes of a large message still arriving (an upload chunk) hold back the pong behind them.
+    const bytesRead = () => socket._socket?.bytesRead;
+    const send = (envelope) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope), counted); };
+    // Every phone shares this one link, so its backlog is what makes screens wait.
+    const congested = () => socket.bufferedAmount > SCREEN_HIGH_WATER;
     socket.on('open', () => { openedAt = Date.now(); }); socket.on('pong', () => { alive = true; });
-    const heartbeat = setInterval(() => { if (socket.readyState !== WebSocket.OPEN) return; if (!alive) { socket.terminate(); return; } alive = false; socket.ping(); }, 20_000);
+    // The broker's ws answers pings itself. A ping or pong waits behind what
+    // is already queued, so a link still moving a backlog either way is slow,
+    // not dead; one that moved nothing since the last ping is ended.
+    const heartbeat = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const writing = socket.bufferedAmount > 0 && flushed !== flushedAtPing;
+      const reading = bytesRead() !== undefined && bytesRead() !== readAtPing;
+      if (!alive && !writing && !reading) { socket.terminate(); return; }
+      flushedAtPing = flushed; readAtPing = bytesRead(); alive = false; socket.ping();
+    }, options.brokerHeartbeatMs ?? BROKER_HEARTBEAT_MS);
     socket.on('message', (data) => {
+      alive = true;
       let e; try { e = JSON.parse(data.toString()); } catch { socket.close(); return; }
+      if (!e || typeof e !== 'object' || Array.isArray(e)) { socket.close(); return; }
       if (e.type === 'session.open' && typeof e.device_id === 'string') {
         // The broker marks credentials it issued for a shared window.
         const guest = e.guest === undefined ? null : { shareId: typeof e.guest?.share_id === 'string' ? e.guest.share_id : '' };
         createSession(`broker:${e.session_id}`, (frame) => send({ type: 'session.text', session_id: e.session_id, text: JSON.stringify(frame) }), () => { send({ type: 'session.close', session_id: e.session_id }); remove(`broker:${e.session_id}`); },
-          { deviceId: e.device_id, guest });
+          { deviceId: e.device_id, guest }, congested);
       }
       else if (e.type === 'session.text' && typeof e.text === 'string') sessions.get(`broker:${e.session_id}`)?.receive(e.text);
       else if (e.type === 'session.close') remove(`broker:${e.session_id}`);
@@ -306,8 +377,9 @@ export async function createTmuxRelay(config, options = {}) {
     return device && (!device.loopback_only || loopback(request.socket.remoteAddress)) ? id : undefined;
   };
   const server = http.createServer(async (request, response) => {
-    const path = new URL(request.url, 'http://localhost').pathname;
     try {
+      // A request line the URL parser rejects must answer 400, not end the gateway.
+      const path = new URL(request.url, 'http://localhost').pathname;
       if (request.method === 'GET' && path === '/v1/health') { json(response, 200, { ok: true, backend: options.backendName ?? 'tmux' }); return; }
       if (request.method === 'POST' && path === '/v1/devices/me/register') {
         const ip = request.socket.remoteAddress;
@@ -327,21 +399,34 @@ export async function createTmuxRelay(config, options = {}) {
       if (request.method === 'DELETE' && path === '/v1/devices/me') { delete devices[id]; disconnectDevice(id); await persistDevices(); json(response, 200, { ok: true }); return; }
       // Push uses the broker's authenticated registration route on both platforms.
       json(response, 404, { error: 'not_found' });
-    } catch { json(response, 400, { error: 'invalid_request' }); }
+    } catch {
+      try { if (response.headersSent) response.destroy(); else json(response, 400, { error: 'invalid_request' }); } catch { response.destroy(); }
+    }
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE });
   function disconnectDevice(deviceId) {
     for (const ws of wss.clients) if (ws.deviceId === deviceId) ws.terminate();
   }
   server.on('upgrade', (request, socket, head) => {
-    const deviceId = authenticated(request);
-    if (new URL(request.url, 'http://localhost').pathname !== '/v1/ws' || !deviceId) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return; }
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      ws.deviceId = deviceId;
-      const id = `lan:${randomUUID()}`;
-      const session = createSession(id, (frame) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame)); }, () => { ws.close(); remove(id); });
-      ws.on('message', (data) => session.receive(data.toString())); ws.on('close', () => remove(id)); ws.on('error', () => {});
-    });
+    // A client that gave up before a busy gateway answered must not take it down with EPIPE.
+    socket.on('error', () => {});
+    // Nothing a client sends may throw out of this listener: that would end the gateway.
+    try {
+      let path;
+      try { path = new URL(request.url, 'http://localhost').pathname; }
+      catch { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n', () => socket.destroy()); return; }
+      const deviceId = authenticated(request);
+      if (path !== '/v1/ws' || !deviceId) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return; }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        ws.deviceId = deviceId;
+        ws.on('error', () => {});
+        const id = `lan:${randomUUID()}`;
+        const session = createSession(id, (frame) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame)); }, () => { ws.close(); remove(id); },
+          {}, () => ws.bufferedAmount > SCREEN_HIGH_WATER);
+        if (!session) { ws.terminate(); return; }
+        ws.on('message', (data) => session.receive(data.toString())); ws.on('close', () => remove(id));
+      });
+    } catch { socket.destroy(); }
   });
   const poll = setInterval(() => { for (const session of sessions.values()) session.tick(); }, Math.max(100, clamp(config.poll_ms, 250, 5000)));
   poll.unref();
@@ -363,8 +448,15 @@ export async function createTmuxRelay(config, options = {}) {
     backend, sessions, notify, ingestEvent, journal,
     async start() {
       await mkdir(pipe ? stateDirectory : dirname(notifyPath), { recursive: true, mode: 0o700 });
-      // Refuse an existing socket rather than disconnecting another running relay.
-      await new Promise((res, rej) => { notifyServer.once('error', rej); notifyServer.listen(notifyPath, res); });
+      // Refuse a socket another running relay answers on, rather than disconnecting it.
+      // One nobody answers on was left by a relay that crashed; without removing it
+      // every restart would fail.
+      const listenNotify = () => new Promise((res, rej) => { notifyServer.once('error', rej); notifyServer.listen(notifyPath, res); });
+      try { await listenNotify(); } catch (error) {
+        if (pipe || error?.code !== 'EADDRINUSE' || await socketAnswers(notifyPath)) throw error;
+        await unlink(notifyPath).catch(() => {});
+        await listenNotify();
+      }
       ownsNotifySocket = !pipe;
       if (!pipe) await chmod(notifyPath, 0o600);
       const listen = () => new Promise((res, rej) => { server.once('error', rej); server.listen(config.port ?? 4399, config.host ?? '127.0.0.1', res); });

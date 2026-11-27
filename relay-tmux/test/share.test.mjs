@@ -147,6 +147,7 @@ test('a guest cannot reach any other terminal or management call', async (t) => 
     ['surface.create', { workspace_id: own.workspace_id, pane_id: scoped('cmux', '%0') }], ['workspace.rename', { workspace_id: own.workspace_id, title: 'x' }],
     ['file.upload', { ...other, data_base64: 'aGk=' }], ['notification.create', own], ['project.read', { ...own, path: 'a.txt' }], ['project.list', own], ['agent.threads', { source_id: 'cmux' }],
     ['workspace.list', { source_id: 'other' }], ['surface.subscribe', { ...own, pane_id: scoped('cmux', '%0') }],
+    ['surface.action', { ...own, action: 'rename', title: '改名' }], ['surface.action', { ...own, action: 'clear_name' }],
   ]) await assert.rejects(relay.call('g', method, params), { code: 'forbidden' }, method);
   assert.equal(upstream.calls.some((c) => c.params?.surface_id === '%0' || c.params?.surface_id === '%9' || /create|close|rename/.test(c.method)), false);
 });
@@ -380,6 +381,17 @@ test('input checks stand alone', () => {
   assert.throws(() => guestKey('backspace', { editing: false }), { code: 'guest_key' });
 });
 
+test('a guest key is checked as cmux reads it, with + as well as - between keys', () => {
+  // cmux splits a chord on + and - and drops empty pieces, so each of these is Ctrl-G, ⌘C or Shift-1 there.
+  for (const key of ['ctrl+g', 'CTRL+V', 'control+z', 'ctrl+shift+g', 'ctrl+-+g', 'ctrl-+g', 'ctrl++g', 'alt+y', 'cmd+c', 'super+w', 'shift+1']) {
+    assert.throws(() => guestKey(key), { code: 'guest_key' }, key);
+  }
+  for (const key of ['ctrl+c', 'shift+tab', 'alt+left', 'pageup', 'page_down']) assert.equal(guestKey(key), key);
+  // cmux's names for the page keys keep the typed text, as pgup/pgdn do.
+  for (const key of ['pageup', 'pagedown', 'page_up', 'page_down', 'pgup', 'ctrl+c']) assert.equal(guestKey(key, { editing: false }), key);
+  assert.throws(() => guestKey('ctrl+w', { editing: false }), { code: 'guest_key' });
+});
+
 test('a guest lists, links and uploads files of the shared directory only', async (t) => {
   const outside = await mkdtemp(join(tmpdir(), 'panecast-outside-')); t.after(() => rm(outside, { recursive: true, force: true }));
   const folder = await realpath(await mkdtemp(join(tmpdir(), 'panecast-shared-'))); t.after(() => rm(folder, { recursive: true, force: true }));
@@ -468,6 +480,16 @@ test('shared windows start Claude with a known session id that the gateway can f
   assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's2'), null);
   assert.equal(await shareConversationBinding(config, 'other', 'w1', 's1'), null);
   await writeFile(join(state, 'shares', 'shares.json'), JSON.stringify({ version: 1, shares: [{ ...share, revoked_at: '2026-11-17T00:00:00Z' }] }));
+  assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's1'), null);
+  // The file is read again only after it changes; the store replaces it on every write.
+  const store = new ShareStore(join(state, 'shares', 'shares.json'));
+  await store.write([share]);
+  assert.deepEqual(await shareConversationBinding(config, 'cmux', 'w1', 's1'), { kind: 'claude', checkpoint_id: sessionId });
+  await store.write([{ ...share, terminals: [{ surface_id: 's1', session_id: sessionId }, { surface_id: 's3', session_id: sessionId }] }]);
+  assert.deepEqual(await shareConversationBinding(config, 'cmux', 'w1', 's3'), { kind: 'claude', checkpoint_id: sessionId });
+  await rm(join(state, 'shares', 'shares.json'));
+  assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's1'), null);
+  await writeFile(join(state, 'shares', 'shares.json'), '{"version":1,');
   assert.equal(await shareConversationBinding(config, 'cmux', 'w1', 's1'), null);
 });
 

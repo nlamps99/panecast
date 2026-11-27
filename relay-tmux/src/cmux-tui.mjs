@@ -31,13 +31,14 @@ export function invoke(command, args, input, limit = 16 * 1024 * 1024) {
   });
 }
 
-/** Panecast key names (`ctrl-c`, `pgup`, `shift-tab`) as cmux key chords, or literal text. */
+/** Panecast key names (`ctrl-c`, `pgup`, `shift-tab`) and cmux's own (`ctrl+c`, `page_up`) as cmux key chords, or literal text. */
 export function cmuxKey(value) {
   if (typeof value !== 'string' || !value || value.length > 64) throw new RpcError('invalid_key', '无效按键');
   let rest = value, modifiers = [];
-  for (let match; (match = /^(ctrl|alt|shift)-(?=.)/i.exec(rest));) { modifiers.push(match[1].toLowerCase()); rest = rest.slice(match[0].length); }
-  const named = { enter: 'enter', tab: 'tab', escape: 'escape', esc: 'escape', up: 'up', down: 'down', left: 'left', right: 'right',
-    home: 'home', end: 'end', pgup: 'pageup', pgdn: 'pagedown', pageup: 'pageup', pagedown: 'pagedown', backspace: 'backspace', delete: 'delete', space: 'space' };
+  for (let match; (match = /^(ctrl|alt|shift)[-+](?=.)/i.exec(rest));) { modifiers.push(match[1].toLowerCase()); rest = rest.slice(match[0].length); }
+  const named = { enter: 'enter', return: 'enter', tab: 'tab', escape: 'escape', esc: 'escape', up: 'up', down: 'down', left: 'left', right: 'right',
+    home: 'home', end: 'end', pgup: 'pageup', pgdn: 'pagedown', pageup: 'pageup', pagedown: 'pagedown', page_up: 'pageup', page_down: 'pagedown',
+    backspace: 'backspace', delete: 'delete', space: 'space' };
   const lower = rest.toLowerCase();
   const key = named[lower] ?? (/^f(?:[1-9]|1[0-2])$/.test(lower) ? lower : /^[a-z0-9]$/i.test(rest) ? rest.toLowerCase() : null);
   if (key) return { chord: [...new Set(modifiers), key].join('+') };

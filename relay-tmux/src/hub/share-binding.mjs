@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +18,26 @@ export function shareTerminals(share) {
 }
 
 /**
+ * The shares in the file, read again only when the file changed: every
+ * terminal's conversation poll asks. The file is replaced on every write
+ * (writeJSON renames), so its inode, size and time tell a change apart.
+ * Undefined when it cannot be read.
+ */
+const sharesRead = new Map();
+async function sharesList(path) {
+  let info;
+  try { info = await stat(path); } catch { sharesRead.delete(path); return undefined; }
+  const key = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`, hit = sharesRead.get(path);
+  if (hit?.key === key) return hit.shares;
+  let shares;
+  try { shares = JSON.parse(await readFile(path, 'utf8')).shares; } catch { sharesRead.delete(path); return undefined; }
+  // A replace between the stat and the read is caught by the next stat.
+  sharesRead.set(path, { key, shares });
+  if (sharesRead.size > 8) sharesRead.delete(sharesRead.keys().next().value);
+  return shares;
+}
+
+/**
  * The session a shared window's Claude writes to. `panecast share` starts
  * it with `--session-id` and keeps the id with the share, because cmux
  * holds no resume binding for a window it did not launch through its
@@ -25,8 +45,7 @@ export function shareTerminals(share) {
  * window's history from its record. Null when the window is not a share.
  */
 export async function shareConversationBinding(config, sourceId, workspaceId, surfaceId) {
-  let shares;
-  try { shares = JSON.parse(await readFile(sharesFile(config), 'utf8')).shares; } catch { return null; }
+  const shares = await sharesList(sharesFile(config));
   if (!Array.isArray(shares)) return null;
   for (const entry of shares) {
     if (entry.revoked_at || entry.source_id !== sourceId || entry.workspace_id !== workspaceId) continue;

@@ -63,9 +63,10 @@ const ALT_REFUSED = { y: CTRL_REFUSED.y };
  * prompt into `!ls`, send it as text and recall it from history in shell
  * mode. Windows opened before the hook keep the keys that cannot delete.
  */
-const KEEPS_TEXT = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'home', 'end', 'pgup', 'pgdn', 'tab', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12']);
+// cmux's own names for the page keys (`pageup`, `page_up`) are the same keys as pgup/pgdn.
+const KEEPS_TEXT = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'home', 'end', 'pgup', 'pgdn', 'pageup', 'pagedown', 'page_up', 'page_down', 'tab', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12']);
 const KEEPS_TEXT_CTRL = new Set(['c', 'a', 'e', 'b', 'f', 'p', 'n', 'l', 'o', 't', 's', 'x']);
-const MODIFIER = /^(ctrl|control|alt|option|opt|shift|cmd|command|meta|super)-(?=.)/;
+const MODIFIER = /^(ctrl|control|alt|option|opt|shift|cmd|command|meta|super)[-+](?=.)/;
 const SYSTEM_MODIFIERS = new Set(['cmd', 'command', 'meta', 'super']);
 const forbidden = () => new RpcError('forbidden', '分享窗口只能操作被分享的工作区里的终端');
 
@@ -96,16 +97,26 @@ export function guestKey(key, { editing = true } = {}) {
     modifiers.add(match[1]);
     rest = rest.slice(match[0].length);
   }
-  if ([...modifiers].some((name) => SYSTEM_MODIFIERS.has(name))) throw new RpcError('guest_key', '分享窗口不能用 ⌘ 快捷键：它们由这台电脑上的终端处理');
-  if (rest === '!' || (rest === '1' && modifiers.has('shift'))) throw new RpcError('guest_key', '半角 ! 会让 Claude 进入 shell 模式，请直接输入文字');
+  refuseKey(rest, modifiers);
+  // cmux reads a chord by splitting on both + and - and dropping empty
+  // pieces (`ctrl+-+g` is Ctrl-G there): its reading must pass as well.
+  const chord = key.toLowerCase().split(/[+-]/).filter(Boolean);
+  if (chord.length > 1) refuseKey(chord.at(-1), new Set(chord.slice(0, -1)));
   const ctrl = modifiers.has('ctrl') || modifiers.has('control');
-  if (ctrl && CTRL_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${CTRL_REFUSED[rest]}`);
-  if (modifiers.has('alt') && ALT_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${ALT_REFUSED[rest]}`);
   if (!editing) {
     const keeps = modifiers.has('alt') ? false : ctrl ? KEEPS_TEXT_CTRL.has(rest) : KEEPS_TEXT.has(rest);
     if (!keeps) throw new RpcError('guest_key', '这个分享窗口是旧版创建的，退格、删除等编辑键要等电脑上运行 panecast share reopen 重新打开窗口后才能用');
   }
   return key;
+}
+
+/** Throws for a key that acts outside the shared window (see above). */
+function refuseKey(rest, modifiers) {
+  if ([...modifiers].some((name) => SYSTEM_MODIFIERS.has(name))) throw new RpcError('guest_key', '分享窗口不能用 ⌘ 快捷键：它们由这台电脑上的终端处理');
+  if (rest === '!' || (rest === '1' && modifiers.has('shift'))) throw new RpcError('guest_key', '半角 ! 会让 Claude 进入 shell 模式，请直接输入文字');
+  const ctrl = modifiers.has('ctrl') || modifiers.has('control');
+  if (ctrl && CTRL_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${CTRL_REFUSED[rest]}`);
+  if (modifiers.has('alt') && ALT_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${ALT_REFUSED[rest]}`);
 }
 
 /** A line typed and submitted with Enter, which a paste delivers whole, keeping a ! inside it. */

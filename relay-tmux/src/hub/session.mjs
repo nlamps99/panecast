@@ -9,8 +9,15 @@ import { shareConversationBinding } from './share-binding.mjs';
 import { AntigravityProcesses } from './antigravity.mjs';
 
 const READS = new Set(['window.list', 'workspace.list', 'surface.list', 'surface.subscribe', 'surface.unsubscribe', 'surface.history', 'surface.read_text', 'terminal.replay', 'terminal.conversation', 'project.list', 'project.read', 'project.diff', 'relay.diagnostics', 'host.battery']);
-const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'terminal.paste', 'notification.create']);
+const WRITES = new Set(['workspace.create', 'workspace.rename', 'workspace.close', 'workspace.select', 'surface.create', 'surface.close', 'surface.focus', 'surface.send_key', 'surface.send_text', 'surface.input', 'terminal.scroll', 'terminal.paste', 'surface.action', 'notification.create']);
 const MAX_BATCH = 64, BATCH_PARALLEL = 4;
+/** Codex events that only a view of that thread uses: streamed items, deltas, progress. */
+const STREAM_EVENT = /^(item[./]|tool[./]|message[./])|[./](delta|progress|started|updated)$/;
+/** Codex threads a connection follows; a desktop shows a few at a time. */
+const WATCHED_THREADS = 64;
+/** A terminal's resume binding changes when an agent starts or exits in it; polls in between reuse it. */
+export const RESUME_BINDING_TTL_MS = 3000;
+const NO_CONVERSATION = () => ({ available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null });
 
 /** A phone keeps one authenticated connection while sources keep independent transports. */
 /** Explains the two cmux failures a user can fix: cmux not running, or cmux refusing the relay. */
@@ -25,6 +32,7 @@ export class HubSession extends RelaySession {
   constructor(registry, config, send, close, notify) {
     super(registry, config, send, close, notify);
     this.registry = registry; this.clients = new Map(); this.savedSubscriptions = new Map(); this.restoreNeeded = new Set(); this.restoring = new Set(); this.retryAt = new Map();
+    this.watchedThreads = new Map();
     this.unlisten = registry.onEvent((frame) => {
       if (frame.name === 'source.changed') {
         for (const id of frame.payload.source_ids) { this.clients.get(id)?.close(); this.clients.delete(id); this.savedSubscriptions.delete(id); this.restoreNeeded.delete(id); }
@@ -34,7 +42,26 @@ export class HubSession extends RelaySession {
     });
   }
 
-  dispose() { this.unlisten?.(); for (const client of this.clients.values()) client.close(); this.clients.clear(); super.dispose(); }
+  dispose() { this.unlisten?.(); for (const client of this.clients.values()) client.close(); this.clients.clear(); this.watchedThreads.clear(); super.dispose(); }
+
+  /**
+   * Whether this connection gets a hub event the journal does not keep. A
+   * Codex thread's stream (items, deltas) goes only to connections that
+   * opened, read or wrote that thread; everything else goes to all.
+   */
+  wantsEvent(frame) {
+    if (frame?.category !== 'agent' || typeof frame.name !== 'string' || !STREAM_EVENT.test(frame.name)) return true;
+    const p = frame.payload ?? {}, thread = p.threadId ?? p.thread_id;
+    if (p.request_id != null || typeof p.source_id !== 'string' || typeof thread !== 'string') return true;
+    return this.watchedThreads.has(`${p.source_id}\n${thread}`);
+  }
+
+  watchThread(sourceId, threadId) {
+    if (typeof sourceId !== 'string' || typeof threadId !== 'string' || !threadId) return;
+    const key = `${sourceId}\n${threadId}`;
+    this.watchedThreads.delete(key); this.watchedThreads.set(key, true);
+    while (this.watchedThreads.size > WATCHED_THREADS) this.watchedThreads.delete(this.watchedThreads.keys().next().value);
+  }
   tick() {
     for (const client of this.clients.values()) client.tick?.();
     for (const [id, subscriptions] of this.savedSubscriptions) {
@@ -61,6 +88,8 @@ export class HubSession extends RelaySession {
     if (TERMINAL_TYPES.includes(c.type)) {
       const backend = terminalBackend(c);
       const session = new RelaySession(backend, this.config, (frame) => this.forward(id, frame), () => {}, (payload) => this.notify(scopeResult(id, payload, true)));
+      // Its screens go out on this connection's transport: wait while that is backed up.
+      session.congested = () => this.congested?.() ?? false;
       void session.process(JSON.stringify({ protocolVersion: 1, deviceId: 'hub' }));
       client = { call: (method, params) => session.dispatch(method, params), tick: () => session.tick(), close: () => session.dispose() };
     } else if (c.type === 'cmux') {
@@ -77,7 +106,7 @@ export class HubSession extends RelaySession {
       this.send({ type: 'event', category: 'source', name: 'source.disconnected', payload: { source_id: id } });
       return;
     }
-    if (frame.type?.startsWith('screen.') || frame.type === 'event') {
+    if (typeof frame.type === 'string' && (frame.type.startsWith('screen.') || frame.type === 'event')) {
       if (frame.type === 'event' && this.config.hub_event_monitor) return;
       const scopedFrame = scopeResult(id, frame);
       if (frame.type === 'event' && frame.payload?.id) scopedFrame.payload.id = scoped(id, frame.payload.id);
@@ -133,7 +162,11 @@ export class HubSession extends RelaySession {
     if (method.startsWith('agent.')) {
       const source = this.registry.get(p.source_id);
       if (source.config.type !== 'codex') throw new RpcError('invalid_source', '请选择 Codex 来源');
+      // Watch before the call: a resumed thread streams before its reply arrives.
+      if (method === 'agent.unsubscribe') this.watchedThreads.delete(`${p.source_id}\n${p.thread_id}`);
+      else this.watchThread(p.source_id, p.thread_id);
       const result = await this.registry.codex(p.source_id).dispatch(method, p);
+      if (method !== 'agent.unsubscribe' && typeof result?.thread?.id === 'string') this.watchThread(p.source_id, result.thread.id);
       if (result?.thread) await this.originalTerminal(result.thread);
       for (const thread of result?.threads ?? []) delete thread.writerTarget;
       return result;
@@ -168,12 +201,12 @@ export class HubSession extends RelaySession {
     }
     const source = this.registry.get(id);
     if (method === 'terminal.conversation') {
-      if (source.config.type !== 'cmux' || !localConversationSource(source.config.url)) return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
+      if (source.config.type !== 'cmux' || !localConversationSource(source.config.url)) return NO_CONVERSATION();
       if (!params.workspace_id || !params.surface_id) throw new RpcError('invalid_target', '请选择当前终端');
       let info;
-      try { info = await this.client(id).call('surface.resume.get', { workspace_id: params.workspace_id, surface_id: params.surface_id }); }
+      try { info = await this.resumeBinding(source, id, params.workspace_id, params.surface_id); }
       catch (error) {
-        if (['method_not_found', 'not_supported', '-32601'].includes(String(error.code))) return { available: false, provider: 'terminal', conversation_id: null, items: [], next_cursor: null };
+        if (['method_not_found', 'not_supported', '-32601'].includes(String(error.code))) return NO_CONVERSATION();
         throw error;
       }
       source.conversationReader ??= new TerminalConversationReader({ codexHome: source.config.codex_home, claudeHome: source.config.claude_home });
@@ -195,12 +228,29 @@ export class HubSession extends RelaySession {
       }
       catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('conversation_unavailable', '对话记录暂时不可用，请稍后重试'); }
     }
-    if (['terminal.replay', 'terminal.scroll', 'terminal.paste'].includes(method) && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持此操作');
-    if (method === 'terminal.paste' && (!params.workspace_id || !params.surface_id || typeof params.text !== 'string' || !params.text.trim() || params.text.length > 64_000 || params.submit_key !== 'return')) throw new RpcError('invalid_params', '消息或目标无效');
+    if (['terminal.replay', 'terminal.scroll', 'terminal.paste', 'surface.action'].includes(method) && source.config.type !== 'cmux') throw new RpcError('method_not_found', '这个终端来源不支持此操作');
+    if (method === 'surface.action') {
+      // Only naming a terminal: cmux's other tab actions close, move or create tabs.
+      const rename = params.action === 'rename';
+      if (!params.workspace_id || !params.surface_id || (!rename && params.action !== 'clear_name')
+        || (rename && (typeof params.title !== 'string' || !params.title.trim() || params.title.length > 200))) throw new RpcError('invalid_params', '名称或目标无效');
+      params = { workspace_id: params.workspace_id, surface_id: params.surface_id, action: params.action, ...(rename ? { title: params.title } : {}) };
+    }
+    if (method === 'terminal.paste') {
+      // `submit_key: 'return'` pastes a message and submits it. Without one the
+      // text is only pasted (multi-line input, Shift+Enter), so it may be just
+      // whitespace such as "\n"; cmux submits unless told 'none'.
+      const submit = params.submit_key === 'return';
+      if (!params.workspace_id || !params.surface_id || typeof params.text !== 'string' || !params.text.length || params.text.length > 64_000
+        || (submit ? !params.text.trim() : params.submit_key !== undefined)) throw new RpcError('invalid_params', '消息或目标无效');
+      if (!submit) params.submit_key = 'none';
+    }
     if (method === 'surface.input') {
       // Runs on the hub, next to the terminal: the phone or desktop pays one
       // network round trip for everything typed meanwhile, in order.
       const items = inputItems(params), client = this.client(id);
+      // A terminal served in this process takes the whole batch (one tmux call per run).
+      if (TERMINAL_TYPES.includes(source.config.type)) return client.call('surface.input', { workspace_id: params.workspace_id, surface_id: params.surface_id, items });
       return sendInputItems(items, { workspace_id: params.workspace_id, surface_id: params.surface_id }, (name, values) => client.call(name, values));
     }
     if (params.window_id === 'default') delete params.window_id;
@@ -234,6 +284,22 @@ export class HubSession extends RelaySession {
     };
     await Promise.all(Array.from({ length: Math.min(BATCH_PARALLEL, requests.length) }, worker));
     return { results };
+  }
+
+  /**
+   * cmux's resume binding for a terminal, kept a few seconds per source (for
+   * every connection): the desktop asks about each visible terminal about
+   * once a second. Only answers are kept, never a failure.
+   */
+  async resumeBinding(source, id, workspaceId, surfaceId) {
+    const cache = source.resumeBindings ??= new Map(), key = `${workspaceId}\n${surfaceId}`;
+    const hit = cache.get(key);
+    if (hit && Date.now() - hit.at < RESUME_BINDING_TTL_MS) return hit.info;
+    const info = await this.client(id).call('surface.resume.get', { workspace_id: workspaceId, surface_id: surfaceId });
+    const now = Date.now();
+    for (const [other, old] of cache) if (now - old.at >= RESUME_BINDING_TTL_MS) cache.delete(other);
+    cache.set(key, { at: now, info });
+    return info;
   }
 
   terminals() { return [...this.registry.sources.values()].filter((s) => s.config.type !== 'codex'); }

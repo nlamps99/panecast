@@ -109,8 +109,15 @@ cmux DR2 从 r3 起在侧栏左下角显示「手机访问」：未安装、待�
 请求分两条通道处理：输入、订阅和其他写操作按到达顺序逐个执行；只读请求（列表、历史、
 对话记录、项目文件等）并行执行，慢读取不会挡住后面的按键。`surface.input`
 （`{workspace_id, surface_id, items: [{text} | {key}]}`，最多 512 项、256 KiB）把客户端在上一次
-往返期间输入的文字和按键在 hub 上按顺序送到指定终端，不改变 Mac 上的焦点；中途失败时
-错误的 `data.sent` 说明已送达几项。`terminal.conversation.batch`（`{requests: [...]}`，最多 64 项）
+往返期间输入的文字和按键在 hub 上按顺序送到指定终端，不改变 Mac 上的焦点；相邻的文字合成一次
+`surface.send_text`（tmux 相邻按键也合成一次 `send-keys`）。中途失败时错误的 `data.sent` 说明已送达
+几项，失败的那一段算作未送达。`terminal.paste`（cmux）带 `submit_key: 'return'` 时粘贴并提交；
+不带 `submit_key` 时只粘贴不提交（多行输入、Shift+Enter），文字可以只是空白（例如 `"\n"`），
+不能为空、不超过 64 000 字符。旧网关对不带 `submit_key` 的请求返回 `invalid_params`，客户端据此退回旧做法。
+按键名同时接受 Panecast 的 `pgup`/`pgdn`、`ctrl-c` 和 cmux 的 `pageup`/`page_up`、`ctrl+c`。
+`surface.action`（仅 cmux、仅本人连接）只允许给终端改名：`{workspace_id, surface_id, action: 'rename', title}`
+（title 去掉空白后不能为空，不超过 200 字符）或清除名称 `{workspace_id, surface_id, action: 'clear_name'}`；
+其余动作返回 `invalid_params`，分享访客一律拒绝。`terminal.conversation.batch`（`{requests: [...]}`，最多 64 项）
 一次读取多个终端的对话状态，每项单独返回结果或错误。旧客户端仍可使用逐项请求。cmux 和 tmux 的文字输入、按键、终端管理、历史、附件和项目读取
 使用现有手机界面。cmux 来源掉线不会阻断其他来源。
 

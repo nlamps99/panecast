@@ -5,6 +5,38 @@ import { RpcError } from '../tmux.mjs';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 
+/**
+ * Splits a stream of decoded text into newline-terminated lines. Each chunk
+ * is scanned once and a partial line is kept as a list of pieces, so a large
+ * message arriving in many chunks costs linear time (concatenating and
+ * re-scanning the whole buffer per chunk was quadratic). `onOverflow` runs
+ * once when a single line grows past `maxBytes`; nothing is delivered after.
+ */
+export function lineFramer(onLine, { maxBytes = MAX_BYTES, onOverflow = () => {} } = {}) {
+  let pieces = [], pendingBytes = 0, overflowed = false;
+  const overflow = () => { overflowed = true; pieces = []; pendingBytes = 0; onOverflow(); };
+  return (chunk) => {
+    if (overflowed) return;
+    const text = String(chunk);
+    let start = 0, newline;
+    while ((newline = text.indexOf('\n', start)) >= 0) {
+      let line = text.slice(start, newline);
+      start = newline + 1;
+      if (pieces.length) {
+        if (pendingBytes + Buffer.byteLength(line) > maxBytes) { overflow(); return; }
+        pieces.push(line); line = pieces.join(''); pieces = []; pendingBytes = 0;
+      }
+      onLine(line);
+      if (overflowed) return;
+    }
+    if (start < text.length) {
+      const piece = start ? text.slice(start) : text;
+      pendingBytes += Buffer.byteLength(piece); pieces.push(piece);
+      if (pendingBytes > maxBytes) overflow();
+    }
+  };
+}
+
 /** One connection, with bounded messages and no retry of uncertain mutations. */
 export class RpcPeer {
   constructor(options) {
@@ -35,14 +67,9 @@ export class RpcPeer {
       const child = spawn(o.command, o.args, { env: { ...process.env, ...o.env }, stdio: ['pipe', 'pipe', 'pipe'] });
       this.child = child;
       this.send = (message) => child.stdin.write(JSON.stringify(message) + '\n');
-      let buffer = '';
       child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk) => {
-        buffer += chunk;
-        if (Buffer.byteLength(buffer) > MAX_BYTES) { this.fail(new RpcError('too_large', '来源返回的数据过大')); return; }
-        let newline;
-        while ((newline = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (line.trim()) this.receive(line); }
-      });
+      child.stdout.on('data', lineFramer((line) => { if (line.trim()) this.receive(line); },
+        { onOverflow: () => this.fail(new RpcError('too_large', '来源返回的数据过大')) }));
       // Never echo upstream stderr: it can contain local paths or credentials.
       child.stderr.resume();
       child.stdin.on('error', () => {});
@@ -84,6 +111,8 @@ export class RpcPeer {
   receive(text) {
     let message;
     try { message = JSON.parse(text); } catch { this.fail(new RpcError('invalid_response', '来源返回了无效数据')); return; }
+    // A frame that is not an object would throw in the listeners, outside any handler.
+    if (!message || typeof message !== 'object' || Array.isArray(message)) { this.fail(new RpcError('invalid_response', '来源返回了无效数据')); return; }
     if (message.method === undefined && message.id != null) {
       const pending = this.pending.get(String(message.id));
       if (!pending) return;

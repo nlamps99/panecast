@@ -42,6 +42,11 @@ test('Panecast key names become cmux key chords or typed text', () => {
   assert.deepEqual(cmuxKey('ctrl-alt-Delete'), { chord: 'ctrl+alt+delete' });
   assert.deepEqual(cmuxKey('F5'), { chord: 'f5' });
   assert.deepEqual(cmuxKey('~'), { text: '~' });
+  // cmux's own spellings work too.
+  for (const name of ['pageup', 'page_up']) assert.deepEqual(cmuxKey(name), { chord: 'pageup' });
+  assert.deepEqual(cmuxKey('page_down'), { chord: 'pagedown' }); assert.deepEqual(cmuxKey('return'), { chord: 'enter' });
+  assert.deepEqual(cmuxKey('ctrl+c'), { chord: 'ctrl+c' }); assert.deepEqual(cmuxKey('shift+tab'), { chord: 'shift+tab' });
+  assert.deepEqual(cmuxKey('+'), { text: '+' });
   assert.throws(() => cmuxKey('ctrl-~'), { code: 'invalid_key' });
   assert.throws(() => cmuxKey(''), { code: 'invalid_key' });
 });

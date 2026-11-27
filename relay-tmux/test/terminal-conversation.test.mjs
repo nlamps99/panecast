@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, appendFile, rm, symlink, open } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, appendFile, rm, symlink, open, truncate, stat, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { parseConversation, TerminalConversationReader, localConversationSource } from '../src/hub/terminal-conversation.mjs';
@@ -152,4 +152,64 @@ test('reader rejects identity mismatch and never follows symlinks or remote bind
   assert.equal((await fx.reader.read({ ...fx.binding, execution_location: 'remote' })).available, false);
   assert.equal((await fx.reader.read({ ...fx.binding, checkpoint_id: '../escape' })).available, false);
   assert.equal(localConversationSource('wss://example.com'), false); assert.equal(localConversationSource('ws://127.0.0.1:4399'), true);
+});
+
+test('a reader that parses only appended lines answers exactly like a fresh read', async t => {
+  for (const provider of ['codex', 'claude']) {
+    let n = 0;
+    const next = () => {
+      const i = ++n, pad = 'x'.repeat((i % 7) * 60);
+      return provider === 'codex'
+        ? (i % 9 === 0 ? { type: 'event_msg', payload: { type: 'task_complete' } } : completed({ ...agent(`answer ${i} ${pad}`), id: `a${i}`, phase: i % 4 ? 'commentary' : 'final' }, `t${i}`))
+        : claude(`m${i}`, `m${i - 1}`, i % 2 ? 'assistant' : 'user', `message ${i} ${pad}`);
+    };
+    const first = provider === 'codex' ? { type: 'session_meta', payload: { id } } : claude('m0', null, 'user', 'start');
+    const fx = await fixture(t, provider, [first, ...Array.from({ length: 12 }, next)]);
+    // A small window makes appends push records out of it, as a long transcript does.
+    const window = 6000, key = `${provider}:${id}`;
+    const cached = new TerminalConversationReader({ home: fx.home, window });
+    let extended = 0;
+    const extend = cached.extendTail.bind(cached);
+    cached.extendTail = async (...args) => { const records = await extend(...args); if (records) extended++; return records; };
+    const same = async (label, params = {}) => {
+      const fresh = new TerminalConversationReader({ home: fx.home, window });
+      for (const limit of [20, 80]) {
+        const expected = await fresh.read(fx.binding, { ...params, limit });
+        assert.deepEqual(await cached.read(fx.binding, { ...params, limit }), expected, `${provider}, ${label}, limit ${limit}`);
+      }
+    };
+    await same('first read');
+    for (let round = 0; round < 8; round++) { await appendFile(fx.file, jsonl(Array.from({ length: 4 }, next))); await same(`append ${round}`); }
+    assert.ok(extended >= 8, `${provider}: appends were parsed incrementally (${extended})`);
+    assert.ok(cached.tails.get(key).records[0].offset >= (await stat(fx.file)).size - window, 'records that left the window are dropped');
+    // A line still being written waits for its newline.
+    const partial = JSON.stringify(next());
+    await appendFile(fx.file, partial.slice(0, 25)); await same('partial last line');
+    await appendFile(fx.file, partial.slice(25)); await same('partial line without its newline');
+    await appendFile(fx.file, '\n' + jsonl([next()])); await same('completed line');
+    // Cut back and grown past where the cache stopped: the bytes there differ, so it reads afresh.
+    const size = (await stat(fx.file)).size;
+    await truncate(fx.file, Math.floor(size / 2)); await appendFile(fx.file, '\n' + jsonl(Array.from({ length: 40 }, next)));
+    assert.ok((await stat(fx.file)).size > size);
+    await same('truncated and regrown');
+    await truncate(fx.file, Math.floor(size / 3)); await same('truncated');
+    await appendFile(fx.file, '\n' + jsonl(Array.from({ length: 3 }, next))); await same('appended after truncation');
+    // Rotated: a new file under the same name.
+    const replacement = fx.file + '.new';
+    await writeFile(replacement, jsonl([first, ...Array.from({ length: 6 }, next)])); await rename(replacement, fx.file);
+    await same('rotated');
+    await appendFile(fx.file, jsonl([next()])); await same('appended after rotation');
+  }
+});
+
+test('concurrent reads of a growing transcript never duplicate records', async t => {
+  const fx = await fixture(t, 'codex', [{ type: 'session_meta', payload: { id } }, ...Array.from({ length: 10 }, (_, i) => completed({ ...agent(`answer ${i}`), id: `a${i}` }, `t${i}`))]);
+  const cached = new TerminalConversationReader({ home: fx.home });
+  await cached.read(fx.binding);
+  for (let round = 0; round < 5; round++) {
+    await appendFile(fx.file, jsonl(Array.from({ length: 3 }, (_, i) => completed({ ...agent(`more ${round}.${i}`), id: `b${round}.${i}` }, `r${round}.${i}`))));
+    const pages = await Promise.all(Array.from({ length: 4 }, (_, i) => cached.read(fx.binding, { limit: 20 + i })));
+    const fresh = new TerminalConversationReader({ home: fx.home });
+    for (const [i, page] of pages.entries()) assert.deepEqual(page, await fresh.read(fx.binding, { limit: 20 + i }), `round ${round}, limit ${20 + i}`);
+  }
 });
