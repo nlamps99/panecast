@@ -260,37 +260,39 @@
     }
   ],
   "desktop": {
-    "version": "0.2.16",
+    "version": "0.2.17",
     "platform": "macOS",
     "architecture": "arm64",
     "framework": "Tauri 2",
-    "file": "panecast-desktop-0.2.16-mac-arm64.dmg",
-    "size": 4612154,
-    "sha256": "6a69157bda50c7bcee4d13888d308b8c11d0746166726ecff7552d4dbd1b038f",
+    "file": "panecast-desktop-0.2.17-mac-arm64.dmg",
+    "size": 4655998,
+    "sha256": "cf38fe91ab852be34451a9c2c1a8bf8be360553afc5fd45978e960dc05292068",
     "archive": {
-      "file": "panecast-desktop-0.2.16-mac-arm64.zip",
-      "size": 4344246,
-      "sha256": "0ac3365f371c9302f45bea25325a592efe1c1dfb5c4e5230aea84b6563416afc"
+      "file": "panecast-desktop-0.2.17-mac-arm64.zip",
+      "size": 4389443,
+      "sha256": "4352efa34fd21c04f1ab71cf8d577c0df9f8a24ae56595f833e7c1fa910e8f07"
     },
     "installer": {
-      "file": "install-desktop-0.2.16-mac-arm64.sh",
+      "file": "install-desktop-0.2.17-mac-arm64.sh",
       "size": 5632,
-      "sha256": "8329eccac7774eb3180c980574577b75d7c8f3c0f951b71306fdb4c0fbae3f9c"
+      "sha256": "c8c6a12c1e271f9364adb7ab194327c5857750b35ae8023a9bd4ffda13cf25ea"
     },
     "update": {
-      "file": "panecast-desktop-0.2.16-mac-arm64.app.tar.gz",
-      "size": 4340163,
-      "sha256": "716defdf54e2a927c726705bb4fd55c6b5c1af6622f2c821131ed92eed1073ed",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ2NPYjlocmJ4ekpjUnE2TFU3cDhuSkJPd0E4QktBekFjM0huRXBTUlZlZVBLL1pCRHhpTCtHOEFuSmdKem0ycU0zaHhBbnFLQUptVkNZVXl2Q2lmYWdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1MDAxNTc0CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTYtbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTYKRHRYbkk1emQ3blRLQnlKM1NvN3BlbHdlaUFLclN4Nm5DTlJqVWpjb0J1TWNvb1UrVlhpNnFRM1Y2ZVNsMytEOGhldFBxTVhYTUQwNk1LalVMLzBnRGc9PQo="
+      "file": "panecast-desktop-0.2.17-mac-arm64.app.tar.gz",
+      "size": 4387019,
+      "sha256": "e24a3eae26a57a46f7a70bf9ee907a6f988f160f6dafff82bf5fe43b87b64780",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTaXBkTnBZNVRxQ1FTdnpoemIwbWVWcFpGMjg2SlZweXpMSDdoNERReE5Tc21iaXo3QWdVdHZmN2pTZDZYOGVselk3NnBZVEVsbXJ0eXU2WTN4U1FPNmhqcjNiUkJBaHc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzUxNjk0CWZpbGU6cGFuZWNhc3QtZGVza3RvcC0wLjIuMTctbWFjLWFybTY0LmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMTcKS0RSa0NOdFZLM0wwUnd4MHEvM1lUSjB4TFdxdTlTSmFycHp0OFJnZlBXYThXZ2g5RlpuZGM0dWVvRHp4OG5EM1dDMmhlQTZ3ODBJTFZTVXAxNXYvQ3c9PQo="
     },
     "minimumMacOS": "13.0",
-    "date": "2026-11-18",
+    "date": "2026-11-26",
     "notarized": false,
-    "sourceCommit": "74c5bb5f61c8600114f5b05e9837e3896b3b7ea8",
+    "sourceCommit": "95522e42cf423b92d99f8e3b750007820b45024d",
     "notes": [
-      "别人分享给你的窗口可以自己新开终端（最多 5 个，每个都是同样设置的 Claude），也可以关掉不用的终端，最后一个保留",
-      "分享窗口里 ⌘T 新建终端也能用了",
-      "Antigravity CLI 的通知会标明来源"
+      "终端里的缩进、对齐和框线不再错位；输出多时滚动更顺，宽内容可以左右滚动；⌘= / ⌘- 缩放，⌘0 恢复适应窗口，⌘F 在终端顶部查找",
+      "打字不用先点一下；多行粘贴和 Shift+Enter 换行不会被拆成多次提交；PageUp/PageDown、⌘←/⌘→/⌘⌫、Esc、Ctrl-C 都能用键盘发送，提问卡片可以用键盘选择",
+      "窗口隐藏后连接不再断开，回到窗口自动检查重连；本机网关出问题时提示说清楚，并显示最后的画面和「重新连接」",
+      "侧栏顺序固定，⌘1–9 与侧栏一致；右键可以新建、重命名、置顶、关闭工作区和终端；终端上方只留一行工具栏；中文系统菜单",
+      "所有已配对电脑的完成提醒都会通知；正在看的终端不再弹横幅"
     ]
   },
   "windows": {
