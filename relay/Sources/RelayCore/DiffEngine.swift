@@ -6,10 +6,16 @@ public protocol SurfaceReader: Sendable {
     /// The user typed into this surface; readers that sample expensive state
     /// (colors, cursor) refresh it on the next read.
     func noteInput(surfaceId: String)
+    /// A subscriber starts or stops reading `lines` of this surface, so a
+    /// reader keeping per-viewer state can drop it when the last one leaves.
+    func viewerStarted(surfaceId: String, lines: Int)
+    func viewerStopped(surfaceId: String, lines: Int)
 }
 
 extension SurfaceReader {
     public func noteInput(surfaceId: String) {}
+    public func viewerStarted(surfaceId: String, lines: Int) {}
+    public func viewerStopped(surfaceId: String, lines: Int) {}
 }
 
 /// Per-surface diff polling state.
@@ -44,14 +50,14 @@ public actor DiffEngine {
     private var lastTickStarted: TimeInterval = -.infinity
     private var lastTickEnded: TimeInterval = -.infinity
     private var lastChange: TimeInterval = -.infinity
-    private var lastChecksumAt: TimeInterval = 0
+    private var lastChecksumAt: TimeInterval = -.infinity
     private var onDiff: (@Sendable (Int, [DiffOp]) -> Void)?
     private var onChecksum: (@Sendable (String, Int) -> Void)?
 
     public init(reader: SurfaceReader,
                 fps: Int, idleFps: Int,
                 workspaceId: String, surfaceId: String, lines: Int,
-                clock: Clock = SystemClock())
+                clock: Clock = MonotonicClock())
     {
         self.reader = reader
         self.activeFps = fps
@@ -85,6 +91,12 @@ public actor DiffEngine {
     /// pending. The first read is due at once.
     public func nextTickDelay() -> TimeInterval {
         let now = clock.now
+        // Schedule times are never in the future. The default clock is
+        // monotonic, but a clock that stepped backward would otherwise hold
+        // every read (and checksum) until it caught up.
+        lastTickStarted = min(lastTickStarted, now)
+        lastTickEnded = min(lastTickEnded, now)
+        burstAnchor = min(burstAnchor, now)
         let interval = 1.0 / Double(max(1, currentFps))
         var due = lastTickEnded + interval
         // A read that started within 2 ms of a burst point served it.
@@ -95,7 +107,8 @@ public actor DiffEngine {
             // input keeps arriving for two whole intervals.
             due = max(due, min(burstAnchor + Self.inputBurst[0], lastTickEnded + 2 * interval))
         }
-        return max(0, due - now)
+        // Never longer than the idle interval, whatever the clock did.
+        return min(max(0, due - now), 1.0 / Double(max(1, idleFps)))
     }
 
     /// Waits until the next read is due. Input during the wait moves it
@@ -114,6 +127,8 @@ public actor DiffEngine {
     public func tick() async throws {
         lastTickStarted = clock.now
         defer { lastTickEnded = clock.now }
+        lastInput = min(lastInput, clock.now)
+        lastChange = min(lastChange, clock.now)
         // Streaming output (an agent writing, a build log) keeps the active
         // rate just like typing does; only a quiet screen slows down.
         if clock.now - max(lastInput, lastChange) > idleAfter { currentFps = idleFps }
@@ -126,6 +141,7 @@ public actor DiffEngine {
             currentFps = activeFps
             onDiff?(rev, ops)
         }
+        lastChecksumAt = min(lastChecksumAt, clock.now)
         if clock.now - lastChecksumAt >= 5.0 {
             lastChecksumAt = clock.now
             onChecksum?(ScreenHasher.hash(snapshot), rev)

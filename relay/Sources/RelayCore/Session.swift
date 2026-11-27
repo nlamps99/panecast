@@ -44,6 +44,7 @@ public actor Session {
                                 fps: defaultFps, idleFps: idleFps,
                                 workspaceId: workspaceId, surfaceId: surfaceId, lines: lines)
         engines[surfaceId] = engine
+        reader.viewerStarted(surfaceId: surfaceId, lines: lines)
         let send = self.sendFrame
         await engine.setOnDiff { rev, ops in
             send?(.screenDiff(ScreenDiff(surfaceId: surfaceId, rev: rev, ops: ops)))
@@ -65,7 +66,9 @@ public actor Session {
     public func unsubscribe(surfaceId: String) {
         tasks[surfaceId]?.cancel()
         tasks[surfaceId] = nil
-        engines[surfaceId] = nil
+        if let engine = engines.removeValue(forKey: surfaceId) {
+            reader.viewerStopped(surfaceId: surfaceId, lines: engine.lines)
+        }
     }
 
     /// Input reached this terminal (from this or another viewer): read its
@@ -77,6 +80,9 @@ public actor Session {
     public func close() {
         for (_, t) in tasks { t.cancel() }
         tasks.removeAll()
+        for (surfaceId, engine) in engines {
+            reader.viewerStopped(surfaceId: surfaceId, lines: engine.lines)
+        }
         engines.removeAll()
     }
 }

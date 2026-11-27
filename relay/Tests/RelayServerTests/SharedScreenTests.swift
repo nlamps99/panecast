@@ -125,6 +125,74 @@ final class CmuxSurfaceReaderSharingTests: XCTestCase {
     }
 }
 
+final class CmuxSurfaceReaderEvictionTests: XCTestCase {
+    private func read(_ reader: CmuxSurfaceReader, _ surface: String, lines: Int = 8) async throws -> Screen {
+        try await reader.read(workspaceId: "w", surfaceId: surface, lines: lines)
+    }
+
+    func testTheLastViewerLeavingDropsOnlyThatScreen() async throws {
+        let source = FakeScreenSource(rows: ["$ a"])
+        let reader = CmuxSurfaceReader(source: source)
+        reader.viewerStarted(surfaceId: "s", lines: 8)
+        reader.viewerStarted(surfaceId: "s", lines: 8)
+        reader.viewerStarted(surfaceId: "s", lines: 4)
+        _ = try await read(reader, "s", lines: 8)
+        _ = try await read(reader, "s", lines: 4)
+        XCTAssertEqual(reader.trackedScreens, 2)
+
+        reader.viewerStopped(surfaceId: "s", lines: 8)
+        XCTAssertTrue(reader.isTracking(surfaceId: "s", lines: 8), "another subscriber still reads 8 lines")
+        reader.viewerStopped(surfaceId: "s", lines: 8)
+        XCTAssertFalse(reader.isTracking(surfaceId: "s", lines: 8))
+        XCTAssertTrue(reader.isTracking(surfaceId: "s", lines: 4))
+
+        let grids = source.gridReads
+        let desktop = try await read(reader, "s", lines: 4)
+        XCTAssertEqual(source.gridReads, grids, "the remaining viewer keeps its colors")
+        XCTAssertEqual(desktop.rows, ["\u{1B}[31m$ a\u{1B}[0m"])
+        reader.viewerStopped(surfaceId: "s", lines: 4)
+        XCTAssertEqual(reader.trackedScreens, 0)
+    }
+
+    func testPastTheCapOnlyTheLeastRecentlyUsedScreenGoes() async throws {
+        let source = FakeScreenSource(rows: ["$ a"])
+        let reader = CmuxSurfaceReader(source: source, maxTracked: 3)
+        for surface in ["a", "b", "c"] { _ = try await read(reader, surface) }
+        _ = try await read(reader, "a")
+        _ = try await read(reader, "d")
+        XCTAssertEqual(reader.trackedScreens, 3)
+        XCTAssertFalse(reader.isTracking(surfaceId: "b", lines: 8))
+        let grids = source.gridReads
+        for surface in ["a", "c", "d"] {
+            let screen = try await read(reader, surface)
+            XCTAssertEqual(screen.rows, ["\u{1B}[31m$ a\u{1B}[0m"], "\(surface) kept its colors")
+        }
+        XCTAssertEqual(source.gridReads, grids)
+    }
+
+    func testUnwatchedScreensGoBeforeWatchedOnes() async throws {
+        let source = FakeScreenSource(rows: ["$ a"])
+        let reader = CmuxSurfaceReader(source: source, maxTracked: 2)
+        reader.viewerStarted(surfaceId: "watched", lines: 8)
+        _ = try await read(reader, "watched")
+        _ = try await read(reader, "stray")
+        _ = try await read(reader, "new")
+        XCTAssertTrue(reader.isTracking(surfaceId: "watched", lines: 8), "older, but someone is subscribed")
+        XCTAssertFalse(reader.isTracking(surfaceId: "stray", lines: 8))
+        XCTAssertTrue(reader.isTracking(surfaceId: "new", lines: 8))
+    }
+
+    func testAReadWhoseScreenWasDroppedMidwayStillReturnsItsText() async throws {
+        let source = FakeScreenSource(rows: ["$ a", "$ b"])
+        let reader = CmuxSurfaceReader(source: source)
+        reader.viewerStarted(surfaceId: "s", lines: 8)
+        source.onGrid = { _ in reader.viewerStopped(surfaceId: "s", lines: 8) }
+        let screen = try await read(reader, "s")
+        XCTAssertEqual(screen.rows, ["$ a", "$ b"], "plain text, not an empty screen")
+        XCTAssertFalse(reader.isTracking(surfaceId: "s", lines: 8), "not re-tracked for a viewer that left")
+    }
+}
+
 final class SurfaceHistoryReadSharingTests: XCTestCase {
     func testOverlappingRequestsShareOneScrollbackRead() async throws {
         let facade = SlowHistoryFacade(rows: (0..<10).map { "row \($0)" })
@@ -204,6 +272,13 @@ private final class FakeScreenSource: CmuxScreenSource, @unchecked Sendable {
     }
     var gridReads: Int { lock.withLock { grids } }
 
+    private var gridHook: (@Sendable (String) async -> Void)?
+    /// Runs inside each grid read, before it returns.
+    var onGrid: (@Sendable (String) async -> Void)? {
+        get { lock.withLock { gridHook } }
+        set { lock.withLock { gridHook = newValue } }
+    }
+
     func readText(workspaceId: String, surfaceId: String, lines: Int) async throws -> Screen {
         let rows = Array(self.rows.suffix(lines))
         return Screen(rev: 0, rows: rows, cols: rows.map(\.count).max() ?? 0, cursor: CursorPos(x: 0, y: 0))
@@ -212,6 +287,7 @@ private final class FakeScreenSource: CmuxScreenSource, @unchecked Sendable {
     func renderGrid(workspaceId: String, surfaceId: String) async throws -> CMUXRenderGrid {
         let visible = Array(rows.suffix(3))
         lock.withLock { grids += 1 }
+        await onGrid?(surfaceId)
         let spans = visible.enumerated().map { CMUXRenderGrid.Span(row: $0.offset, column: 0, styleID: 1, text: $0.element, cellWidth: $0.element.count) }
         return CMUXRenderGrid(columns: 40, rows: visible.count, cursor: nil,
                               styles: [.init(id: 1, foregroundSource: "palette", foregroundPaletteIndex: 1)],

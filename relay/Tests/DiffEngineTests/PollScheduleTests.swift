@@ -67,6 +67,52 @@ final class PollScheduleTests: XCTestCase {
         XCTAssertEqual(delay, 0, accuracy: 1e-9, "two intervals since the last read: read now")
     }
 
+    func testAClockSteppingBackwardDoesNotStallReadsOrChecksums() async throws {
+        let clock = FakeClock()
+        let engine = engine(clock, fps: 15, idleFps: 5)
+        let checksums = Counter()
+        await engine.setOnChecksum { _, _ in checksums.add() }
+        clock.advance(by: 100)
+        try await engine.tick()
+        XCTAssertEqual(checksums.value, 1)
+
+        clock.advance(by: -50)
+        var delay = await engine.nextTickDelay()
+        XCTAssertEqual(delay, 1.0 / 15, accuracy: 1e-9, "not the 50 s until the old time comes round again")
+        await engine.noteUserInput()
+        delay = await engine.nextTickDelay()
+        XCTAssertEqual(delay, 0.016, accuracy: 1e-9, "typing still gets its burst")
+
+        clock.advance(by: 0.016)
+        try await engine.tick()
+        clock.advance(by: 5.1)
+        try await engine.tick()
+        XCTAssertEqual(checksums.value, 2, "checksums resume 5 s after the step, not 55 s")
+    }
+
+    func testNoDelayExceedsTheIdleInterval() async throws {
+        let clock = FakeClock()
+        let engine = engine(clock, fps: 15, idleFps: 4)
+        clock.advance(by: 10)
+        try await engine.tick()
+        clock.advance(by: -9.9)
+        // Whatever happened to the times, the wait is bounded.
+        let delay = await engine.nextTickDelay()
+        XCTAssertLessThanOrEqual(delay, 0.25)
+    }
+
+    func testTheDefaultClockNeverStepsBackward() async throws {
+        let clock = MonotonicClock()
+        var previous = clock.now
+        for _ in 0..<5 {
+            try await Task.sleep(nanoseconds: 1_000_000)
+            let next = clock.now
+            XCTAssertGreaterThanOrEqual(next, previous)
+            previous = next
+        }
+        XCTAssertLessThan(clock.now, Date().timeIntervalSince1970, "seconds since boot, not wall time")
+    }
+
     func testWaitForNextTickReturnsSoonAfterInputOnAnIdleScreen() async throws {
         let engine = DiffEngine(reader: BlankReader(), fps: 1, idleFps: 1, workspaceId: "w", surfaceId: "s", lines: 1)
         try await engine.tick()
@@ -79,6 +125,13 @@ final class PollScheduleTests: XCTestCase {
         XCTAssertLessThan(elapsed, 0.5, "input cuts the one-second wait short")
         XCTAssertGreaterThanOrEqual(elapsed, 0.06, "and waits for the 16 ms echo read rather than reading before the input lands")
     }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func add() { lock.withLock { count += 1 } }
 }
 
 final class PollWakerTests: XCTestCase {
@@ -143,6 +196,29 @@ final class SessionWakeTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertGreaterThanOrEqual(reader.reads, 3, "burst reads at 16, 50 and 120 ms, not one second later")
         await session.close()
+    }
+
+    private final class ViewerRecordingReader: SurfaceReader, @unchecked Sendable {
+        private let lock = NSLock()
+        private var log: [String] = []
+        var events: [String] { lock.withLock { log } }
+        func read(workspaceId: String, surfaceId: String, lines: Int) async throws -> Screen {
+            Screen(rev: 0, rows: ["a"], cols: 1, cursor: .init(x: 0, y: 0))
+        }
+        func viewerStarted(surfaceId: String, lines: Int) { lock.withLock { log.append("+\(surfaceId)/\(lines)") } }
+        func viewerStopped(surfaceId: String, lines: Int) { lock.withLock { log.append("-\(surfaceId)/\(lines)") } }
+    }
+
+    func testSubscriptionsTellTheReaderWhenTheyStartAndStop() async {
+        let reader = ViewerRecordingReader()
+        let session = Session(deviceId: "d", reader: reader, defaultFps: 5, idleFps: 1)
+        await session.subscribe(workspaceId: "w", surfaceId: "s", lines: 10)
+        await session.subscribe(workspaceId: "w", surfaceId: "s", lines: 99)
+        await session.subscribe(workspaceId: "w", surfaceId: "t", lines: 40)
+        await session.unsubscribe(surfaceId: "s")
+        await session.unsubscribe(surfaceId: "s")
+        await session.close()
+        XCTAssertEqual(reader.events, ["+s/10", "+t/40", "-s/10", "-t/40"])
     }
 
     func testTheManagerWakesEverySessionShowingTheTerminal() async {
