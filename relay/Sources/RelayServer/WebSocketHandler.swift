@@ -36,6 +36,18 @@ public actor WSProtocolMachine {
         case history(responseId: String, workspaceId: String, surfaceId: String, cursor: String?, tailLines: Int, limit: Int)
     }
 
+    /// How long a new connection may take to send its hello. It was 100 ms,
+    /// which dropped the local gateway's cmux source whenever the gateway was
+    /// briefly busy, and broker sessions whose hello crosses an extra hop.
+    /// The Node gateway already waits 5 s (37d25ac).
+    public static let helloTimeoutMilliseconds: Int64 = 5_000
+
+    /// Requests after which the terminal's screen should be read again soon.
+    static let inputMethods: Set<String> = [
+        "terminal.scroll", "surface.send_key", "surface.send_text", "surface.input",
+        "terminal.paste", "terminal.input", "terminal.mouse", "terminal.paste_image",
+    ]
+
     private let cmux: CMUXFacade
     private var helloed = false
 
@@ -59,39 +71,68 @@ public actor WSProtocolMachine {
         guard let req = try? JSONDecoder().decode(RPCRequest.self, from: data) else {
             return []
         }
-        if let immediate = Self.relayOwnedResponse(for: req) {
+        return await Self.handle(req, cmux: cmux, noteUserInput: noteUserInput)
+    }
+
+    /// Answers one request that arrived after the hello. Static, so it runs
+    /// off the machine's actor: requests on different lanes of a connection
+    /// (and an upload chunk's decoding and disk write) proceed side by side.
+    public static func handle(_ req: RPCRequest,
+                              cmux: CMUXFacade,
+                              noteUserInput: (@Sendable (String) async -> Void)? = nil) async -> [Action] {
+        if let immediate = relayOwnedResponse(for: req) {
             return [.sendText(immediate)]
         }
-        if let relayAction = Self.relayOwnedAction(for: req) {
+        if let relayAction = relayOwnedAction(for: req) {
             return [relayAction]
         }
 
-        if ["terminal.scroll", "surface.send_key", "surface.send_text", "surface.input"].contains(req.method),
+        if inputMethods.contains(req.method),
            case .object(let params) = req.params,
            case .string(let surfaceId)? = params["surface_id"] {
             await noteUserInput?(surfaceId)
         }
 
         if req.method == "surface.input" {
-            return [.sendText(Self.encode(await input(req)))]
+            return [.sendText(encode(await input(req, cmux: cmux)))]
         }
 
+        let call = cmuxCall(for: req)
         do {
-            let result = try await cmux.dispatch(method: req.method, params: req.params)
+            let result = try await cmux.dispatch(method: call.method, params: call.params)
             let resp = RPCResponse(id: req.id, ok: true, result: result, error: nil)
-            return [.sendText(Self.encode(resp))]
+            return [.sendText(encode(resp))]
         } catch {
             let err = RPCError(code: "internal_error",
                                message: String(describing: error))
             let resp = RPCResponse(id: req.id, ok: false, result: nil, error: err)
-            return [.sendText(Self.encode(resp))]
+            return [.sendText(encode(resp))]
+        }
+    }
+
+    /// `surface.send_key` with a name cmux does not know (`pgup`, `f5`,
+    /// `shift-home`, …) becomes the cmux name, or the key's bytes as text.
+    static func cmuxCall(for req: RPCRequest) -> (method: String, params: JSONValue) {
+        guard req.method == "surface.send_key",
+              case .object(var params) = req.params,
+              case .string(let key)? = params["key"]
+        else { return (req.method, req.params) }
+        switch CmuxKeyNames.translate(key) {
+        case .key(let name):
+            guard name != key else { return (req.method, req.params) }
+            params["key"] = .string(name)
+            return ("surface.send_key", .object(params))
+        case .text(let text):
+            params["key"] = nil
+            params["text"] = .string(text)
+            return ("surface.send_text", .object(params))
         }
     }
 
     /// Everything typed while the previous request was in flight, sent to
     /// the named terminal in order: one network round trip instead of one
     /// per key. A failure reports how many items already arrived.
-    private func input(_ req: RPCRequest) async -> RPCResponse {
+    private static func input(_ req: RPCRequest, cmux: CMUXFacade) async -> RPCResponse {
         guard case .object(let params) = req.params,
               case .string(let workspaceId)? = params["workspace_id"],
               case .string(let surfaceId)? = params["surface_id"],
@@ -104,8 +145,13 @@ public actor WSProtocolMachine {
             var call: [String: JSONValue] = ["workspace_id": .string(workspaceId), "surface_id": .string(surfaceId)]
             let method: String
             switch item {
-            case .text(let text): method = "surface.send_text"; call["text"] = .string(text)
-            case .key(let key): method = "surface.send_key"; call["key"] = .string(key)
+            case .text(let text):
+                method = "surface.send_text"; call["text"] = .string(text)
+            case .key(let key):
+                switch CmuxKeyNames.translate(key) {
+                case .key(let name): method = "surface.send_key"; call["key"] = .string(name)
+                case .text(let text): method = "surface.send_text"; call["text"] = .string(text)
+                }
             }
             do {
                 _ = try await cmux.dispatch(method: method, params: .object(call))
@@ -140,8 +186,8 @@ public actor WSProtocolMachine {
         return parsed
     }
 
-    /// The 100ms hello timer fired. Returns `[.close]` if the peer never
-    /// sent a hello, `[]` otherwise (handler will see nil and no-op).
+    /// The hello timer fired. Returns `[.close]` if the peer never sent a
+    /// hello, `[]` otherwise (handler will see nil and no-op).
     public func helloMissed() -> [Action] {
         helloed ? [] : [.close]
     }
@@ -256,19 +302,6 @@ public actor WSProtocolMachine {
 
 // MARK: - NIO channel handler
 
-private actor WSActionQueue {
-    private var tail: Task<Void, Never>?
-
-    func run(_ operation: @escaping @Sendable () async -> Void) {
-        let previous = tail
-        let next = Task {
-            await previous?.value
-            await operation()
-        }
-        tail = next
-    }
-}
-
 private final class WSChannelContext: @unchecked Sendable {
     private let context: ChannelHandlerContext
 
@@ -281,17 +314,46 @@ private final class WSChannelContext: @unchecked Sendable {
     }
 }
 
+/// The connection's attached `Session`, shared by the event loop and the
+/// lanes' tasks.
+private final class WSSessionSlot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var session: Session?
+    private var closed = false
+
+    var current: Session? { lock.withLock { session } }
+
+    /// False when the channel closed first: the caller detaches `session`.
+    func attach(_ session: Session) -> Bool {
+        lock.withLock {
+            guard !closed else { return false }
+            self.session = session
+            return true
+        }
+    }
+
+    /// Marks the channel closed and hands back the session to detach.
+    func close() -> Session? {
+        lock.withLock {
+            closed = true
+            defer { session = nil }
+            return session
+        }
+    }
+}
+
 /// Thin NIO `ChannelInboundHandler` that drives `WSProtocolMachine` and
-/// applies its actions on the channel's event loop. Hello timeout is a
-/// 100ms `eventLoop.scheduleTask`; on hello the machine emits an
-/// `attachSession` action that we map to `SessionManager.attach`,
-/// installing a `sendFrame` closure that hops back onto the loop to
-/// write the WS text frame.
+/// applies its actions on the channel's event loop. The hello deadline is an
+/// `eventLoop.scheduleTask`; on hello the machine emits an `attachSession`
+/// action that we map to `SessionManager.attach`, installing a `sendFrame`
+/// closure that hops back onto the loop to write the WS text frame.
 ///
-/// `@unchecked Sendable`: all mutable state (`helloTimer`, `session`) is
-/// touched only inside `eventLoop.execute { ... }` blocks; the async
-/// Task bodies treat the handler as a Sendable reference but never read
-/// or write its mutable fields directly.
+/// Frames are taken in arrival order by `intake`, which handles the hello
+/// and then only decodes each request and hands it to its lane
+/// (`WSRequestLane`): writes in order, never behind reads.
+///
+/// `@unchecked Sendable`: the hello timer state is touched only on the event loop;
+/// the attached session lives in a locked `WSSessionSlot`.
 public final class WebSocketHandler: ChannelInboundHandler, @unchecked Sendable {
     public typealias InboundIn = WebSocketFrame
     public typealias OutboundOut = WebSocketFrame
@@ -300,30 +362,51 @@ public final class WebSocketHandler: ChannelInboundHandler, @unchecked Sendable 
     private let deviceStore: DeviceStore
     private let sessionManager: SessionManager
     private let machine: WSProtocolMachine
+    private let cmux: CMUXFacade
     private let history: SurfaceHistoryService
-    private let actionQueue = WSActionQueue()
+    private let helloTimeout: TimeAmount
+    private let intake = SerialTaskQueue()
+    private let lanes = RequestLanes()
+    private let slot = WSSessionSlot()
     private let logger = Logger(label: "cmux-relay.ws")
 
     private var helloTimer: Scheduled<Void>?
-    private var session: Session?
+    private var helloDeadlineArmed = false
 
     public init(deviceId: String,
                 deviceStore: DeviceStore,
                 sessionManager: SessionManager,
                 cmuxClient: CMUXFacade,
-                history: SurfaceHistoryService)
+                history: SurfaceHistoryService,
+                helloTimeout: TimeAmount = .milliseconds(WSProtocolMachine.helloTimeoutMilliseconds))
     {
         self.deviceId = deviceId
         self.deviceStore = deviceStore
         self.sessionManager = sessionManager
         self.machine = WSProtocolMachine(cmux: cmuxClient)
+        self.cmux = cmuxClient
         self.history = history
+        self.helloTimeout = helloTimeout
+    }
+
+    /// The upgrader installs this handler on a channel that is already
+    /// active, so `channelActive` never reaches it there; arm the hello
+    /// deadline here instead.
+    public func handlerAdded(context: ChannelHandlerContext) {
+        if context.channel.isActive { armHelloDeadline(context) }
     }
 
     public func channelActive(context: ChannelHandlerContext) {
+        armHelloDeadline(context)
+        context.fireChannelActive()
+    }
+
+    private func armHelloDeadline(_ context: ChannelHandlerContext) {
+        guard !helloDeadlineArmed else { return }
+        helloDeadlineArmed = true
         let machine = self.machine
         let channel = WSChannelContext(context)
-        helloTimer = context.eventLoop.scheduleTask(in: .milliseconds(100)) { [weak self] in
+        helloTimer = context.eventLoop.scheduleTask(in: helloTimeout) { [weak self] in
             guard let self else { return }
             Task {
                 let actions = await machine.helloMissed()
@@ -340,31 +423,44 @@ public final class WebSocketHandler: ChannelInboundHandler, @unchecked Sendable 
                                        length: buf.readableBytes) else { return }
 
         let channel = WSChannelContext(context)
-        Task { [weak self] in
-            guard let self else { return }
-            await self.actionQueue.run {
-                let actions = await self.machine.processText(text) { surfaceId in
-                    await self.session?.noteUserInput(surfaceId: surfaceId)
-                }
-                await self.apply(actions: actions, on: channel)
-            }
+        intake.enqueue { [weak self] in
+            await self?.receive(text, on: channel)
         }
     }
 
     public func channelInactive(context: ChannelHandlerContext) {
         helloTimer?.cancel()
         helloTimer = nil
-        if let s = session {
-            session = nil
+        if let s = slot.close() {
             let mgr = sessionManager
             Task { await mgr.detach(session: s) }
+        }
+        context.fireChannelInactive()
+    }
+
+    /// Runs in `intake`, one frame at a time: the hello (attaching the
+    /// session before any later frame is routed), then each request's lane.
+    private func receive(_ text: String, on channel: WSChannelContext) async {
+        if await !machine.hasHelloed {
+            let actions = await machine.processText(text)
+            await apply(actions: actions, on: channel)
+            return
+        }
+        guard let request = try? JSONDecoder().decode(RPCRequest.self, from: Data(text.utf8)) else { return }
+        let cmux = self.cmux
+        let manager = sessionManager
+        lanes.enqueue(WSRequestLane.of(method: request.method)) { [weak self] in
+            let actions = await WSProtocolMachine.handle(request, cmux: cmux) { surfaceId in
+                await manager.noteUserInput(surfaceId: surfaceId)
+            }
+            await self?.apply(actions: actions, on: channel)
         }
     }
 
     /// Async-side action applier — used after `processText`. Dispatches
     /// each action; for `attachSession`, the heavy work (calling
     /// SessionManager) happens on the actor, then the resulting Session
-    /// is stored under the event loop.
+    /// is stored in the slot.
     private func apply(actions: [WSProtocolMachine.Action],
                        on channel: WSChannelContext) async
     {
@@ -383,9 +479,12 @@ public final class WebSocketHandler: ChannelInboundHandler, @unchecked Sendable 
                     guard let self else { return }
                     channel.execute { self.writePushFrame(frame, on: $0) }
                 }
-                self.session = s
+                if !slot.attach(s) {
+                    // The peer left while the session was being attached.
+                    await sessionManager.detach(session: s)
+                }
             case .subscribe(let responseId, let workspaceId, let surfaceId, let lines):
-                guard let session else {
+                guard let session = slot.current else {
                     let text = WSProtocolMachine.encodeForHandler(.init(
                         id: responseId, ok: false, result: nil,
                         error: RPCError(code: "session_not_attached", message: "hello required before subscribe")
@@ -393,12 +492,13 @@ public final class WebSocketHandler: ChannelInboundHandler, @unchecked Sendable 
                     channel.execute { self.writeText(text, on: $0) }
                     continue
                 }
+                // Scrollback is read when the first `surface.history` page is
+                // asked for, not on every subscribe (see SurfaceHistoryService).
                 await session.subscribe(workspaceId: workspaceId, surfaceId: surfaceId, lines: lines)
-                Task { await history.prewarm(workspaceId: workspaceId, surfaceId: surfaceId) }
                 let text = WSProtocolMachine.encodeForHandler(.init(id: responseId, ok: true, result: .object([:])))
                 channel.execute { self.writeText(text, on: $0) }
             case .unsubscribe(let responseId, let surfaceId):
-                guard let session else {
+                guard let session = slot.current else {
                     let text = WSProtocolMachine.encodeForHandler(.init(
                         id: responseId, ok: false, result: nil,
                         error: RPCError(code: "session_not_attached", message: "hello required before unsubscribe")

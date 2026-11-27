@@ -50,29 +50,45 @@ extension CMUXClient {
     }
 
     public func surfaceSendKey(workspaceId: String, surfaceId: String, key: Key) async throws {
-        let encoded = KeyEncoder.encode(key)
-        _ = try await call(method: "surface.send_key",
-                           params: .object([
-                               "workspace_id": .string(workspaceId),
-                               "surface_id": .string(surfaceId),
-                               "key": .string(encoded),
-                           ])).requireOk()
+        var params: [String: JSONValue] = [
+            "workspace_id": .string(workspaceId),
+            "surface_id": .string(surfaceId),
+        ]
+        let method: String
+        switch CmuxKeyNames.translate(KeyEncoder.encode(key)) {
+        case .key(let name): method = "surface.send_key"; params["key"] = .string(name)
+        case .text(let text): method = "surface.send_text"; params["text"] = .string(text)
+        }
+        _ = try await call(method: method, params: .object(params)).requireOk()
     }
 
-    public func surfaceReadText(workspaceId: String, surfaceId: String, lines: Int)
+    public nonisolated func surfaceReadText(workspaceId: String, surfaceId: String, lines: Int)
         async throws -> Screen
     {
-        let resp = try await call(method: "surface.read_text",
-                                  params: .object([
-                                      "workspace_id": .string(workspaceId),
-                                      "surface_id": .string(surfaceId),
-                                      "lines": .int(Int64(lines)),
-                                  ]))
-        let raw = try resp.unwrapResult().decode(CMUXReadTextRaw.self)
         // `rev` is a relay-internal counter (DiffEngine bumps per tick); the
         // cmux response has no equivalent, so we hand back 0 here and let
         // callers stamp their own rev.
-        return raw.toScreen(rev: 0)
+        try await surfaceReadTextRaw(workspaceId: workspaceId, surfaceId: surfaceId, lines: lines).toScreen(rev: 0)
+    }
+
+    /// The terminal's text as cmux sent it, newline-joined. Decoded straight
+    /// from the response; the base64 mirror cmux adds is skipped.
+    public nonisolated func surfaceReadTextString(workspaceId: String, surfaceId: String, lines: Int)
+        async throws -> String
+    {
+        try await surfaceReadTextRaw(workspaceId: workspaceId, surfaceId: surfaceId, lines: lines).text
+    }
+
+    nonisolated func surfaceReadTextRaw(workspaceId: String, surfaceId: String, lines: Int)
+        async throws -> CMUXReadTextRaw
+    {
+        try await call(method: "surface.read_text",
+                       params: .object([
+                           "workspace_id": .string(workspaceId),
+                           "surface_id": .string(surfaceId),
+                           "lines": .int(Int64(lines)),
+                       ]),
+                       result: CMUXReadTextRaw.self)
     }
 
     public func notificationCreate(workspaceId: String, surfaceId: String?, title: String,

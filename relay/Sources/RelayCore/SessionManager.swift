@@ -60,6 +60,15 @@ public actor SessionManager {
         }
     }
 
+    /// Input reached `surfaceId`: every session showing it reads the screen
+    /// again at once, so a second viewer (desktop beside the phone) sees the
+    /// echo as soon as the typist does.
+    public func noteUserInput(surfaceId: String) async {
+        for session in sessionsById.values {
+            await session.noteUserInput(surfaceId: surfaceId)
+        }
+    }
+
     /// Push a frame to every connected session — used for cmux event
     /// stream fanout (workspace.created etc.) and for boot_id reset
     /// notifications.

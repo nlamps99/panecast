@@ -25,11 +25,23 @@ public final class CMUXFacadeImpl: CMUXFacade, @unchecked Sendable {
         let client: CMUXClient
         switch lane {
         case .realtime:
-            client = try await connection.connect()
+            // Writes go out on their own socket: cmux works through a
+            // socket's requests in order, and the screen polls keep the
+            // dispatch socket busy.
+            client = WSRequestLane.of(method: method) == .input
+                ? try await connection.connectForInput()
+                : try await connection.connect()
         case .history:
             client = try await connection.connectForHistory()
         }
         let resp = try await client.call(method: method, params: params)
         return try resp.unwrapResult()
+    }
+}
+
+extension CMUXFacadeImpl: CMUXTextReading {
+    public func readText(workspaceId: String, surfaceId: String, lines: Int) async throws -> String {
+        let client = lane == .history ? try await connection.connectForHistory() : try await connection.connect()
+        return try await client.surfaceReadTextString(workspaceId: workspaceId, surfaceId: surfaceId, lines: lines)
     }
 }

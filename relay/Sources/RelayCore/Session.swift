@@ -53,10 +53,8 @@ public actor Session {
         }
         let task = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { break }
-                let fps = max(1, await self.fps(for: surfaceId))
-                let interval = 1.0 / Double(fps)
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard self != nil else { break }
+                await engine.waitForNextTick()
                 if Task.isCancelled { break }
                 try? await engine.tick()
             }
@@ -70,6 +68,8 @@ public actor Session {
         engines[surfaceId] = nil
     }
 
+    /// Input reached this terminal (from this or another viewer): read its
+    /// screen again right away.
     public func noteUserInput(surfaceId: String) async {
         await engines[surfaceId]?.noteUserInput()
     }
@@ -78,10 +78,5 @@ public actor Session {
         for (_, t) in tasks { t.cancel() }
         tasks.removeAll()
         engines.removeAll()
-    }
-
-    private func fps(for surfaceId: String) async -> Int {
-        guard let engine = engines[surfaceId] else { return defaultFps }
-        return await engine.currentFps
     }
 }

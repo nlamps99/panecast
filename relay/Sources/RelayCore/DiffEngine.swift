@@ -25,14 +25,24 @@ public actor DiffEngine {
     public nonisolated let activeFps: Int
     public nonisolated let idleFps: Int
     public nonisolated let idleAfter: TimeInterval = 1.5
+    /// Reads after each input, in seconds after it: the echo usually lands
+    /// within the first, a slow program's within the later ones. Between
+    /// inputs the engine keeps its ordinary rate.
+    public static let inputBurst: [TimeInterval] = [0.016, 0.05, 0.12]
 
     public private(set) var rev: Int = 0
     public private(set) var currentFps: Int
+
+    /// Woken by `noteUserInput()`; the poll loop sleeps on it between reads.
+    public nonisolated let waker = PollWaker()
 
     private let reader: SurfaceReader
     private let clock: Clock
     private var state = RowState()
     private var lastInput: TimeInterval
+    private var burstAnchor: TimeInterval = -.infinity
+    private var lastTickStarted: TimeInterval = -.infinity
+    private var lastTickEnded: TimeInterval = -.infinity
     private var lastChange: TimeInterval = -.infinity
     private var lastChecksumAt: TimeInterval = 0
     private var onDiff: (@Sendable (Int, [DiffOp]) -> Void)?
@@ -64,12 +74,46 @@ public actor DiffEngine {
 
     public func noteUserInput() {
         lastInput = clock.now
+        burstAnchor = lastInput
         currentFps = activeFps
         reader.noteInput(surfaceId: surfaceId)
+        waker.wake()
     }
 
-    /// Run one polling tick. In production wired to a NIO TimerTask at 1/currentFps.
+    /// Seconds until the next read is due: one interval at the current rate
+    /// after the last read ended, or sooner when an input burst read is
+    /// pending. The first read is due at once.
+    public func nextTickDelay() -> TimeInterval {
+        let now = clock.now
+        let interval = 1.0 / Double(max(1, currentFps))
+        var due = lastTickEnded + interval
+        // A read that started within 2 ms of a burst point served it.
+        if let point = Self.inputBurst.lazy.map({ self.burstAnchor + $0 }).first(where: { $0 > self.lastTickStarted + 0.002 }) {
+            due = min(due, point)
+            // An overdue read right after the keystroke would only see the
+            // screen from before it; wait for the first burst point, unless
+            // input keeps arriving for two whole intervals.
+            due = max(due, min(burstAnchor + Self.inputBurst[0], lastTickEnded + 2 * interval))
+        }
+        return max(0, due - now)
+    }
+
+    /// Waits until the next read is due. Input during the wait moves it
+    /// earlier; cancelling the calling task ends the wait.
+    public nonisolated func waitForNextTick() async {
+        while !Task.isCancelled {
+            let delay = await nextTickDelay()
+            guard delay > 0 else { return }
+            // Woken by input: the schedule changed, so look again.
+            guard await waker.sleep(seconds: delay) else { return }
+        }
+    }
+
+    /// Run one polling tick. `Session` runs these back to back, waiting
+    /// `waitForNextTick()` between them.
     public func tick() async throws {
+        lastTickStarted = clock.now
+        defer { lastTickEnded = clock.now }
         // Streaming output (an agent writing, a build log) keeps the active
         // rate just like typing does; only a quiet screen slows down.
         if clock.now - max(lastInput, lastChange) > idleAfter { currentFps = idleFps }

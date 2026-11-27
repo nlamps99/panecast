@@ -10,6 +10,7 @@ public actor RemoteSessionBridge {
     private struct RemoteSession {
         let deviceId: String
         let machine: WSProtocolMachine
+        let lanes = RequestLanes()
         var session: Session?
         var helloTimeout: Task<Void, Never>?
     }
@@ -18,17 +19,20 @@ public actor RemoteSessionBridge {
     private let cmux: CMUXFacade
     private let history: SurfaceHistoryService
     private let sendEnvelope: EnvelopeSender
+    private let helloTimeoutNanoseconds: UInt64
     private var sessions: [String: RemoteSession] = [:]
 
     public init(
         sessionManager: SessionManager,
         cmux: CMUXFacade,
         history: SurfaceHistoryService? = nil,
+        helloTimeoutNanoseconds: UInt64 = UInt64(WSProtocolMachine.helloTimeoutMilliseconds) * 1_000_000,
         sendEnvelope: @escaping EnvelopeSender
     ) {
         self.sessionManager = sessionManager
         self.cmux = cmux
         self.history = history ?? SurfaceHistoryService(cmux: cmux)
+        self.helloTimeoutNanoseconds = helloTimeoutNanoseconds
         self.sendEnvelope = sendEnvelope
     }
 
@@ -40,9 +44,10 @@ public actor RemoteSessionBridge {
             guard let deviceId = envelope.deviceId, !deviceId.isEmpty else { return }
             await removeSession(id: envelope.sessionId)
             let sessionId = envelope.sessionId
+            let timeout = helloTimeoutNanoseconds
             let helloTimeout = Task { [weak self] in
                 do {
-                    try await Task.sleep(nanoseconds: 100_000_000)
+                    try await Task.sleep(nanoseconds: timeout)
                 } catch {
                     return
                 }
@@ -59,8 +64,24 @@ public actor RemoteSessionBridge {
             guard let text = envelope.text,
                   let remote = sessions[envelope.sessionId]
             else { return }
-            let actions = await remote.machine.processText(text)
-            await apply(actions, to: envelope.sessionId)
+            let sessionId = envelope.sessionId
+            if await !remote.machine.hasHelloed {
+                let actions = await remote.machine.processText(text)
+                await apply(actions, to: sessionId)
+                return
+            }
+            // The tunnel delivers every session's frames through this one
+            // call; queue the work on the session's lane and return, so a
+            // slow request delays neither the tunnel nor this session's input.
+            guard let request = try? JSONDecoder().decode(RPCRequest.self, from: Data(text.utf8)) else { return }
+            let cmux = self.cmux
+            let manager = sessionManager
+            remote.lanes.enqueue(WSRequestLane.of(method: request.method)) { [weak self] in
+                let actions = await WSProtocolMachine.handle(request, cmux: cmux) { surfaceId in
+                    await manager.noteUserInput(surfaceId: surfaceId)
+                }
+                await self?.apply(actions, to: sessionId)
+            }
 
         case .sessionClose:
             await removeSession(id: envelope.sessionId)
@@ -126,7 +147,6 @@ public actor RemoteSessionBridge {
                     surfaceId: surfaceId,
                     lines: lines
                 )
-                Task { await history.prewarm(workspaceId: workspaceId, surfaceId: surfaceId) }
                 await sendOK(responseId: responseId, sessionId: sessionId)
 
             case .unsubscribe(let responseId, let surfaceId):

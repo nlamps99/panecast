@@ -61,7 +61,8 @@ final class RemoteSessionBridgeTests: XCTestCase {
             sessionId: "session-1",
             text: #"{"id":"rpc-1","method":"workspace.list","params":{}}"#
         ))
-        let sent = await recorder.snapshot()
+        // Requests run on the session's lanes; the answer follows shortly.
+        let sent = await recorder.waitFor(count: 1)
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent[0].type, .sessionText)
         XCTAssertEqual(sent[0].sessionId, "session-1")
@@ -98,7 +99,8 @@ final class RemoteSessionBridgeTests: XCTestCase {
         let recorder = BrokerEnvelopeRecorder()
         let bridge = RemoteSessionBridge(
             sessionManager: manager,
-            cmux: NoOpCMUXFacade()
+            cmux: NoOpCMUXFacade(),
+            helloTimeoutNanoseconds: 50_000_000
         ) { envelope in
             await recorder.append(envelope)
         }
@@ -123,4 +125,12 @@ private actor BrokerEnvelopeRecorder {
     private var envelopes: [BrokerEnvelope] = []
     func append(_ envelope: BrokerEnvelope) { envelopes.append(envelope) }
     func snapshot() -> [BrokerEnvelope] { envelopes }
+
+    /// The envelopes once at least `count` arrived, or after 2 s.
+    func waitFor(count: Int) async -> [BrokerEnvelope] {
+        for _ in 0..<200 where envelopes.count < count {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return envelopes
+    }
 }

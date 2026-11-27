@@ -210,6 +210,9 @@ public struct CMUXRenderGrid: Decodable, Sendable, Equatable {
         return ((number >> 16) & 0xFF, (number >> 8) & 0xFF, number & 0xFF)
     }
 
+    /// Cells `text` takes on the terminal (wide CJK and emoji count two).
+    public static func displayWidth(_ text: String) -> Int { cellWidth(text) }
+
     /// Terminal cell width, used only when cmux omits `cell_width`.
     static func cellWidth(_ text: String) -> Int {
         text.unicodeScalars.reduce(0) { total, scalar in total + scalarWidth(scalar.value) }
@@ -229,19 +232,26 @@ public struct CMUXRenderGrid: Decodable, Sendable, Equatable {
 extension CMUXClient {
     /// The terminal's styled cells and cursor. `scrollback` rows above the
     /// screen come along so the viewer keeps a little history.
-    public func surfaceRenderGrid(workspaceId: String, surfaceId: String, scrollback: Int) async throws -> CMUXRenderGrid {
-        let resp = try await call(method: "terminal.replay",
-                                  params: .object([
-                                      "workspace_id": .string(workspaceId),
-                                      "surface_id": .string(surfaceId),
-                                      "anchor": .string("screen"),
-                                      "max_scrollback_rows": .int(Int64(max(0, scrollback))),
-                                  ]))
-        guard let grid = try CMUXRenderGrid.fromReplay(resp.unwrapResult()) else {
+    public nonisolated func surfaceRenderGrid(workspaceId: String, surfaceId: String, scrollback: Int) async throws -> CMUXRenderGrid {
+        // Decoded once, straight from the response (the coding keys spell
+        // cmux's snake_case names, so no key conversion).
+        let replay = try await call(method: "terminal.replay",
+                                    params: .object([
+                                        "workspace_id": .string(workspaceId),
+                                        "surface_id": .string(surfaceId),
+                                        "anchor": .string("screen"),
+                                        "max_scrollback_rows": .int(Int64(max(0, scrollback))),
+                                    ]),
+                                    result: CMUXReplayResult.self)
+        guard let grid = replay.render_grid else {
             throw CMUXRenderGridUnavailable()
         }
         return grid
     }
+}
+
+struct CMUXReplayResult: Decodable {
+    let render_grid: CMUXRenderGrid?
 }
 
 extension CMUXRenderGrid {
@@ -250,9 +260,8 @@ extension CMUXRenderGrid {
     /// `JSONValue.decode`'s snake_case conversion, which would look for
     /// `renderGrid` and `rowSpans` and find nothing.
     public static func fromReplay(_ result: JSONValue) throws -> CMUXRenderGrid? {
-        struct Wrapper: Decodable { let render_grid: CMUXRenderGrid? }
         let data = try SharedKitJSON.deterministicEncoder.encode(result)
-        return try JSONDecoder().decode(Wrapper.self, from: data).render_grid
+        return try JSONDecoder().decode(CMUXReplayResult.self, from: data).render_grid
     }
 }
 

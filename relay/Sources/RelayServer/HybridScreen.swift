@@ -1,4 +1,5 @@
 import Foundation
+import CMUXClient
 import SharedKit
 
 /// One subscribed terminal's screen, assembled from two cmux reads:
@@ -14,14 +15,24 @@ import SharedKit
 /// rows stay plain until the next grid, and the cursor keeps its distance
 /// from the bottom. Without any grid (an older cmux) this is plain text with
 /// the old (0, 0) placeholder cursor.
+///
+/// After input, the read that first shows the echo returns at once; the grid
+/// follows on the next read, so typing is not held up by the slower grid.
+/// Meanwhile a typed-into row keeps the colours of its unchanged start.
 struct HybridScreen {
     static let minGridInterval: TimeInterval = 0.15
+    /// How long after input a changed text counts as its echo.
+    static let echoWindow: TimeInterval = 0.5
+    /// More changed rows than this, without new ones, is a redraw, not typing.
+    static let maxEditedRows = 2
 
     private var text: [String] = []
     private var plain: [String] = []
     private var stale = true
     private var inputAt: TimeInterval = -.infinity
     private var gridAt: TimeInterval = -.infinity
+    /// The input whose echo was already sent ahead of its grid.
+    private var echoSentFor: TimeInterval = -.infinity
 
     private var colored: [String] = []
     private var coloredPlain: [String] = []
@@ -41,13 +52,20 @@ struct HybridScreen {
 
     /// Records a plain read; true when a grid should be read now.
     mutating func acceptText(_ rows: [String], at now: TimeInterval) -> Bool {
-        if rows != text {
+        let changed = rows != text
+        if changed {
             text = rows
             plain = rows.map(Self.trimmed)
             stale = true
         }
         let wanted = stale || inputAt > gridAt || !hasGrid
-        return wanted && now - gridAt >= Self.minGridInterval
+        guard wanted, now - gridAt >= Self.minGridInterval else { return false }
+        // The echo of a keystroke: send the text now, the grid next read.
+        if changed, hasGrid, inputAt > gridAt, inputAt > echoSentFor, now - inputAt <= Self.echoWindow {
+            echoSentFor = inputAt
+            return false
+        }
+        return true
     }
 
     /// The grid's visible rows (SGR text) and cursor in that row space; nil when hidden.
@@ -79,6 +97,7 @@ struct HybridScreen {
         // only colors them, so the row count never flips between reads.
         var rows = text
         let start: Int
+        var cursorX = cursor?.x
         if let offset, text == textAtGrid {
             start = offset
             for (index, row) in colored.enumerated() where offset + index < rows.count { rows[offset + index] = row }
@@ -86,10 +105,27 @@ struct HybridScreen {
             // The text moved on since the grid: keep each row's colors when
             // its text is unchanged, by position first, then by content.
             start = text.count - endGap - colored.count
+            // Typed into in place (nothing scrolled, a row or two changed):
+            // those rows keep the colors of their unchanged start.
+            let editedInPlace = offset != nil && text.count == textAtGrid.count
+                && zip(text, textAtGrid).lazy.filter { $0 != $1 }.prefix(Self.maxEditedRows + 1).count <= Self.maxEditedRows
             rows = text.enumerated().map { index, row in
                 let position = index - start
-                if position >= 0, position < colored.count, coloredPlain[position] == plain[index] { return colored[position] }
-                return plain[index].isEmpty ? row : byContent[plain[index]] ?? row
+                let inGrid = position >= 0 && position < colored.count
+                if inGrid, coloredPlain[position] == plain[index] { return colored[position] }
+                if plain[index].isEmpty { return row }
+                if let moved = byContent[plain[index]] { return moved }
+                if editedInPlace, inGrid,
+                   let typed = Self.keepingColors(colored[position], was: coloredPlain[position], now: plain[index]) { return typed }
+                return row
+            }
+            // Typing at the end of the cursor's line: the cursor follows the
+            // text until the grid places it.
+            if editedInPlace, let cursor, cursor.y < coloredPlain.count, start + cursor.y >= 0, start + cursor.y < plain.count {
+                let was = coloredPlain[cursor.y], now = plain[start + cursor.y]
+                if was != now, cursor.x == CMUXRenderGrid.displayWidth(was), now.hasPrefix(was) || was.hasPrefix(now) {
+                    cursorX = CMUXRenderGrid.displayWidth(now)
+                }
             }
         }
         var cursorRow = cursor.map { start + $0.y }
@@ -103,8 +139,8 @@ struct HybridScreen {
             cursorRow = cursorRow.map { $0 - dropped }
         }
         let position: CursorPos
-        if let cursor, let row = cursorRow, row >= 0, row < rows.count {
-            position = CursorPos(x: cursor.x, y: row)
+        if let cursorX, let row = cursorRow, row >= 0, row < rows.count {
+            position = CursorPos(x: cursorX, y: row)
         } else {
             position = CursorPos(x: 0, y: rows.count)
         }
@@ -126,6 +162,43 @@ struct HybridScreen {
             if Array(text[start..<(start + core)]) == Array(grid[0..<core]) { return start }
         }
         return nil
+    }
+
+    /// `colored` (an SGR row reading `was`) with its colours kept over the
+    /// start it shares with `now` and the rest of `now` plain, so a typed
+    /// character does not blank a coloured prompt until the next grid. Nil
+    /// when nothing is shared or there are no colours to keep.
+    static func keepingColors(_ colored: String, was: String, now: String) -> String? {
+        guard colored.unicodeScalars.contains("\u{1B}") else { return nil }
+        let old = Array(was.unicodeScalars)
+        let new = Array(now.unicodeScalars)
+        var shared = 0
+        while shared < old.count, shared < new.count, old[shared] == new[shared] { shared += 1 }
+        guard shared > 0 else { return nil }
+        var out = String.UnicodeScalarView()
+        var styled = false
+        var copied = 0
+        var scalars = colored.unicodeScalars.makeIterator()
+        while copied < shared, let scalar = scalars.next() {
+            guard scalar == "\u{1B}" else {
+                out.append(scalar)
+                copied += 1
+                continue
+            }
+            // ESC [ params m
+            var params = String.UnicodeScalarView()
+            out.append(scalar)
+            while let next = scalars.next() {
+                out.append(next)
+                if next == "m" { break }
+                if next != "[" { params.append(next) }
+            }
+            let parameters = String(params)
+            styled = !(parameters.isEmpty || parameters == "0")
+        }
+        if styled { out.append(contentsOf: "\u{1B}[0m".unicodeScalars) }
+        out.append(contentsOf: new[shared...])
+        return String(out)
     }
 
     static func trimmed(_ row: String) -> String {

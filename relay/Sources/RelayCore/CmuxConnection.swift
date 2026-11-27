@@ -24,6 +24,7 @@ public final class CmuxConnection: @unchecked Sendable {
     private var lastBootId: String?
     private let dispatchResource: ReconnectingResource<CMUXClient>
     private let historyResource: ReconnectingResource<CMUXClient>
+    private let inputResource: ReconnectingResource<CMUXClient>
     private let eventsResource: ReconnectingResource<CMUXClient>
 
     public init(socketPath: String? = nil,
@@ -57,6 +58,10 @@ public final class CmuxConnection: @unchecked Sendable {
         // history prewarm can queue real-time screen reads behind one huge
         // `surface.read_text` response.
         self.historyResource = ReconnectingResource(open: opener, isAlive: alive)
+        // cmux answers each socket's requests one after another, so a
+        // keystroke written behind the screen polls' `surface.read_text` and
+        // `terminal.replay` waits for them. Input gets its own socket.
+        self.inputResource = ReconnectingResource(open: opener, isAlive: alive)
         self.eventsResource = ReconnectingResource(open: opener, isAlive: alive)
     }
 
@@ -81,6 +86,12 @@ public final class CmuxConnection: @unchecked Sendable {
     /// the real-time DiffEngine reader.
     public func connectForHistory() async throws -> CMUXClient {
         try await historyResource.get()
+    }
+
+    /// Dedicated channel for keystrokes and other writes, so they never
+    /// queue behind reads on cmux's side of a socket.
+    public func connectForInput() async throws -> CMUXClient {
+        try await inputResource.get()
     }
 
     /// Dedicated channel for the long-lived `events.stream` subscription.

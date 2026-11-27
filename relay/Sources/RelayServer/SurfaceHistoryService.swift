@@ -1,6 +1,12 @@
 import Foundation
 import SharedKit
 
+/// A facade that reads a terminal's text without building and re-encoding a
+/// `JSONValue` tree, which for a 100k-line scrollback is most of the cost.
+public protocol CMUXTextReading: Sendable {
+    func readText(workspaceId: String, surfaceId: String, lines: Int) async throws -> String
+}
+
 /// Provides stable, cursor-addressable snapshots of a terminal's scrollback.
 ///
 /// cmux currently exposes only a trailing `lines` argument.  The relay turns
@@ -8,6 +14,12 @@ import SharedKit
 /// on the Mac, then serving immutable pages from it.  A cursor is deliberately
 /// opaque to the phone and expires when the relay restarts or its snapshot is
 /// evicted.
+///
+/// The snapshot is read when the first page is asked for. Subscribing no
+/// longer starts one: every terminal switch and reconnect paid for a
+/// scrollback read (up to 100k lines) that was kept only 2 s, while clients
+/// that browse ask for their first page right after the screen arrives
+/// anyway. Callers that overlap share one read.
 public actor SurfaceHistoryService {
     public static let maximumSnapshotLines = 100_000
     public static let maximumSnapshots = 8
@@ -30,6 +42,7 @@ public actor SurfaceHistoryService {
     }
 
     private let cmux: any CMUXFacade
+    private var reading: [SurfaceKey: Task<(UUID, Snapshot), Error>] = [:]
     private var snapshots: [UUID: Snapshot] = [:]
     private var snapshotOrder: [UUID] = []
     private var newestSnapshotBySurface: [SurfaceKey: UUID] = [:]
@@ -50,7 +63,7 @@ public actor SurfaceHistoryService {
         {
             return
         }
-        _ = try? await createSnapshot(workspaceId: workspaceId, surfaceId: surfaceId, reusingExisting: false)
+        _ = try? await createSnapshot(workspaceId: workspaceId, surfaceId: surfaceId)
     }
 
     /// Returns rows immediately before `cursor`.  With no cursor it also
@@ -95,8 +108,7 @@ public actor SurfaceHistoryService {
         } else {
             (snapshotId, snapshot) = try await createSnapshot(
                 workspaceId: workspaceId,
-                surfaceId: surfaceId,
-                reusingExisting: false
+                surfaceId: surfaceId
             )
         }
 
@@ -111,24 +123,35 @@ public actor SurfaceHistoryService {
         )
     }
 
+    /// Reads a new snapshot, or joins the read already under way for this
+    /// terminal (a prewarm, or a page asked for while one was loading).
     private func createSnapshot(
         workspaceId: String,
-        surfaceId: String,
-        reusingExisting: Bool = true
+        surfaceId: String
     ) async throws -> (UUID, Snapshot) {
         let key = SurfaceKey(workspaceId: workspaceId, surfaceId: surfaceId)
-        if reusingExisting,
-           let existingId = newestSnapshotBySurface[key],
-           let existing = snapshots[existingId]
-        {
-            return (existingId, existing)
+        if let running = reading[key] { return try await running.value }
+        let cmux = self.cmux
+        // Inherits this actor: the body starts only after `reading` is set.
+        let task = Task { () throws -> (UUID, Snapshot) in
+            defer { self.reading[key] = nil }
+            let text = try await Self.readText(cmux: cmux, workspaceId: workspaceId, surfaceId: surfaceId)
+            return self.store(text: text, key: key)
+        }
+        reading[key] = task
+        return try await task.value
+    }
+
+    private static func readText(cmux: any CMUXFacade, workspaceId: String, surfaceId: String) async throws -> String {
+        if let reader = cmux as? CMUXTextReading {
+            return try await reader.readText(workspaceId: workspaceId, surfaceId: surfaceId, lines: maximumSnapshotLines)
         }
         let result = try await cmux.dispatch(
             method: "surface.read_text",
             params: .object([
                 "workspace_id": .string(workspaceId),
                 "surface_id": .string(surfaceId),
-                "lines": .int(Int64(Self.maximumSnapshotLines)),
+                "lines": .int(Int64(maximumSnapshotLines)),
             ])
         )
         guard case .object(let values) = result,
@@ -136,8 +159,12 @@ public actor SurfaceHistoryService {
         else {
             throw SurfaceHistoryError.invalidResponse
         }
+        return text
+    }
+
+    private func store(text: String, key: SurfaceKey) -> (UUID, Snapshot) {
         let rows = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let snapshot = Snapshot(workspaceId: workspaceId, surfaceId: surfaceId, rows: rows, createdAt: Date())
+        let snapshot = Snapshot(workspaceId: key.workspaceId, surfaceId: key.surfaceId, rows: rows, createdAt: Date())
         let snapshotId = UUID()
         snapshots[snapshotId] = snapshot
         snapshotOrder.append(snapshotId)
