@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react';
 import {
   FlatList,
   Platform,
@@ -17,20 +17,41 @@ import { GestureDetector, useNativeGesture, usePanGesture, usePinchGesture, useS
 
 import type { TerminalSession, TerminalState } from '../session/terminalSession';
 import { DEFAULT_ATTR } from '../terminal/ansi';
-import { LayoutCache, terminalRowColumns, type Span, type VisualLine } from '../terminal/layout';
+import { LayoutCache, type Span, type VisualLine } from '../terminal/layout';
 import { cellRuns } from '../terminal/cellRuns';
 import { codePointWidth } from '../terminal/cellWidth';
 import { desktopBridge } from '../platform/desktop';
 import { TERMINAL_LINE_DATA, useTerminalCopy } from '../input/terminalCopy';
-import { makeReadingPosition, positionedLines, restoredLineIndex, type PositionedLine, type ReadingPosition } from '../session/readingPosition';
+import { TERMINAL_CURSOR_DATA } from '../input/terminalFocus';
+import { makeReadingPosition, PositionedLineCache, positionedLineKey, restoredLineIndex, type PositionedLine, type ReadingPosition } from '../session/readingPosition';
 import { DEFAULT_FG, styleForAttr } from '../terminal/palette';
 import { clampFontSize, setPrefs, usePrefs } from '../state/prefs';
 import { colors, fonts, MONO_ADVANCE_EM } from './theme';
 import { TerminalTools } from './TerminalTools';
+import { TerminalFindBar } from './TerminalFindBar';
+import { desktopFontSize, showDesktopFontSize } from './terminalZoom';
 import { useTerminalWheel } from '../input/terminalWheel';
 import { PROGRAM_ROWS_PER_UNIT, PROGRAM_TOUCH_MAX_QUEUED, programDragTravel, programFlingTravel, programScrollUnits } from '../terminal/programScroll';
+import { findNeedle, findRanges, firstLineOfRow, markSpans } from '../terminal/find';
+import { matchingRows, plainTerminalRows } from '../terminal/textTools';
+import { screenRepainted } from '../terminal/screenSwitch';
 
 const SIDE_PADDING = 8;
+
+/**
+ * The terminal pane's last measured size. Switching terminals mounts a new
+ * view; starting from this size draws its first frame at the right width
+ * instead of the placeholder.
+ */
+const lastViewport = { width: 0, height: 0 };
+
+/**
+ * Each terminal's last reported column count. A new view fits the desktop
+ * text to it from the first frame, before `terminal.replay` answers, instead
+ * of drawing at full size and then shrinking.
+ */
+const knownColumns = new Map<string, number>();
+const KNOWN_COLUMNS_MAX = 64;
 
 export function terminalColumns(width: number, fontSize: number): number {
   // One point of slack keeps rounding from pushing the last cell off the line.
@@ -56,10 +77,22 @@ type Props = {
    * browsing, so every other point goes to terminal lines.
    */
   compact?: boolean;
+  /**
+   * Desktop window: the screen's header holds the wrap and search buttons,
+   * so there is no tool row, and history status floats as on phones.
+   */
+  toolsInHeader?: boolean;
+  /** The find bar closed: the screen puts focus back in the terminal input. */
+  onFindClosed?: () => void;
   ref?: Ref<TerminalViewHandle>;
 };
 
-export type TerminalViewHandle = { openTools: () => void };
+export type TerminalViewHandle = {
+  /** Search: the find bar over the terminal on the desktop (⌘F), the search and copy sheet on phones. */
+  openTools: () => void;
+  /** The search and copy sheet, on every platform: paging through the loaded output and copying it. */
+  openOutput: () => void;
+};
 
 /**
  * The terminal as an inverted list of fixed-height lines: index 0 is the
@@ -70,9 +103,9 @@ export type TerminalViewHandle = { openTools: () => void };
  * with `surface.history`. Back at the bottom the live screen resumes. Pinch
  * changes the font size.
  */
-export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, placeholderAction = null, onTap, readOnly = false, active = true, compact = false, ref }: Props) {
-  const [width, setWidth] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
+export function TerminalView({ session, state, fontSize, onFontSizeChange, placeholder, placeholderAction = null, onTap, readOnly = false, active = true, compact = false, toolsInHeader = false, onFindClosed, ref }: Props) {
+  const [width, setWidth] = useState(() => lastViewport.width);
+  const [viewportHeight, setViewportHeight] = useState(() => lastViewport.height);
   const [toolsOpen, setToolsOpen] = useState(false);
   const prefs = usePrefs();
   // The desktop shows the computer's grid as is by default; phones wrap.
@@ -81,6 +114,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const setTerminalWrap = (wrap: boolean) => setPrefs(desktop ? { desktopTerminalWrap: wrap } : { terminalWrap: wrap });
   const wasLiveBeforeTools = useRef(false);
   const [cache] = useState(() => new LayoutCache());
+  const [positioned] = useState(() => new PositionedLineCache());
   const [pinchSize, setPinchSize] = useState<number | null>(null);
   const pinchBase = useRef(fontSize);
   const list = useRef<FlatList<PositionedLine>>(null);
@@ -102,10 +136,40 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   const scrollRange = useRef(0);
   const historyRunway = useRef(0);
   const lastScrollSample = useRef({ at: 0, offset: 0 });
-  // Unwrapped on the desktop, a terminal wider than the window shrinks its
-  // font (down to a readable floor) instead of hiding its right edge.
-  const fitColumns = desktop && !terminalWrap ? state.terminalColumns ?? 0 : 0;
-  const size = pinchSize ?? (fitColumns > 0 && width > 0 ? fitFontSize(width, fitColumns, fontSize) : fontSize);
+  const savedPosition = useRef<ReadingPosition | null>(null);
+  // The web has no drag-end or momentum events: a pause in scroll events ends the gesture.
+  const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleRef = useRef<() => void>(() => {});
+  // One tap handler for every line, so a new `onTap` from the screen does not redraw them all.
+  const tapRef = useRef(onTap);
+  useLayoutEffect(() => { tapRef.current = onTap; });
+  const tap = useCallback(() => tapRef.current(), []);
+  // The desktop's find bar (⌘F); phones keep the search and copy sheet.
+  const inlineFind = !compact && Platform.OS === 'web';
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  /** Steps from the newest match toward older ones. */
+  const [findStep, setFindStep] = useState(0);
+  const [findFocus, setFindFocus] = useState(0);
+  const wasLiveBeforeFind = useRef(false);
+  const revealedMatch = useRef('');
+  // Desktop: unwrapped, the computer's columns fit the window (at most the
+  // chosen size) unless ⌘= / ⌘- fixed a size, which then scrolls sideways or wraps.
+  const columnsKey = state.target ? `${state.target.workspaceId}\u0000${state.target.surfaceId}` : '';
+  const gridColumns = state.terminalColumns ?? knownColumns.get(columnsKey) ?? null;
+  useEffect(() => {
+    if (!columnsKey || !state.terminalColumns) return;
+    knownColumns.delete(columnsKey);
+    knownColumns.set(columnsKey, state.terminalColumns);
+    while (knownColumns.size > KNOWN_COLUMNS_MAX) knownColumns.delete(knownColumns.keys().next().value!);
+  }, [columnsKey, state.terminalColumns]);
+  const size = pinchSize ?? (desktop
+    ? desktopFontSize({ preference: fontSize, zoom: prefs.desktopFontZoom ?? null, wrap: terminalWrap, width, columns: gridColumns })
+    : fontSize);
+  // ⌘= / ⌘- and settings' A− / A+ step from what is on screen.
+  useEffect(() => {
+    if (desktop) showDesktopFontSize(size);
+  }, [desktop, size]);
   const lineHeight = Math.round(size * 1.3);
   const columns = width > 0 ? terminalColumns(width, size) : 0;
   const browse = state.browse;
@@ -121,18 +185,42 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   useEffect(() => {
     if (active && state.subscription === 'live') session.prepareHistory();
   }, [session, state.subscription, state.screen.rows, applicationEnabled, browse, active]);
+  // Starting or quitting a full-screen program (claude, vim) repaints the whole
+  // screen and changes how scrolling works: ask the computer again.
+  const watchedScreen = useRef<readonly string[] | null>(null);
+  const repaintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRepaintCheck = useRef(0);
+  const screenRows = state.screen.rows;
+  const liveScreen = active && state.subscription === 'live' && !state.fromCache;
+  useEffect(() => {
+    const previous = watchedScreen.current;
+    watchedScreen.current = liveScreen ? screenRows : null;
+    if (!liveScreen || !previous || repaintTimer.current || !screenRepainted(previous, screenRows)) return;
+    const wait = Math.max(REPAINT_SETTLE_MS, lastRepaintCheck.current + REPAINT_INTERVAL_MS - Date.now());
+    repaintTimer.current = setTimeout(() => {
+      repaintTimer.current = null;
+      lastRepaintCheck.current = Date.now();
+      void session.inspectScrollMode();
+    }, wait);
+  }, [session, screenRows, liveScreen]);
+  useEffect(() => () => {
+    if (repaintTimer.current) clearTimeout(repaintTimer.current);
+    if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current);
+  }, []);
   const rows = browse ? browse.frozenRows : state.screen.rows;
   const olderRows = browse?.olderRows;
   const allRows = useMemo(() => [...(olderRows ?? []), ...rows], [olderRows, rows]);
-  const rawColumns = useMemo(() => terminalWrap ? 0 : allRows.reduce((max, row) => Math.max(max, terminalRowColumns(row)), 1), [allRows, terminalWrap]);
+  const rawColumns = useMemo(() => terminalWrap ? 0 : allRows.reduce((max, row) => Math.max(max, cache.rowColumns(row)), 1), [allRows, terminalWrap, cache]);
   const contentWidth = terminalWrap ? width : Math.max(width, rawColumns * size * MONO_ADVANCE_EM + SIDE_PADDING * 2 + 2);
   const layoutKey = `${terminalWrap}:${columns}:${size}:${viewportHeight}`;
 
+  const cursor = columns > 0 ? liveCursor(state, rows, (row) => cache.get(row, columns, terminalWrap).length === 1) : null;
+  // A cursor on a blank last row keeps that row, which would otherwise be trimmed as padding.
+  const keepRows = cursor ? allRows.length - cursor.rowFromBottom : 0;
   const lines = useMemo(() => {
     if (columns === 0) return [];
-    return positionedLines(allRows, columns, cache, terminalWrap);
-  }, [allRows, columns, cache, terminalWrap]);
-  const cursor = liveCursor(state, rows, (row) => cache.get(row, columns, terminalWrap).length === 1);
+    return positioned.lines(allRows, columns, cache, terminalWrap, keepRows);
+  }, [allRows, columns, cache, positioned, terminalWrap, keepRows]);
 
   const restoreOffset = useCallback(() => {
     if (!list.current || viewportHeight <= 0 || !lines.length) return;
@@ -164,6 +252,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       // as well, or a stale native scroll event immediately freezes it again.
       shortHistory.current = false;
       viewPosition.current = null;
+      savedPosition.current = null;
       lastFromBottom.current = 0;
       requestedOffset.current = 0;
       list.current?.scrollToOffset({ offset: 0, animated: false });
@@ -178,6 +267,11 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     const index = Math.max(0, Math.min(lines.length - 1, Math.round(lastFromBottom.current / lineHeight)));
     const position = makeReadingPosition(allRows, lines[index], horizontalOffset.current / (size * MONO_ADVANCE_EM));
     viewPosition.current = position;
+    // Several end signals can describe one stop (wheel end, web scroll end).
+    const saved = savedPosition.current;
+    if (saved && saved.anchor === position.anchor && saved.rowFromBottom === position.rowFromBottom
+      && saved.segmentFromBottom === position.segmentFromBottom && saved.horizontalColumns === position.horizontalColumns) return;
+    savedPosition.current = position;
     session.rememberReading(position);
   };
 
@@ -189,6 +283,7 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       height: lineHeight,
       color: DEFAULT_FG,
       includeFontPadding: false,
+      ...(Platform.OS === 'web' ? WEB_LINE : null),
     }),
     [size, lineHeight],
   );
@@ -199,14 +294,18 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     simultaneousWith: nativeScroll,
     onActivate: () => {
       session.stopApplicationScroll();
-      pinchBase.current = fontSize;
+      // The desktop pinches what it shows (a fitted size, or the zoom).
+      pinchBase.current = desktop ? size : fontSize;
     },
     onUpdate: (event) => {
       const next = clampFontSize(pinchBase.current * event.scale);
       setPinchSize((current) => (current === next ? current : next));
     },
     onDeactivate: (event) => {
-      onFontSizeChange(clampFontSize(pinchBase.current * event.scale));
+      const next = clampFontSize(pinchBase.current * event.scale);
+      // The desktop terminal draws `desktopFontZoom` over the preference, so a pinch sets that.
+      if (desktop) setPrefs({ desktopFontZoom: next });
+      else onFontSizeChange(next);
       setPinchSize(null);
     },
   });
@@ -247,7 +346,14 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     programNoticeTimer.current = setTimeout(() => setProgramNotice(null), 3000);
   };
 
-  const onLayout = (event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width);
+  const onLayout = (event: LayoutChangeEvent) => {
+    lastViewport.width = event.nativeEvent.layout.width;
+    setWidth(event.nativeEvent.layout.width);
+  };
+  const onViewportLayout = (event: LayoutChangeEvent) => {
+    lastViewport.height = event.nativeEvent.layout.height;
+    setViewportHeight(event.nativeEvent.layout.height);
+  };
 
   const beginDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     dragging.current = true;
@@ -292,8 +398,20 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   }, [session, toolsOpen, active, viewportHeight, lines.length, lineHeight]);
   useEffect(ensureHistoryRunway, [ensureHistoryRunway, rows, olderRows]);
 
+  /** The web's stand-in for drag-end and momentum-end events. */
+  const scheduleScrollEnd = () => {
+    if (Platform.OS !== 'web') return;
+    if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current);
+    scrollEndTimer.current = setTimeout(() => {
+      scrollEndTimer.current = null;
+      // A wheel gesture ends on its own (`end` below).
+      if (!wheeling.current) settleRef.current();
+    }, WEB_SCROLL_END_MS);
+  };
+
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollRange.current = Math.max(0, event.nativeEvent.contentSize.height - event.nativeEvent.layoutMeasurement.height);
+    scheduleScrollEnd();
     if (session.getState().applicationScroll && session.getState().browse?.kind !== 'application' && !toolsOpen) {
       lastFromBottom.current = event.nativeEvent.contentOffset.y;
       return;
@@ -327,24 +445,38 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       ensureHistoryRunway();
       return;
     }
-    if (browse && fromBottom <= 2) {
-      // Replacing/retrying a snapshot can reset the native offset to zero.
-      // Only a user drag/momentum is an instruction to leave history mode.
-      if (shortHistory.current || !dragging.current) return;
-      viewPosition.current = null;
-      session.resumeLive();
-      return;
-    }
-    if (browse) ensureHistoryRunway();
+    // At the bottom, history ends when the gesture does (`settle`): an
+    // overshoot that turns back keeps the pages already loaded.
+    if (browse && fromBottom > 2) ensureHistoryRunway();
   };
 
   const jumpToLive = () => {
     shortHistory.current = false;
     requestedOffset.current = null;
     viewPosition.current = null;
+    savedPosition.current = null;
+    lastFromBottom.current = 0;
     list.current?.scrollToOffset({ offset: 0, animated: false });
     session.resumeLive();
   };
+
+  /**
+   * A drag, fling or wheel gesture ended. Ending at the bottom returns to the
+   * live screen; anywhere else the place is remembered. Replacing or
+   * retrying a snapshot can reset the offset to zero without a gesture, which
+   * is not an instruction to leave history.
+   */
+  const settle = () => {
+    const gesture = dragging.current;
+    dragging.current = false;
+    const current = session.getState();
+    if (gesture && current.browse && !shortHistory.current && !current.restoringReading && !toolsOpen && !findOpen && lastFromBottom.current <= 2) {
+      jumpToLive();
+      return;
+    }
+    savePosition();
+  };
+  useLayoutEffect(() => { settleRef.current = settle; });
 
   /** A program without a session record scrolls itself, as in any terminal. */
   const moveApplication = (lines: number) => session.scrollApplication(lines);
@@ -367,13 +499,18 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     lineHeight, pageHeight: viewportHeight,
     move: pixels => {
       const current = session.getState();
-      if (current.applicationScroll?.record === false) { if (!readOnly) passWheel(pixels); return; }
-      dragging.current = true;
-      requestedOffset.current = null;
       if (!wheeling.current) {
         wheeling.current = true;
+        // As a drag does: a program may have started or quit since the last check.
+        void session.inspectScrollMode();
         if (pixels > 0) retryApplicationHistory();
       }
+      // A program screen frozen for the find bar scrolls here, not in the program.
+      if (current.applicationScroll?.record === false && !(findOpen && current.browse)) { if (!readOnly) passWheel(pixels); return; }
+      dragging.current = true;
+      requestedOffset.current = null;
+      // Heading back down: a return to the bottom leaves history even on a screen too short to scroll.
+      if (pixels < 0) shortHistory.current = false;
       if (pixels > 0 && !current.browse) {
         shortHistory.current = true;
         if (current.applicationScroll) session.startApplicationHistory();
@@ -387,9 +524,8 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       lastFromBottom.current = offset;
       if (offset > 2) shortHistory.current = false;
       list.current?.scrollToOffset({ offset, animated: false });
-      if (pixels < 0 && offset <= 2 && session.getState().browse) jumpToLive();
     },
-    end: () => { savePosition(); dragging.current = false; wheeling.current = false; },
+    end: () => { wheeling.current = false; settle(); },
   });
 
   /** "… 还有 N 行，点按展开" under a shortened tool output in record history. */
@@ -403,38 +539,102 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     return handler;
   };
 
-  const openTools = () => {
+  /** Freezes what is searched; returns whether the live screen was showing. */
+  const freezeForSearch = () => {
     const current = session.getState();
-    wasLiveBeforeTools.current = !current.browse;
+    const live = !current.browse;
     // A full-screen program's whole conversation is searchable from its record.
     if (current.applicationScroll && current.applicationScroll.record !== false) {
       session.startApplicationHistory();
       void session.loadWholeRecord();
     } else session.startBrowsing({ freezeApplication: true });
+    return live;
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    // Opened on the live screen and left there: live again. A match further up
+    // stays in view, except on a program that scrolls itself: its wheel goes
+    // back to the program.
+    if (wasLiveBeforeFind.current && (lastFromBottom.current <= 2 || session.getState().applicationScroll?.record === false)) jumpToLive();
+    onFindClosed?.();
+  };
+  const openOutput = () => {
+    if (findOpen) closeFind();
+    wasLiveBeforeTools.current = freezeForSearch();
     setToolsOpen(true);
   };
-  useImperativeHandle(ref, () => ({ openTools }));
+  const openFind = () => {
+    if (!findOpen) {
+      wasLiveBeforeFind.current = freezeForSearch();
+      revealedMatch.current = '';
+      setFindStep(0);
+      setFindOpen(true);
+    }
+    setFindFocus((count) => count + 1);
+  };
+  const openTools = () => (inlineFind ? openFind() : openOutput());
+  useImperativeHandle(ref, () => ({ openTools, openOutput }));
+
+  // Matches: logical rows, newest first. Each match's lines are marked in the list.
+  const needle = findOpen ? findNeedle(findQuery) : '';
+  const searching = needle !== '';
+  const plainRows = useMemo(() => (searching ? plainTerminalRows(allRows) : null), [searching, allRows]);
+  const hits = useMemo(() => (plainRows ? matchingRows(plainRows, needle) : []), [plainRows, needle]);
+  const hitRows = useMemo(() => new Set(hits.map((row) => allRows.length - 1 - row)), [hits, allRows.length]);
+  const findCurrent = hits.length ? hits.length - 1 - (((findStep % hits.length) + hits.length) % hits.length) : -1;
+  const currentMatchRow = findCurrent >= 0 ? hits[findCurrent] : -1;
+  const currentMatchFromBottom = currentMatchRow >= 0 ? allRows.length - 1 - currentMatchRow : -1;
+  useEffect(() => {
+    if (!findOpen || currentMatchFromBottom < 0 || viewportHeight <= 0) return;
+    const key = `${needle}#${currentMatchFromBottom}#${findStep}`;
+    const index = firstLineOfRow(lines, currentMatchFromBottom);
+    if (revealedMatch.current === key || index < 0) return;
+    revealedMatch.current = key;
+    // Centred, unless already clear of the find bar.
+    const top = index * lineHeight, from = lastFromBottom.current;
+    if (top < from || top + lineHeight > from + viewportHeight - FIND_BAR_CLEARANCE) {
+      const range = Math.max(scrollRange.current, lines.length * lineHeight - viewportHeight, 0);
+      const offset = Math.max(0, Math.min(range, top - (viewportHeight - lineHeight) / 2));
+      lastFromBottom.current = offset;
+      requestedOffset.current = offset;
+      list.current?.scrollToOffset({ offset, animated: false });
+    }
+    if (!terminalWrap && plainRows) {
+      // Unwrapped: also bring the match's column into view.
+      const at = findRanges(plainRows[currentMatchRow], needle)[0]?.[0] ?? 0;
+      const cell = size * MONO_ADVANCE_EM;
+      const x = Array.from(plainRows[currentMatchRow].slice(0, at)).reduce((cells, char) => cells + codePointWidth(char.codePointAt(0)!), 0) * cell;
+      const shown = horizontalOffset.current;
+      if (x < shown || x + needle.length * cell > shown + width - SIDE_PADDING * 2) {
+        const left = Math.max(0, x - width / 3);
+        horizontalOffset.current = left;
+        horizontal.current?.scrollTo({ x: left, animated: false });
+      }
+    }
+  }, [findOpen, needle, findStep, currentMatchFromBottom, currentMatchRow, lines, lineHeight, viewportHeight, terminalWrap, plainRows, size, width]);
 
   // Desktop: rows above the terminal, the history row always there so the
   // terminal does not resize when browsing starts. Phone: one floating stack
-  // at the bottom left, shown only while there is something to say.
-  const historyStatus = !compact || browse;
-  const statusText = compact ? styles.floatingStatusText : styles.historyStatusText;
+  // at the bottom left, shown only while there is something to say; so is the
+  // desktop window, whose header holds the tools.
+  const floating = compact || toolsInHeader;
+  const historyStatus = !floating || browse;
+  const statusText = floating ? styles.floatingStatusText : styles.historyStatusText;
   // Phones: ↑↓ float at the right edge, away from a program's bottom-left
   // mode line; dragging the terminal does the same.
   const programButtons = applicationScroll?.record === false && !readOnly;
   const status = <>
-    {state.restoringReading || state.readingNotice ? <Text style={[styles.readingNotice, compact && styles.floatingNotice]}>{state.restoringReading ? '正在恢复上次阅读的位置…' : state.readingNotice}</Text> : null}
-    {applicationScroll?.record === false && !compact ? <View testID="terminal-application-scroll" style={styles.historyStatus}>
+    {state.restoringReading || state.readingNotice ? <Text style={[styles.readingNotice, floating && styles.floatingNotice]}>{state.restoringReading ? '正在恢复上次阅读的位置…' : state.readingNotice}</Text> : null}
+    {applicationScroll?.record === false && !floating ? <View testID="terminal-application-scroll" style={styles.historyStatus}>
       <Text style={statusText}>{readOnly ? '这个程序的滚动需要终端控制权限' : '滚轮直接滚动程序（没有可读取的会话记录）'}</Text>
       {programButtons ? <>
         <Pressable testID="terminal-application-older" style={styles.historyLoad} hitSlop={LOAD_SLOP} onPress={() => moveApplication(3)} accessibilityRole="button" accessibilityLabel="查看程序内更早的历史"><Text style={styles.historyLoadText}>↑</Text></Pressable>
         <Pressable testID="terminal-application-newer" style={styles.historyLoad} hitSlop={LOAD_SLOP} onPress={() => moveApplication(-3)} accessibilityRole="button" accessibilityLabel="查看程序内更近的历史"><Text style={styles.historyLoadText}>↓</Text></Pressable>
       </> : null}
     </View> : null}
-    {compact && programNotice ? <Text testID="terminal-program-notice" style={[styles.readingNotice, styles.floatingNotice]}>{programNotice}</Text> : null}
-    {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError, compact && styles.floatingNotice]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
-    {applicationScroll?.record !== false && historyStatus ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, compact ? styles.floatingStatus : styles.stableHistoryStatus]}>
+    {floating && programNotice ? <Text testID="terminal-program-notice" style={[styles.readingNotice, styles.floatingNotice]}>{programNotice}</Text> : null}
+    {applicationScroll?.error ? <Text style={[styles.historyRetry, styles.edgeError, floating && styles.floatingNotice]}>{applicationScroll.error} · 请再次滑动重试</Text> : null}
+    {applicationScroll?.record !== false && historyStatus ? <View testID={browse ? 'terminal-history-status' : undefined} style={[styles.historyStatus, floating ? styles.floatingStatus : styles.stableHistoryStatus]}>
       <Text style={statusText}>
         {!browse ? (applicationScroll ? '向上滑动查看会话记录' : '向上滑动查看历史')
           : browse.kind === 'application' ? `已读取会话记录 ${browse.olderRows.length} 行${browse.exhausted ? ' · 已到会话开头' : ''}`
@@ -447,11 +647,18 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
         <Text style={styles.historyLoadText}>{browse.restartRequired ? '重新加载' : '加载更早'}</Text>
       </Pressable> : null}
     </View> : null}
-    {browse?.error ? <Pressable testID="terminal-history-retry" style={[styles.historyRetry, compact && styles.floatingNotice]} hitSlop={LOAD_SLOP} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
+    {browse?.error ? <Pressable testID="terminal-history-retry" style={[styles.historyRetry, floating && styles.floatingNotice]} hitSlop={LOAD_SLOP} onPress={() => void session.loadOlder({ retry: true })} accessibilityRole="button">
       <Text style={styles.edgeError}>{browse.error} · {browse.restartRequired ? '重新加载历史' : '重试'}</Text>
     </Pressable> : null}
   </>;
 
+  // Unchanged lines keep their object, key and props, so a screen diff only redraws the lines it changed.
+  const renderLine = ({ item }: { item: PositionedLine }) => {
+    const match = hitRows.has(item.rowFromBottom);
+    return <TerminalLine line={item} style={lineStyle} size={size} onPress={expanderFor(item) ?? tap}
+      cursor={cursor && item.rowFromBottom === cursor.rowFromBottom && item.segmentFromBottom === 0 ? cursor.column : undefined}
+      findNeedle={match ? needle : undefined} findCurrent={match && item.rowFromBottom === currentMatchFromBottom} />;
+  };
   const terminalList = (
     <GestureDetector gesture={nativeScroll}>
     <FlatList
@@ -460,9 +667,8 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       style={styles.fill}
       inverted
       data={lines}
-      keyExtractor={keyForIndex}
-      renderItem={({ item }) => <TerminalLine line={item} style={lineStyle} size={size} onPress={expanderFor(item) ?? onTap}
-        cursor={cursor && item.rowFromBottom === cursor.rowFromBottom && item.segmentFromBottom === 0 ? cursor.column : undefined} />}
+      keyExtractor={positionedLineKey}
+      renderItem={renderLine}
       extraData={cursor ? `${cursor.rowFromBottom}:${cursor.column}` : ''}
       getItemLayout={(_, index) => ({ length: lineHeight, offset: lineHeight * index, index })}
       initialNumToRender={60}
@@ -474,9 +680,9 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
       onScrollBeginDrag={beginDrag}
       onContentSizeChange={(_, height) => { scrollRange.current = Math.max(0, height - viewportHeight); restoreOffset(); ensureHistoryRunway(); }}
       onLayout={restoreOffset}
-      onScrollEndDrag={() => { savePosition(); dragging.current = false; }}
+      onScrollEndDrag={settle}
       onMomentumScrollBegin={() => { dragging.current = true; }}
-      onMomentumScrollEnd={() => { savePosition(); dragging.current = false; }}
+      onMomentumScrollEnd={settle}
       nestedScrollEnabled
       scrollEventThrottle={32}
       alwaysBounceVertical
@@ -489,26 +695,37 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
     </GestureDetector>
   );
 
+  const viewport = (
+    <GestureDetector gesture={viewportGesture}>
+      <View testID="terminal-viewport" style={styles.fill} onLayout={onViewportLayout}>
+        {terminalWrap ? terminalList : (
+          <ScrollView ref={horizontal} testID="terminal-horizontal-scroll" horizontal directionalLockEnabled nestedScrollEnabled alwaysBounceVertical={false} style={styles.fill}
+            contentContainerStyle={{ width: contentWidth, height: viewportHeight }}
+            onScroll={(event) => { horizontalOffset.current = event.nativeEvent.contentOffset.x; scheduleScrollEnd(); }} onScrollEndDrag={savePosition} scrollEventThrottle={32}>
+            <View testID="terminal-raw-frame" style={{ width: contentWidth, height: viewportHeight }}>{terminalList}</View>
+          </ScrollView>
+        )}
+      </View>
+    </GestureDetector>
+  );
+
   return (
     <View testID="terminal-output" style={styles.container} onLayout={onLayout}>
-      {!compact ? <View style={styles.toolRow}>
+      {!floating ? <View style={styles.toolRow}>
         <Pressable style={styles.tools} onPress={() => setTerminalWrap(!terminalWrap)} accessibilityRole="button" accessibilityLabel={terminalWrap ? '切换为原始列宽' : '切换为自动折行'}><Text style={styles.toolsText}>{terminalWrap ? '自动折行' : '原始列宽 ↔'}</Text></Pressable>
-        <Pressable style={styles.tools} onPress={openTools} accessibilityRole="button" accessibilityLabel="搜索和复制终端输出">
+        {inlineFind ? <View style={styles.toolGroup}>
+          <Pressable style={styles.tools} onPress={openFind} accessibilityRole="button" accessibilityLabel="在终端输出中搜索"><Text style={styles.toolsText}>搜索</Text></Pressable>
+          <Pressable style={styles.tools} onPress={openOutput} accessibilityRole="button" accessibilityLabel="复制终端输出"><Text style={styles.toolsText}>复制输出</Text></Pressable>
+        </View> : <Pressable style={styles.tools} onPress={openTools} accessibilityRole="button" accessibilityLabel="搜索和复制终端输出">
           <Text style={styles.toolsText}>搜索 · 复制输出</Text>
-        </Pressable>
+        </Pressable>}
       </View> : null}
-      {!compact ? status : null}
-      <GestureDetector gesture={viewportGesture}>
-        <View testID="terminal-viewport" style={styles.fill} onLayout={(event) => setViewportHeight(event.nativeEvent.layout.height)}>
-          {terminalWrap ? terminalList : (
-            <ScrollView ref={horizontal} testID="terminal-horizontal-scroll" horizontal directionalLockEnabled nestedScrollEnabled alwaysBounceVertical={false} style={styles.fill}
-              contentContainerStyle={{ width: contentWidth, height: viewportHeight }}
-              onScroll={(event) => { horizontalOffset.current = event.nativeEvent.contentOffset.x; }} onScrollEndDrag={savePosition} scrollEventThrottle={32}>
-              <View testID="terminal-raw-frame" style={{ width: contentWidth, height: viewportHeight }}>{terminalList}</View>
-            </ScrollView>
-          )}
-        </View>
-      </GestureDetector>
+      {!floating ? status : null}
+      {inlineFind ? <View style={styles.fill}>
+        {viewport}
+        {findOpen ? <TerminalFindBar query={findQuery} onChangeQuery={(query) => { setFindQuery(query); setFindStep(0); }} total={hits.length} current={findCurrent}
+          onStep={(step) => setFindStep((current) => current + step)} onClose={closeFind} focusRequest={findFocus} /> : null}
+      </View> : viewport}
       {lines.length === 0 && placeholder ? (
         <View testID="terminal-placeholder" style={styles.placeholder} pointerEvents="box-none">
           <Text style={styles.placeholderText}>{placeholder}</Text>
@@ -518,8 +735,8 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
           </Pressable> : null}
         </View>
       ) : null}
-      {compact ? <View testID="terminal-floating-status" style={styles.floating} pointerEvents="box-none">{status}</View> : null}
-      {compact && programButtons ? (
+      {floating ? <View testID="terminal-floating-status" style={styles.floating} pointerEvents="box-none">{status}</View> : null}
+      {floating && programButtons ? (
         <View testID="terminal-application-scroll" style={styles.programRail} pointerEvents="box-none">
           <Pressable testID="terminal-application-older" style={({ pressed }) => [styles.programButton, pressed && styles.programButtonPressed]} hitSlop={4} onPress={() => moveApplication(3)}
             accessibilityRole="button" accessibilityLabel="向上滚动程序" accessibilityHint="也可以在终端上下滑动"><Text style={styles.programButtonText}>↑</Text></Pressable>
@@ -544,26 +761,39 @@ export function TerminalView({ session, state, fontSize, onFontSizeChange, place
   );
 }
 
-function keyForIndex(_: VisualLine, index: number): string {
-  return String(index);
-}
+type LineProps = {
+  line: VisualLine; style: TextStyle; size: number; onPress: () => void; cursor?: number;
+  /** Find bar: the normalized query, on lines of matching rows only; `findCurrent` on the selected match. */
+  findNeedle?: string; findCurrent?: boolean;
+};
 
-type LineProps = { line: VisualLine; style: TextStyle; size: number; onPress: () => void; cursor?: number };
-
-const TerminalLine = memo(function TerminalLine({ line, style, size, onPress, cursor }: LineProps) {
-  const text = { style, onPress, selectable: Platform.OS === 'web', allowFontScaling: false, ...TERMINAL_LINE_DATA };
+const TerminalLine = memo(function TerminalLine({ line, style, size, onPress, cursor, findNeedle: needle, findCurrent = false }: LineProps) {
+  const web = Platform.OS === 'web';
+  // react-native-web gives a Text with `onPress` a pointing hand; a click handler keeps the text cursor.
+  const press = (web ? { onClick: onPress } : { onPress }) as object;
+  const text = { style, ...press, selectable: web, allowFontScaling: false, ...TERMINAL_LINE_DATA };
   if (cursor !== undefined) {
     const { before, at, after } = splitAtCursor(line.spans, cursor);
     return (
       <Text {...text} numberOfLines={1} ellipsizeMode="clip">
         {before.map((span, index) => <SpanText key={`b${index}`} span={span} size={size} />)}
-        <SpanText span={at} size={size} cursor />
+        {/* Web: marked so the input method can compose at the cursor (terminalCursorAnchor). */}
+        {web ? <Text {...TERMINAL_CURSOR_DATA}><SpanText span={at} size={size} mark={CURSOR_STYLE} /></Text> : <SpanText span={at} size={size} mark={CURSOR_STYLE} />}
         {after.map((span, index) => <SpanText key={`a${index}`} span={span} size={size} />)}
       </Text>
     );
   }
   if (line.spans.length === 0) return <Text {...text}> </Text>;
-  if (line.spans.length === 1 && line.spans[0].attr === DEFAULT_ATTR && Platform.OS !== 'web') {
+  const marked = needle ? markSpans(line.spans, needle) : null;
+  if (marked?.some((span) => span.hit)) {
+    const hit = findCurrent ? CURRENT_MATCH_STYLE : MATCH_STYLE;
+    return (
+      <Text {...text} numberOfLines={1} ellipsizeMode="clip">
+        {marked.map((span, index) => <SpanText key={index} span={span} size={size} mark={span.hit ? hit : undefined} />)}
+      </Text>
+    );
+  }
+  if (line.spans.length === 1 && line.spans[0].attr === DEFAULT_ATTR && !web) {
     return <Text {...text} numberOfLines={1} ellipsizeMode="clip">{line.spans[0].text}</Text>;
   }
   return (
@@ -574,11 +804,19 @@ const TerminalLine = memo(function TerminalLine({ line, style, size, onPress, cu
 });
 
 const CURSOR_STYLE: TextStyle = { backgroundColor: colors.ink, color: colors.terminal };
+const MATCH_STYLE: TextStyle = { backgroundColor: 'rgba(224, 175, 104, 0.35)' };
+const CURRENT_MATCH_STYLE: TextStyle = { backgroundColor: colors.yellow, color: colors.terminal };
+/**
+ * react-native-web draws `numberOfLines={1}` with `white-space: nowrap`, which
+ * collapses runs of spaces (indentation, columns, boxes, the cursor's cell)
+ * and ends a cut line with "…". Runs inside inherit `pre`.
+ */
+const WEB_LINE = { whiteSpace: 'pre', textOverflow: 'clip' } as unknown as TextStyle;
 
 /** One styled run; on the web every non-GeistMono glyph gets a box of its terminal width. */
-function SpanText({ span, size, cursor = false }: { span: Span; size: number; cursor?: boolean }) {
+function SpanText({ span, size, mark }: { span: Span; size: number; mark?: TextStyle }) {
   const attr = span.attr === DEFAULT_ATTR ? null : styleForAttr(span.attr);
-  const style = cursor ? [attr, CURSOR_STYLE] : attr;
+  const style = mark ? [attr, mark] : attr;
   if (Platform.OS !== 'web') return <Text style={style}>{span.text}</Text>;
   const runs = cellRuns(span.text);
   if (runs.length === 1 && runs[0].kind === 'text') return <Text style={style}>{span.text}</Text>;
@@ -638,12 +876,13 @@ export function splitAtCursor(spans: readonly Span[], column: number): { before:
   return { before, at, after };
 }
 
-/** The largest size, at most the chosen one, that fits `columns` cells in `width`. */
-export function fitFontSize(width: number, columns: number, preferred: number): number {
-  const fits = (width - SIDE_PADDING * 2 - 1) / (columns * MONO_ADVANCE_EM);
-  return Math.max(MIN_FIT_FONT, Math.min(preferred, Math.floor(fits * 2) / 2));
-}
-const MIN_FIT_FONT = 9;
+/** Gestures on the web: a pause in scroll events this long ends one. */
+const WEB_SCROLL_END_MS = 150;
+/** A full repaint is checked once its frames settle, and at most this often. */
+const REPAINT_SETTLE_MS = 250;
+const REPAINT_INTERVAL_MS = 750;
+/** The find bar covers the top of the terminal: a match under it is scrolled clear. */
+const FIND_BAR_CLEARANCE = 44;
 
 /** Shown above the oldest loaded line while browsing history. */
 function HistoryEdge({ state, session }: { state: TerminalState; session: TerminalSession }) {
@@ -672,6 +911,7 @@ const JUMP_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
 
 const styles = StyleSheet.create({
   toolRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  toolGroup: { flexDirection: 'row' },
   readingNotice: { color: colors.muted, fontSize: 12, paddingHorizontal: 12, paddingBottom: 5 },
   historyRetry: { paddingHorizontal: 12, paddingVertical: 6 },
   historyStatus: { paddingHorizontal: 12, paddingBottom: 5, flexDirection: 'row', alignItems: 'center', gap: 8 },

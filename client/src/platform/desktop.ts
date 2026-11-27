@@ -21,6 +21,8 @@ export type DesktopBridge = {
   openNotificationSettings?(): Promise<void>;
   /** The gateway running on this computer, read from its owner-only credential file; null when absent. */
   localGateway?(): Promise<unknown>;
+  /** Mac: keeps App Nap from suspending the app while computers are paired (it still allows idle system sleep). */
+  keepAwake?(active: boolean): Promise<void>;
   /** Self-update (Mac): rejects on systems that update from the download page. */
   updateStatus?(): Promise<unknown>;
   /** Checks now and installs what it finds; resolves with the new status. */
@@ -29,6 +31,10 @@ export type DesktopBridge = {
   onUpdate?(listener: (status: unknown) => void): () => void;
   /** Downloads a shared file into Downloads/Panecast and opens it with the default app; other kinds are only revealed. */
   openSharedFile?(url: string, name: string): Promise<{ path: string; opened: boolean }>;
+  /** The Mac menu bar's custom items (`panecast-menu` event), by id; see `menuCommand` in ui/desktopShell. */
+  onMenu?(listener: (id: string) => void): () => void;
+  /** Mac: closes the window as its red button does (it hides; the app keeps running). */
+  closeWindow?(): void;
 };
 declare global { interface Window { panecastDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | null {

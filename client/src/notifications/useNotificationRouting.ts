@@ -7,7 +7,7 @@ import { notifications } from './instance';
 import { desktopBridge } from '../platform/desktop';
 import { appStore } from '../state/appStore';
 import { openSurface } from '../state/navigation';
-import { watchDesktopNotifications } from './desktop';
+import { watchAllDesktopNotifications } from './desktop';
 
 /**
  * Mounted once in the root layout. Sets the foreground presentation policy,
@@ -18,10 +18,11 @@ import { watchDesktopNotifications } from './desktop';
 export function useNotificationRouting(): void {
   const pathname = usePathname();
   const { phase, machine } = useAppState();
+  // Every paired computer notifies, not only the one on screen.
   useEffect(() => {
     const bridge = desktopBridge();
-    if (machine && bridge) return watchDesktopNotifications(machine, bridge);
-  }, [machine]);
+    if (bridge) return watchAllDesktopNotifications(appStore, bridge);
+  }, []);
   useEffect(() => desktopBridge()?.onNotification?.(notification => {
     void (async () => {
       if (notification.computerId) await appStore.select(notification.computerId);

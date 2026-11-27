@@ -1,5 +1,6 @@
 import type { Machine } from './appStore';
-import { serviceFetch } from '../platform/desktop';
+import { desktopBridge, serviceFetch } from '../platform/desktop';
+import { localGatewayFor, refreshLocalGateway } from './connect';
 
 export type Diagnostic = { name: string; state: 'ok' | 'warning' | 'error'; detail: string; ms?: number };
 async function health(base: string, name: string, fetchImpl: typeof fetch, broker?: { relayId: string; token: string }): Promise<Diagnostic> {
@@ -18,16 +19,38 @@ async function health(base: string, name: string, fetchImpl: typeof fetch, broke
   } catch { return { name, state: 'error', detail: abort.signal.aborted ? '连接超时；检查网络、地址和防火墙' : '无法访问；检查网络和服务地址' }; }
   finally { clearTimeout(timer); }
 }
+/**
+ * The desktop app on the computer it controls connects to that computer's
+ * own gateway over loopback: check that one instead of a LAN pairing.
+ */
+async function localHealth(machine: Machine, fetchImpl: typeof fetch): Promise<Diagnostic | null> {
+  if (!machine.computer || machine.computer.share || !desktopBridge()?.localGateway) return null;
+  const gateway = localGatewayFor(machine.computer, await refreshLocalGateway());
+  const directIsLocal = (machine.channel as { directIsLocal?: boolean }).directIsLocal === true;
+  if (!gateway) {
+    return directIsLocal
+      ? { name: '本机网关', state: 'error', detail: '本机的 Panecast 网关没有响应（可能正在重启），正在自动重试；一直这样的话，在终端运行 panecast status 查看' }
+      : null;
+  }
+  const result = await health(gateway.healthUrl.replace(/\/v1\/health$/, ''), '本机网关', fetchImpl);
+  return result.state === 'ok' ? result : { ...result, detail: `本机的 Panecast 网关没有响应，正在自动重试；${result.detail}` };
+}
+
 export async function diagnose(machine: Machine, fetchImpl: typeof fetch = serviceFetch): Promise<Diagnostic[]> {
   if (machine.mode === 'demo') return [{ name: '演示电脑', state: 'ok', detail: '演示环境可以正常交互，不检测真实网络' }];
   const computer = machine.computer;
   if (!computer) return [];
+  const desktop = desktopBridge() !== null;
+  const local = await localHealth(machine, fetchImpl).catch(() => null);
   const network = await Promise.all([
     health(computer.broker.serverUrl, '中转服务器', fetchImpl, computer.broker),
-    computer.lan ? health(computer.lan.url, '局域网直连', fetchImpl) : Promise.resolve<Diagnostic>({ name: '局域网直连', state: 'warning', detail: '尚未配对局域网，不影响经服务器连接' }),
+    local ? Promise.resolve(local)
+      : computer.lan ? health(computer.lan.url, '局域网直连', fetchImpl) : Promise.resolve<Diagnostic>({ name: '局域网直连', state: 'warning', detail: '尚未配对局域网，不影响经服务器连接' }),
   ]);
   const status = machine.channel.status;
-  const authenticated: Diagnostic = { name: '手机连接', state: status.state === 'open' ? 'ok' : 'error', detail: status.state === 'open' ? '已通过身份验证并建立连接' : status.state === 'auth_failed' ? '配对已失效，请重新扫码' : '尚未连接；先解决上方网络或电脑离线问题' };
+  const authenticated: Diagnostic = { name: desktop ? '本机连接' : '手机连接', state: status.state === 'open' ? 'ok' : 'error', detail: status.state === 'open' ? '已通过身份验证并建立连接'
+    : status.state === 'auth_failed' ? (desktop ? '配对已失效，请到「设置」里重新配对' : '配对已失效，请重新扫码')
+    : local && local.state !== 'ok' ? '尚未连接；本机网关恢复后会自动连上' : '尚未连接；先解决上方网络或电脑离线问题' };
   let backend: Diagnostic = { name: '终端后端', state: 'warning', detail: '连接恢复后才能检查' };
   if (machine.channel.isOpen) {
     const started = Date.now();

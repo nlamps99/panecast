@@ -42,13 +42,20 @@ class MockChannel {
   onTransport() {
     return () => {};
   }
+  woken = 0;
+  reconnected = 0;
   start() {
     this.started = true;
   }
   stop() {
     this.stopped = true;
   }
-  wake() {}
+  wake() {
+    this.woken++;
+  }
+  reconnect() {
+    this.reconnected++;
+  }
 }
 
 const mockChannels: MockChannel[] = [];
@@ -351,5 +358,96 @@ describe('account computers', () => {
     await store.login(SERVER, 'alice', 'long password', false);
     await store.logout();
     expect(store.getState().signedOut ?? null).toBeNull();
+  });
+});
+
+describe('AppStore on the desktop', () => {
+  const host = globalThis as unknown as { window?: Record<string, unknown> };
+  const keepAwake = jest.fn(async (_active: boolean) => {});
+  let hadWindow = false;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    hadWindow = 'window' in host;
+    host.window ??= {};
+    host.window.panecastDesktop = {
+      version: 1, keepAwake,
+      getSecret: async (key: string) => mockStore.get(key) ?? null,
+      setSecret: async (key: string, value: string) => { mockStore.set(key, value); },
+      deleteSecret: async (key: string) => { mockStore.delete(key); },
+    };
+    keepAwake.mockClear();
+  });
+  afterEach(() => {
+    delete host.window!.panecastDesktop;
+    if (!hadWindow) delete host.window;
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+  const watched = (store: AppStore) => store.watchedInboxes().map((watch) => watch.computer.id);
+  const channelFor = (id: string) => mockChannels.filter((channel) => channel.computer.id === id).at(-1)!;
+
+  it('keeps an inbox-only connection to every other paired computer and hands it over on selection', async () => {
+    const store = await storeWith([stored('a'), stored('b'), stored('c')], 'a');
+    expect(store.getState().machine?.computer?.id).toBe('a');
+    expect(watched(store)).toEqual(['b', 'c']);
+    const b = channelFor('b');
+    expect(b.started).toBe(true);
+    await store.select('b');
+    // The selected computer's own channel replaces its watch: one live inbox per computer.
+    expect(b.stopped).toBe(true);
+    expect(store.getState().machine?.channel).not.toBe(b);
+    expect(watched(store).sort()).toEqual(['a', 'c']);
+  });
+
+  it('reads a watched computer\'s recent terminals at the hidden pace and stops when it is selected', async () => {
+    const store = await storeWith([stored('a'), stored('b')], 'a');
+    const [watch] = store.watchedInboxes();
+    expect((watch.activity as unknown as { hidden: boolean }).hidden).toBe(true);
+    const dispose = jest.spyOn(watch.activity, 'dispose');
+    await store.select('b');
+    expect(dispose).toHaveBeenCalled();
+  });
+
+  it('leaves shared windows out, and stops watching a removed computer', async () => {
+    const shared = { ...stored('s'), share: { name: '共享' } };
+    const store = await storeWith([stored('a'), stored('b'), shared], 'a');
+    expect(watched(store)).toEqual(['b']);
+    const b = channelFor('b');
+    await store.remove('b');
+    expect(b.stopped).toBe(true);
+    expect(watched(store)).toEqual([]);
+  });
+
+  it('reconnects the current computer on request and wakes every watched one', async () => {
+    const store = await storeWith([stored('a'), stored('b')], 'a');
+    const current = channelFor('a'), other = channelFor('b');
+    store.reconnect();
+    expect(current.reconnected).toBe(1);
+    expect(other.woken).toBe(1);
+    store.wake('focus');
+    expect(current.woken).toBe(1);
+    expect(other.woken).toBe(2);
+  });
+
+  it('holds the App Nap guard only while a computer is paired', async () => {
+    const store = await storeWith([stored('a')], 'a');
+    expect(keepAwake).toHaveBeenLastCalledWith(true);
+    const calls = keepAwake.mock.calls.length;
+    await store.rename('a', '书房');
+    expect(keepAwake).toHaveBeenCalledTimes(calls);
+    await store.remove('a');
+    expect(keepAwake).toHaveBeenLastCalledWith(false);
+  });
+
+  it('slows terminal polling while the window is hidden, also for a computer selected meanwhile', async () => {
+    const store = await storeWith([stored('a'), stored('b')], 'a');
+    const hidden = jest.spyOn(store.getState().machine!.activity!, 'setHidden');
+    store.setWindowHidden(true);
+    expect(hidden).toHaveBeenLastCalledWith(true);
+    await store.select('b');
+    const next = store.getState().machine!.activity! as unknown as { hidden: boolean };
+    expect(next.hidden).toBe(true);
+    store.setWindowHidden(false);
+    expect(next.hidden).toBe(false);
   });
 });

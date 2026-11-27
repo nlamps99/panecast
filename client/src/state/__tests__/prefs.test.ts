@@ -42,6 +42,7 @@ describe('sanitizePrefs', () => {
       extraKeyRow: false,
       terminalWrap: true,
       desktopTerminalWrap: false,
+      desktopFontZoom: null,
       terminalPresentation: 'terminal',
       tabletSidebar: true,
     });

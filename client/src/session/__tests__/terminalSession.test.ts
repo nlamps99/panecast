@@ -776,7 +776,7 @@ describe('TerminalSession input', () => {
     session.dispose();
   });
 
-  it('drops queued input and reports the error when a send fails', async () => {
+  it('reports a failed send without resending it, and drops what was typed after it', async () => {
     const channel = new FakeChannel();
     channel.autoReply.delete('surface.send_text');
     const session = new TerminalSession(channel);
@@ -787,7 +787,9 @@ describe('TerminalSession input', () => {
     await flush(); // a legacy gateway rejects surface.input first
     channel.calls.find((c) => c.method === 'surface.send_text')!.reject(new RpcCallError('closed', 'gone'));
     await flush();
+    expect(channel.calls.filter((c) => c.method === 'surface.send_text')).toHaveLength(1);
+    // An Enter after a lost piece of the line would run what did arrive.
     expect(channel.methods()).not.toContain('surface.send_key');
-    expect(session.getState().input).toEqual({ busy: false, error: '没有连上电脑' });
+    expect(session.getState().input).toEqual({ busy: false, error: '输入没有确认送达：没有连上电脑，之后的输入已取消。请先查看终端，需要时再输入一次' });
   });
 });

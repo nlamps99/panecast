@@ -1,4 +1,4 @@
-import { Stack } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
@@ -11,6 +11,8 @@ import { useAppState } from '../state/hooks';
 import { loadPrefs } from '../state/prefs';
 import { loadTerminalFonts } from '../platform/fonts';
 import { InboxToast } from '../ui/InboxToast';
+import { useDesktopShell } from '../ui/desktopShell';
+import { useDesktopMenu } from '../ui/useDesktopShortcuts';
 import { colors } from '../ui/theme';
 
 void SplashScreen.preventAutoHideAsync();
@@ -24,8 +26,11 @@ void SplashScreen.preventAutoHideAsync();
  * computer or the demo is ready.
  */
 export default function RootLayout() {
-  const { phase } = useAppState();
+  const { phase, machine } = useAppState();
   useNotificationRouting();
+  // The Mac menu bar works on every screen, the pairing screen included.
+  const shell = useDesktopShell();
+  useDesktopMenu(phase === 'ready' ? machine : null, usePathname(), shell && phase === 'ready');
 
   useEffect(() => {
     void loadPrefs();

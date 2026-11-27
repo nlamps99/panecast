@@ -135,3 +135,36 @@ it('polls every due terminal through one batched read when a repository offers i
   expect(store.getState()[activityKey(a)].status).toBe('idle');
   repository.dispose();
 });
+
+it('reads terminals off screen less often while the desktop window is hidden, and at once when it is shown', async () => {
+  store.dispose();
+  store = new TerminalActivityStore(channel, { targets: () => targets, onActivity, onComplete, pollMs: 2000, hiddenPollMs: 5000 });
+  channel.responses.set('a', snapshot(true, [user('q')]));
+  channel.responses.set('b', snapshot(false, [final('done')]));
+  await store.refresh();
+  expect(channel.rpc).toHaveBeenCalledTimes(1);
+  store.setHidden(true);
+  channel.rpc.mockClear();
+  // Visible, the running terminal would be read every 3 s; hidden, every 5 s at the slower pace.
+  await jest.advanceTimersByTimeAsync(20_000);
+  const hiddenReads = channel.rpc.mock.calls.length;
+  expect(hiddenReads).toBeGreaterThan(0);
+  expect(hiddenReads).toBeLessThanOrEqual(5);
+  channel.rpc.mockClear();
+  store.setHidden(false);
+  await Promise.resolve();
+  expect(channel.rpc).toHaveBeenCalled();
+});
+
+it('stops polling while disconnected and starts again when the connection opens', async () => {
+  channel.responses.set('a', snapshot(true, [user('q')]));
+  channel.responses.set('b', snapshot(true, [user('q')]));
+  await store.refresh();
+  channel.status({ state: 'waiting', attempt: 1, retryAt: 0, reason: 'network' });
+  channel.rpc.mockClear();
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(channel.rpc).not.toHaveBeenCalled();
+  channel.status({ state: 'open' });
+  await Promise.resolve();
+  expect(channel.rpc).toHaveBeenCalled();
+});

@@ -1,11 +1,17 @@
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { TerminalDecision } from '../session/terminalPrompt';
 import type { TerminalSession } from '../session/terminalSession';
 import type { ScreenState } from '../protocol/screen';
 import type { Key } from '../protocol/keys';
+import { decisionKeys, questionKeyFocus, selectionKeys } from '../input/questionKeys';
 import { colors } from './theme';
 
+/**
+ * A question the terminal is asking, as buttons. With a keyboard (web and
+ * desktop) it answers keys too, while the message box is empty: a number
+ * picks that option, ↑/↓ move, Enter confirms, Esc cancels.
+ */
 export function TerminalDecisionCard({ decision, screen, session, enabled, onShowTerminal }: {
   decision: TerminalDecision; screen: ScreenState; session: TerminalSession; enabled: boolean; onShowTerminal(): void;
 }) {
@@ -15,6 +21,20 @@ export function TerminalDecisionCard({ decision, screen, session, enabled, onSho
     const receipt = await session.sendPromptKeys(keys, screen);
     setMessage(receipt.status === 'sent' ? null : receipt.message);
   };
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !enabled || typeof window === 'undefined' || typeof document === 'undefined') return;
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !questionKeyFocus(document)) return;
+      const keys = decisionKeys(decision, event);
+      if (!keys) return;
+      // Ahead of the message box, which would otherwise take Enter and the digits.
+      event.preventDefault();
+      event.stopPropagation();
+      if (keys.length) void send(keys);
+    };
+    window.addEventListener('keydown', keydown, true);
+    return () => window.removeEventListener('keydown', keydown, true);
+  });
   const button = (label: string, key: string) => <Pressable key={key} disabled={!enabled} style={[styles.button, !enabled && styles.disabled]}
     accessibilityRole="button" accessibilityLabel={label} onPress={() => void send([{ name: key }])}><Text style={styles.link}>{label}</Text></Pressable>;
   return <View style={styles.card} testID="terminal-decision">
@@ -26,8 +46,7 @@ export function TerminalDecisionCard({ decision, screen, session, enabled, onSho
         accessibilityRole="button" accessibilityState={{ selected: index === decision.selectedIndex }} accessibilityLabel={`选择 ${option.label}`}
         onPress={() => {
           if (decision.selectedIndex === null || index === decision.selectedIndex) return;
-          const delta = index - decision.selectedIndex;
-          void send(Array.from({ length: Math.abs(delta) }, () => ({ name: delta > 0 ? 'down' : 'up' })));
+          void send(selectionKeys(decision.selectedIndex, index));
         }}><Text style={styles.optionText}>{index === decision.selectedIndex ? '●' : '○'} {option.label}</Text></Pressable>)}
     </ScrollView>
     <View style={styles.row}>

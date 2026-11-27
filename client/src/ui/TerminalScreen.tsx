@@ -17,8 +17,10 @@ import { useConnectionStatus, useMachine, useStore } from '../state/hooks';
 import { backToWorkspaces, showWorkspaces } from '../state/navigation';
 import { clampFontSize, FONT_SIZE_MAX, FONT_SIZE_MIN, setPrefs, usePrefs } from '../state/prefs';
 import { sessionMemory } from '../state/sessionMemory';
+import { useTerminalPresentation } from '../state/terminalPresentation';
+import { useTerminalKeyFallback, useTerminalRefocus } from '../input/terminalFocus';
 import { BatteryBadge } from './BatteryBadge';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { InputBar } from './InputBar';
 import { ProjectBrowser } from './ProjectBrowser';
 import { SharedFilesBar, SharedFilesSheet } from './SharedFiles';
@@ -30,11 +32,16 @@ import { TerminalChatView } from './TerminalChatView';
 import { colors } from './theme';
 import { useKeyboardVisible } from './useKeyboardVisible';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
-import { onDesktopCommand, useDesktopShell } from './desktopShell';
+import { hideDesktopWindow, onDesktopCommand, shortcutLabel, useDesktopShell } from './desktopShell';
 import { CloseButton } from './CloseButton';
+import { contextMenuProps, hoverTitle, useContextMenu } from './ContextMenu';
+import { terminalMenuItems } from './desktopMenus';
+import { useTerminalRename } from './useTerminalRename';
+import type { Machine } from '../state/appStore';
+import type { SurfaceInfo } from '../session/surfaces';
 import { activityKey } from '../session/terminalActivity';
 import { TerminalActivityBadge, useTerminalActivity } from './TerminalActivityBadge';
-import { bannerAction, placeholderLabel, terminalPlaceholder, type PlaceholderAction } from './terminalPlaceholder';
+import { bannerAction, placeholderLabel, staleScreenNotice, terminalPlaceholder, useOfflineFor, type PlaceholderAction } from './terminalPlaceholder';
 
 /**
  * The terminal tab. Top to bottom: back to the list, the workspace and its
@@ -46,7 +53,10 @@ import { bannerAction, placeholderLabel, terminalPlaceholder, type PlaceholderAc
  *
  * On a phone the title row also holds the chat/terminal switch and a "⋯"
  * menu (files, search and copy, wrapping, text size), so the rows that held
- * them go to the terminal. The desktop keeps them in rows of their own.
+ * them go to the terminal. The desktop window, whose sidebar already names
+ * the workspace, has one row: the terminal tabs, then the switch and icon
+ * buttons for wrapping, search and files. A right click on a tab opens its
+ * menu; ⌘W closes the terminal on screen.
  *
  * A phone in landscape keeps only one short title row: the terminal chips
  * move into the "⋯" menu and the input bar drops its shortcut row.
@@ -72,7 +82,9 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const status = useConnectionStatus(channel);
   const state = useStore(session);
   const { workspaces, surfaces, known } = useStore(machine.workspaces);
-  const { fontSize, inputMode, desktopInputMode, terminalPresentation, terminalWrap } = usePrefs();
+  const { fontSize, inputMode, desktopInputMode, terminalWrap, desktopTerminalWrap } = usePrefs();
+  // 对话/终端 is each terminal's own; one never switched shows the saved default.
+  const [terminalPresentation, setTerminalPresentation] = useTerminalPresentation(machine.computer?.id ?? 'demo', state.target?.surfaceId);
   const desktop = desktopBridge() !== null;
   const compact = !desktop;
   // Phone landscape: about 390 pt of height, so every row of chrome costs terminal lines.
@@ -83,6 +95,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   const conversation = useMemo(() => new TerminalConversationStore(channel, session, machine.terminalRepository), [channel, session, machine.terminalRepository]);
   const inputRef = useRef<TerminalInputHandle>(null);
   const desktopShell = useDesktopShell();
+  const tabMenu = useContextMenu();
+  const terminalRename = useTerminalRename(machine);
   const keyboardVisible = useKeyboardVisible();
   const [targetError, setTargetError] = useState<string | null>(null);
   const [pickAttempt, setPickAttempt] = useState(0);
@@ -159,6 +173,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   // The list may show another cmux window; the open terminal keeps its own titles.
   const workspace = workspaces.find((w) => w.id === target?.workspaceId) ?? (target ? known.workspaces[target.workspaceId] : undefined);
   const readOnly = workspace?.access === 'read';
+  // Desktop: keys pressed after a click elsewhere in the window still reach the terminal.
+  useTerminalKeyFallback(inputRef, desktop && terminalActive && !readOnly);
   // Desktop: whatever selected a terminal (sidebar, tab, shortcut), typing goes
   // to it next, and coming back to the window resumes typing where it was.
   const focusInput = useCallback(() => {
@@ -169,6 +185,9 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
     if (typeof window !== 'undefined' && window.getSelection()?.isCollapsed === false) return;
     void inputRef.current?.focus();
   }, [desktop, readOnly]);
+  // Desktop: after a click on a tab, a header button or the find bar's close,
+  // focus is back in the input before the next key (the input method needs it there).
+  const refocusSoon = useTerminalRefocus(inputRef, desktop && !readOnly);
   useEffect(() => {
     if (!desktop || !terminalActive) return;
     const timer = setTimeout(focusInput, 0);
@@ -183,47 +202,156 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
   useEffect(() => onDesktopCommand((command) => {
     if (command.kind === 'find' && !chat) terminalView.current?.openTools();
     if (command.kind === 'focus') setTimeout(() => { if (!readOnly) void inputRef.current?.focus(); }, 0);
-  }), [chat, readOnly]);
+    if (command.kind === 'close') closeShownTerminal(machine, actions, setTargetError);
+  }), [chat, readOnly, machine, actions]);
 
   const siblings = target ? (surfaces[target.workspaceId] ?? known.surfaces[target.workspaceId] ?? []) : [];
   const surface = siblings.find((s) => s.id === target?.surfaceId);
-  const placeholder = terminalPlaceholder({ status, hasTarget: Boolean(target), subscription: state.subscription, subscriptionError: state.subscriptionError, targetError });
+  const placeholder = terminalPlaceholder({ status, hasTarget: Boolean(target), subscription: state.subscription, subscriptionError: state.subscriptionError, targetError, guest: isGuest(machine) });
   // With nothing on screen the message and its button sit in the middle of
   // the terminal; the banner would only repeat them.
   const emptyTerminal = !chat && state.screen.rows.length === 0 && !state.browse;
   const guest = isGuest(machine);
   const statusProblem = statusBanner(status, guest);
-  const banner = statusProblem ?? (emptyTerminal ? null : state.subscriptionError ?? targetError);
-  const fix = banner ? bannerAction({ status, subscription: state.subscription, subscriptionError: state.subscriptionError, targetError }) : null;
+  // Disconnected with a screen showing: say how old it is, so it is not taken
+  // for live output (after a moment, so a brief reconnect does not flash it).
+  const offlineSettled = useOfflineFor(status.state === 'open');
+  const stale = machine.mode === 'demo' ? null : staleScreenNotice({ status, hasScreen: !chat && state.screen.rows.length > 0, screenAt: state.screenAt, settled: offlineSettled });
+  const banner = stale?.text ?? statusProblem ?? (emptyTerminal ? null : state.subscriptionError ?? targetError);
+  const fix = stale ? stale.action : banner ? bannerAction({ status, subscription: state.subscription, subscriptionError: state.subscriptionError, targetError }) : null;
   // One button for one fix: an empty terminal already shows it in the middle.
   const bannerFix = fix && !(emptyTerminal && placeholder.action === fix) ? fix : null;
   const runPlaceholderAction = (action: PlaceholderAction) => {
-    // Skips the reconnect backoff, like returning to the app does.
-    if (action === 'reconnect') (channel as { wake?: () => void }).wake?.();
+    // Starts the connection over now, from whatever state it is in.
+    if (action === 'reconnect') {
+      const connection = channel as { reconnect?: () => void; wake?: () => void };
+      if (connection.reconnect) connection.reconnect();
+      else connection.wake?.();
+    }
     else if (action === 'retryTerminal') session.retrySubscription();
     else { setTargetError(null); setPickAttempt((attempt) => attempt + 1); }
   };
   // The last reading stays in the store while disconnected; it is stale, so hide it.
   const showBattery = isOpen && battery !== null;
   const side = { paddingLeft: insets.left, paddingRight: insets.right };
-  const presentationTabs = (['chat', 'terminal'] as const).map(mode => <Pressable key={mode} onPress={() => setPrefs({ terminalPresentation: mode })}
+  const presentationTabs = (['chat', 'terminal'] as const).map(mode => <Pressable key={mode} onPress={() => { setTerminalPresentation(mode); refocusSoon(); }}
     // The segment is 30 pt tall; the slop makes each half a 44 pt target.
     hitSlop={compact ? SEGMENT_SLOP : undefined}
-    style={[compact ? styles.segmentTab : styles.presentationTab, mode === terminalPresentation && styles.presentationSelected]} accessibilityRole="tab" accessibilityState={{ selected: mode === terminalPresentation }}
+    style={[compact || desktopShell ? styles.segmentTab : styles.presentationTab, mode === terminalPresentation && styles.presentationSelected]} accessibilityRole="tab" accessibilityState={{ selected: mode === terminalPresentation }}
     accessibilityLabel={mode === 'chat' ? '对话模式' : '终端模式'}>
     <Text style={[styles.presentationText, mode === terminalPresentation && styles.presentationTextSelected]}>{mode === 'chat' ? '对话' : '终端'}</Text>
   </Pressable>);
   const changeFontSize = (delta: number) => setPrefs({ fontSize: clampFontSize(fontSize + delta) });
   const chipsShown = !keyboardVisible && !landscape && Boolean(target) && siblings.length > 0;
+  // A terminal's tab: in the chip row on phones, in the header row on the desktop.
+  const terminalChip = (item: SurfaceInfo) => {
+    if (!target) return null;
+    const selected = item.id === target.surfaceId;
+    const itemActivity = activity[activityKey({ workspaceId: target.workspaceId, surfaceId: item.id })];
+    const closable = canCloseTerminal(workspace, siblings.length);
+    const busy = running !== null || Boolean(workspaceActionState.pending[target.workspaceId]);
+    const close = () => {
+      if (!isOpen || !workspace || readOnly || busy) return;
+      void requestTerminalClose(machine, actions, workspace, item, confirmClose).then(() => {
+        // The last terminal took its workspace with it. Without a sidebar there
+        // is nothing left to show here, so return to the list instead of
+        // following some other terminal that cmux has focused.
+        if (!desktop && !sidebar && session.getState().target === null) showWorkspaces();
+      }, error => setTargetError(describeError(error)));
+    };
+    const menuProps = desktop && workspace ? contextMenuProps((point) => tabMenu.open(point, terminalMenuItems({
+      deps: machine, actions, rename: terminalRename, workspace, surface: item, count: siblings.length, connected: isOpen, busy, onError: setTargetError,
+    }))) : {};
+    return (
+      <View key={item.id} style={[styles.terminalChip, selected && styles.chipSelected, busy && !selected && styles.chipBusy]} {...menuProps}>
+      <Pressable
+        ref={desktop ? hoverTitle(item.title) : undefined}
+        onPress={() => {
+          actions.clearError();
+          session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id });
+          // Also for the tab already selected, where no terminal change refocuses.
+          refocusSoon();
+        }}
+        onLongPress={close}
+        disabled={busy}
+        hitSlop={CHIP_SLOP}
+        style={styles.terminalChipLabel}
+        accessibilityRole="tab"
+        accessibilityLabel={item.title}
+        accessibilityState={{ selected, disabled: busy }}
+        accessibilityValue={itemActivity?.status === 'running' ? { text: '正在运行' } : undefined}
+        accessibilityHint={closable ? '长按可以关闭这个终端' : undefined}
+      >
+        <TerminalActivityBadge activity={itemActivity} color={selected ? colors.green : colors.muted} />
+        <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
+          {item.title}
+        </Text>
+      </Pressable>
+      {closable ? <CloseButton label={`关闭终端 ${item.title}`} disabled={busy || !isOpen} onPress={close} /> : null}
+      </View>
+    );
+  };
+  const newTerminalChip = target ? (
+    <Pressable
+      ref={desktop ? hoverTitle(`新建终端（${shortcutLabel('T')}）`) : undefined}
+      onPress={() => void actions.create(target.workspaceId)}
+      disabled={running !== null || readOnly}
+      hitSlop={CHIP_SLOP}
+      style={({ pressed }) => [styles.chip, styles.newChip, desktopShell && styles.desktopNewChip, pressed && styles.newChipPressed, running === 'close' && styles.chipBusy]}
+      accessibilityRole="button"
+      accessibilityLabel="新建终端"
+      accessibilityState={{ disabled: running !== null || readOnly, busy: running === 'create' }}
+    >
+      <View style={styles.newChipIcon}>
+        {running === 'create' ? (
+          <ActivityIndicator size="small" color={colors.green} style={styles.newChipSpinner} />
+        ) : (
+          <Icon name="plus" size={12} color={colors.green} />
+        )}
+      </View>
+      {desktopShell ? null : <Text style={styles.newChipText}>新建</Text>}
+    </Pressable>
+  ) : null;
+  const wrapOn = desktop ? desktopTerminalWrap : terminalWrap;
+  // The desktop window's single header row: tabs left, mode and tools right.
+  const desktopHeader = desktopShell ? (
+    <View style={[styles.header, styles.desktopHeader]}>
+      <View style={styles.desktopRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.desktopTabs} contentContainerStyle={styles.desktopTabsContent}>
+          {target && siblings.length > 0 ? siblings.map(terminalChip) : <Text style={styles.desktopEmpty} numberOfLines={1}>{workspace?.title ?? '终端'}</Text>}
+          {newTerminalChip}
+        </ScrollView>
+        <View style={styles.desktopTools}>
+          {status.state !== 'open' ? <View ref={hoverTitle(statusLabel(status, guest))} style={styles.subtitleRow}>
+            <View style={[styles.dot, { backgroundColor: statusColor(status) }]} />
+            <Text style={styles.subtitle} numberOfLines={1}>{statusLabel(status, guest)}</Text>
+          </View> : null}
+          {showBattery || machine.mode === 'demo' ? <View style={styles.badges}>
+            {showBattery ? <BatteryBadge battery={battery} onPress={() => void host.refresh()} /> : null}
+            {machine.mode === 'demo' ? <Text style={styles.demoBadge}>演示</Text> : null}
+          </View> : null}
+          <View style={styles.segment} accessibilityRole="tablist">{presentationTabs}</View>
+          {!chat ? <HeaderButton icon="wrap" active={wrapOn} onPress={() => { setPrefs({ desktopTerminalWrap: !wrapOn }); refocusSoon(); }}
+            label={wrapOn ? '切换为原始列宽' : '切换为自动折行'} title={wrapOn ? '自动折行：开' : '自动折行：关（保留电脑上的原始列宽）'} /> : null}
+          {!chat ? <HeaderButton icon="search" onPress={() => terminalView.current?.openTools()} label="在终端输出中搜索" title={`查找（${shortcutLabel('F')}）`} /> : null}
+          {!chat ? <HeaderButton icon="copy" onPress={() => { terminalView.current?.openOutput(); refocusSoon(); }} label="复制终端输出" title="复制输出" /> : null}
+          {target ? <HeaderButton icon="folder" onPress={() => { showFiles(); refocusSoon(); }} label={shared ? '查看分享目录里的文件' : '查看项目文件与 Git 改动'} title={shared ? '分享目录里的文件' : '项目文件与 Git 改动'} /> : null}
+        </View>
+      </View>
+      {target && actionError ? <Text style={styles.actionError} numberOfLines={2}>{actionError}</Text> : null}
+      {target && workspaceActionState.error?.workspaceId === target.workspaceId ? <Text style={styles.actionError}>{actionErrorText(workspaceActionState.error)}</Text> : null}
+    </View>
+  ) : null;
+
   // The phone's terminal spans the window, less the safe area.
   const columns = sidebar ? null : terminalColumns(windowWidth - insets.left - insets.right, fontSize);
 
   return (
     // Android too: edge-to-edge (forced from API 35) stops adjustResize from shrinking the window.
     <KeyboardAvoidingView nativeID="panecast-terminal" style={styles.screen} behavior="padding">
-      <View style={[styles.header, compact && styles.compactHeader, chipsShown && styles.headerWithChips, landscape && styles.landscapeHeader, side, { paddingTop: insets.top }]}>
-        <View style={[styles.titleRow, desktopShell && styles.desktopTitleRow, landscape && styles.landscapeTitleRow]}>
-          {desktopShell ? null : <Pressable
+      {desktopShell ? desktopHeader : <View style={[styles.header, compact && styles.compactHeader, chipsShown && styles.headerWithChips, landscape && styles.landscapeHeader, side, { paddingTop: insets.top }]}>
+        <View style={[styles.titleRow, landscape && styles.landscapeTitleRow]}>
+          <Pressable
             onPress={backToWorkspaces}
             style={({ pressed }) => [styles.back, pressed && styles.pressed]}
             hitSlop={6}
@@ -231,7 +359,7 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
             accessibilityLabel="返回"
           >
             <Icon name="back" size={17} color={colors.ink} />
-          </Pressable>}
+          </Pressable>
           {landscape ? <View style={[styles.titleText, styles.subtitleRow]}>
             <View style={[styles.dot, { backgroundColor: machine.mode === 'demo' ? colors.yellow : statusColor(status) }]} />
             <Text style={[styles.title, styles.landscapeTitle]} numberOfLines={1}>
@@ -264,64 +392,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
         </View>
         {chipsShown && target ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.chips, compact && styles.compactChips]}>
-              {siblings.map((item) => {
-                const selected = item.id === target.surfaceId;
-                const itemActivity = activity[activityKey({ workspaceId: target.workspaceId, surfaceId: item.id })];
-                const closable = canCloseTerminal(workspace, siblings.length);
-                const busy = running !== null || Boolean(workspaceActionState.pending[target.workspaceId]);
-                const close = () => {
-                  if (!isOpen || !workspace || readOnly || busy) return;
-                  void requestTerminalClose(machine, actions, workspace, item, confirmClose).then(() => {
-                    // The last terminal took its workspace with it. Without a sidebar there
-                    // is nothing left to show here, so return to the list instead of
-                    // following some other terminal that cmux has focused.
-                    if (!desktop && !sidebar && session.getState().target === null) showWorkspaces();
-                  }, error => setTargetError(describeError(error)));
-                };
-                return (
-                  <View key={item.id} style={[styles.terminalChip, selected && styles.chipSelected, busy && !selected && styles.chipBusy]}>
-                  <Pressable
-                    onPress={() => {
-                      actions.clearError();
-                      session.setTarget({ workspaceId: target.workspaceId, surfaceId: item.id });
-                    }}
-                    onLongPress={close}
-                    disabled={busy}
-                    hitSlop={CHIP_SLOP}
-                    style={styles.terminalChipLabel}
-                    accessibilityRole="tab"
-                    accessibilityLabel={item.title}
-                    accessibilityState={{ selected, disabled: busy }}
-                    accessibilityValue={itemActivity?.status === 'running' ? { text: '正在运行' } : undefined}
-                    accessibilityHint={closable ? '长按可以关闭这个终端' : undefined}
-                  >
-                    <TerminalActivityBadge activity={itemActivity} color={selected ? colors.green : colors.muted} />
-                    <Text style={[styles.chipText, selected && styles.chipTextSelected]} numberOfLines={1}>
-                      {item.title}
-                    </Text>
-                  </Pressable>
-                  {closable ? <CloseButton label={`关闭终端 ${item.title}`} disabled={busy || !isOpen} onPress={close} /> : null}
-                  </View>
-                );
-              })}
-              <Pressable
-                onPress={() => void actions.create(target.workspaceId)}
-                disabled={running !== null || readOnly}
-                hitSlop={CHIP_SLOP}
-                style={({ pressed }) => [styles.chip, styles.newChip, pressed && styles.newChipPressed, running === 'close' && styles.chipBusy]}
-                accessibilityRole="button"
-                accessibilityLabel="新建终端"
-                accessibilityState={{ disabled: running !== null || readOnly, busy: running === 'create' }}
-              >
-                <View style={styles.newChipIcon}>
-                  {running === 'create' ? (
-                    <ActivityIndicator size="small" color={colors.green} style={styles.newChipSpinner} />
-                  ) : (
-                    <Icon name="plus" size={12} color={colors.green} />
-                  )}
-                </View>
-                <Text style={styles.newChipText}>新建</Text>
-              </Pressable>
+              {siblings.map(terminalChip)}
+              {newTerminalChip}
             </ScrollView>
         ) : null}
         {target && actionError ? (
@@ -330,8 +402,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
           </Text>
         ) : null}
         {target && workspaceActionState.error?.workspaceId === target.workspaceId ? <Text style={styles.actionError}>{actionErrorText(workspaceActionState.error)}</Text> : null}
-      </View>
-      {!compact ? <View style={[styles.presentation, side]} accessibilityRole="tablist">
+      </View>}
+      {!compact && !desktopShell ? <View style={[styles.presentation, side]} accessibilityRole="tablist">
         {presentationTabs}
         {chat ? <Text style={styles.chatHint} numberOfLines={1}>直接发送到当前终端</Text> : null}
       </View> : null}
@@ -343,9 +415,11 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
         </Pressable> : null}
       </View> : null}
       <View style={[styles.terminal, side]}>
-        {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} readOnly={readOnly} onShowTerminal={() => setPrefs({ terminalPresentation: 'terminal' })} /> : <TerminalView
+        {chat ? <TerminalChatView store={conversation} session={session} connected={isOpen} readOnly={readOnly} active={terminalActive} onShowTerminal={() => setTerminalPresentation('terminal')} /> : <TerminalView
           ref={terminalView}
           compact={compact}
+          toolsInHeader={desktopShell}
+          onFindClosed={refocusSoon}
           active={terminalActive}
           readOnly={readOnly}
           key={`${machine.computer?.id ?? 'demo'}:${target?.workspaceId}:${target?.surfaceId}`}
@@ -369,6 +443,8 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
       </View>
       {sharedFiles ? <SharedFilesSheet store={sharedFiles} visible={filesOpen} onClose={() => setFilesOpen(false)} /> : null}
       {projectOpen && target ? <ProjectBrowser key={`${machine.computer?.id}:${target.surfaceId}`} target={target} channel={channel} onClose={() => setProjectOpen(false)} /> : null}
+      {tabMenu.element}
+      {terminalRename.element}
       {compact ? <Sheet visible={menu.visible} title="终端" onClose={() => menu.close()} onClosed={menu.onClosed}>
         {landscape && target && siblings.length > 1 ? siblings.map((item, index) => (
           <SheetRow key={item.id} icon="terminal" title={item.title} divided={index > 0} selected={item.id === target.surfaceId}
@@ -395,6 +471,33 @@ function TerminalPane({ sidebar }: { sidebar: boolean }) {
       </Sheet> : null}
     </KeyboardAvoidingView>
   );
+}
+
+/** An icon button in the desktop header; `title` is its tooltip. */
+function HeaderButton({ icon, label, title, active, onPress }: { icon: IconName; label: string; title: string; active?: boolean; onPress: () => void }) {
+  return <Pressable ref={hoverTitle(title)} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={active === undefined ? undefined : { selected: active }}
+    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [styles.headerButton, active && styles.headerButtonActive, (hovered || pressed) && styles.headerButtonHovered]}>
+    <Icon name={icon} size={17} color={active ? colors.green : colors.inkDim} />
+  </Pressable>;
+}
+
+/**
+ * ⌘W: closes the terminal on screen, after the same confirmation as its ×.
+ * When it cannot be closed now (none open, read-only, a shared window's last
+ * one, offline, another action running) it hides the window, as ⌘W did
+ * before it closed terminals.
+ */
+function closeShownTerminal(machine: Machine, actions: SurfaceActions, onError: (message: string) => void): void {
+  const target = machine.session.getState().target;
+  const list = machine.workspaces.getState();
+  const workspace = target ? list.workspaces.find((w) => w.id === target.workspaceId) ?? list.known.workspaces[target.workspaceId] : undefined;
+  const surfaces = target ? list.surfaces[target.workspaceId] ?? list.known.surfaces[target.workspaceId] ?? [] : [];
+  const surface = surfaces.find((s) => s.id === target?.surfaceId);
+  if (!workspace || !surface || !canCloseTerminal(workspace, surfaces.length) || !machine.channel.isOpen || actions.getState().running !== null) {
+    hideDesktopWindow();
+    return;
+  }
+  void requestTerminalClose(machine, actions, workspace, surface, confirmClose).catch((error: unknown) => onError(describeError(error)));
 }
 
 const SEGMENT_SLOP = { top: 7, bottom: 7 };
@@ -437,7 +540,17 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 6, paddingTop: 4 },
-  desktopTitleRow: { paddingLeft: 14 },
+  // Desktop window: one 40 pt row above the terminal.
+  desktopHeader: { paddingBottom: 0 },
+  desktopRow: { height: 40, flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 8 },
+  desktopTabs: { flex: 1, minWidth: 0 },
+  desktopTabsContent: { alignItems: 'center', gap: 6, paddingHorizontal: 10 },
+  desktopEmpty: { color: colors.muted, fontSize: 13 },
+  desktopTools: { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
+  desktopNewChip: { width: 30, paddingHorizontal: 0, justifyContent: 'center' },
+  headerButton: { width: 30, height: 30, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  headerButtonHovered: { backgroundColor: colors.surfaceRaised },
+  headerButtonActive: { backgroundColor: colors.surface },
   back: { width: 36, height: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   pressed: { backgroundColor: colors.surface },
   titleText: { flex: 1, gap: 2 },

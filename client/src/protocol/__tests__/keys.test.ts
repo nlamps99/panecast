@@ -1,10 +1,10 @@
 import { ctrl, encodeKey, Keys, symbolAction, withModifiers } from '../keys';
 
 describe('encodeKey', () => {
-  it('uses the names SharedKit sends', () => {
+  it('uses the names cmux understands', () => {
     expect([Keys.pageUp, Keys.pageDown, Keys.home, Keys.end, Keys.delete].map(encodeKey)).toEqual([
-      'pgup',
-      'pgdn',
+      'pageup',
+      'pagedown',
       'home',
       'end',
       'delete',
@@ -28,7 +28,7 @@ describe('ctrl', () => {
 
   it('chords a named key', () => {
     expect(encodeKey(ctrl(Keys.left))).toBe('ctrl-left');
-    expect(encodeKey(ctrl(Keys.pageDown))).toBe('ctrl-pgdn');
+    expect(encodeKey(ctrl(Keys.pageDown))).toBe('ctrl-pagedown');
   });
 });
 

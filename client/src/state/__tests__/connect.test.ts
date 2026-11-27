@@ -440,3 +440,83 @@ describe('the local gateway credential', () => {
     expect(localGatewayFor(computer, { ...gateway, relayId: null })).toBeNull();
   });
 });
+
+describe('the desktop app beside its own gateway', () => {
+  const { refreshLocalGateway, LOCAL_GATEWAY_GRACE_MS } = jest.requireActual('../connect') as typeof import('../connect');
+  const file = { version: 1, url: 'ws://127.0.0.1:4400/v1/ws', health_url: 'http://127.0.0.1:4400/v1/health', device_id: 'local-dev', token: 'local-secret',
+    relay_id: 'mac-1', broker_url: 'https://broker.example/cmux-remote' };
+  const host = globalThis as unknown as { window?: Record<string, unknown> };
+  let gateway: typeof file | null = file;
+  const sockets: string[] = [];
+  const ids: string[] = [];
+  const listeners = new Set<(event: { id: string; type: string; code?: number }) => void>();
+  const emit = (index: number, type: string, code?: number) => { for (const listener of [...listeners]) listener({ id: ids[index], type, code }); };
+  const settle = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
+  const computer: StoredComputer = { id: 'c1', name: 'mac-1', pairedAt: '2026-11-01T00:00:00.000Z',
+    broker: { serverUrl: 'https://broker.example/cmux-remote', relayId: 'mac-1', deviceId: 'broker-dev', token: 'broker-tok' } };
+  beforeEach(() => {
+    gateway = file;
+    sockets.length = 0;
+    ids.length = 0;
+    listeners.clear();
+    host.window = { panecastDesktop: {
+      version: 1,
+      localGateway: async () => gateway,
+      request: async (_id: string, url: string) => (url === file.health_url && gateway ? { status: 200, body: '{"ok":true}' } : Promise.reject(new Error('refused'))),
+      abortRequest: () => {},
+      connectSocket: async (id: string, url: string) => { ids.push(id); sockets.push(url); },
+      sendSocket: () => {}, closeSocket: () => {},
+      onSocket: (listener: (event: { id: string; type: string }) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+    } };
+  });
+  afterEach(() => { delete host.window; jest.useRealTimers(); });
+
+  it('treats the computer as an ordinary one once the file has been gone longer than the grace period', async () => {
+    jest.useFakeTimers({ now: 1_000_000, doNotFake: ['queueMicrotask'] });
+    const channel = createComputerChannel(computer, 'auto', () => {})!;
+    channel.start();
+    await settle();
+    expect(channel.directIsLocal).toBe(true);
+    gateway = null;
+    await refreshLocalGateway();
+    jest.setSystemTime(1_000_000 + LOCAL_GATEWAY_GRACE_MS - 1);
+    expect(channel.directIsLocal).toBe(true);
+    jest.setSystemTime(1_000_000 + LOCAL_GATEWAY_GRACE_MS + 1);
+    expect(channel.directIsLocal).toBe(false);
+    channel.stop();
+  });
+
+  it('stops blaming the local gateway once the server path connects while its file is gone', async () => {
+    const channel = createComputerChannel(computer, 'auto', () => {})!;
+    channel.start();
+    await settle();
+    emit(0, 'open');
+    await settle();
+    // The local gateway goes away with its file; the channel falls back to the server.
+    gateway = null;
+    emit(0, 'close', 1006);
+    await settle();
+    expect(sockets[1]).toMatch(/^wss:\/\/broker\.example\//);
+    expect(channel.directIsLocal).toBe(true);
+    emit(1, 'open');
+    await settle();
+    expect(channel.status.state).toBe('open');
+    expect(channel.transport).toBe('broker');
+    expect(channel.directIsLocal).toBe(false);
+    channel.stop();
+  });
+
+  it('keeps treating its own gateway as the direct path while the credential file is briefly missing', async () => {
+    const channel = createComputerChannel(computer, 'auto', () => {});
+    if (!channel) throw new Error('no channel');
+    channel.start();
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    expect(sockets).toEqual([file.url]);
+    expect(channel.directIsLocal).toBe(true);
+    // The gateway restarts and its file is gone for a moment.
+    gateway = null;
+    await refreshLocalGateway();
+    expect(channel.directIsLocal).toBe(true);
+    channel.stop();
+  });
+});

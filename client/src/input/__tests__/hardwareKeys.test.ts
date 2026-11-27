@@ -32,3 +32,35 @@ describe('terminalHardwareKey on Windows', () => {
     expect(terminalHardwareKey(key('v', { metaKey: true }))).toBeNull();
   });
 });
+
+describe('terminalHardwareKey on a Mac', () => {
+  it('sends the line-editing shortcuts Terminal.app and iTerm2 send', () => {
+    expect(terminalHardwareKey(key('ArrowLeft', { metaKey: true }))).toEqual({ name: 'a', modifiers: ['ctrl'] });
+    expect(terminalHardwareKey(key('ArrowRight', { metaKey: true }))).toEqual({ name: 'e', modifiers: ['ctrl'] });
+    expect(terminalHardwareKey(key('Backspace', { metaKey: true }))).toEqual({ name: 'u', modifiers: ['ctrl'] });
+    expect(terminalHardwareKey(key('k', { metaKey: true }))).toEqual({ name: 'l', modifiers: ['ctrl'] });
+    expect(terminalHardwareKey(key('ArrowLeft', { altKey: true }))).toEqual({ name: 'b', modifiers: ['alt'] });
+    expect(terminalHardwareKey(key('ArrowRight', { altKey: true }))).toEqual({ name: 'f', modifiers: ['alt'] });
+    expect(terminalHardwareKey(key('Backspace', { altKey: true }))).toEqual({ name: 'w', modifiers: ['ctrl'] });
+    // Option reported as AltGraph still moves by word.
+    expect(terminalHardwareKey({ ...key('ArrowLeft'), altGraphKey: true })).toEqual({ name: 'b', modifiers: ['alt'] });
+  });
+
+  it('leaves other Command shortcuts and shifted selections to macOS', () => {
+    for (const event of [key('c', { metaKey: true }), key('K', { metaKey: true, shiftKey: true }), key('ArrowLeft', { metaKey: true, shiftKey: true }),
+      key('ArrowLeft', { metaKey: true, altKey: true }), key('ArrowUp', { metaKey: true })]) {
+      expect(terminalHardwareKey(event)).toBeNull();
+    }
+    expect(terminalHardwareKey(key('ArrowLeft', { altKey: true, shiftKey: true }))).toEqual({ name: 'left', modifiers: ['alt', 'shift'] });
+  });
+
+  it("uses cmux's names for the paging keys", () => {
+    expect(terminalHardwareKey(key('PageUp'))).toEqual({ name: 'pageup' });
+    expect(terminalHardwareKey(key('PageDown', { ctrlKey: true }))).toEqual({ name: 'pagedown', modifiers: ['ctrl'] });
+  });
+
+  it('keeps Alt+arrows as they are on Windows', () => {
+    expect(terminalHardwareKey(key('ArrowLeft', { altKey: true }), { windows: true })).toEqual({ name: 'left', modifiers: ['alt'] });
+    expect(terminalHardwareKey(key('ArrowLeft', { metaKey: true }), { windows: true })).toBeNull();
+  });
+});

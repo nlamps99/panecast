@@ -30,6 +30,7 @@ jest.mock('../../state/hooks', () => {
 jest.mock('../../state/navigation', () => ({ backToWorkspaces: jest.fn(), showWorkspaces: () => mockBack() }));
 jest.mock('../../state/prefs', () => ({ setPrefs: jest.fn(), clampFontSize: (size: number) => size, FONT_SIZE_MIN: 9, FONT_SIZE_MAX: 20,
   usePrefs: () => ({ fontSize: 13, inputMode: 'line', desktopInputMode: 'line', terminalPresentation: 'terminal', terminalWrap: true, tabletSidebar: false }) }));
+jest.mock('../../state/terminalPresentation', () => ({ useTerminalPresentation: () => ['terminal', jest.fn()] }));
 jest.mock('../Sheet', () => {
   const React = jest.requireActual('react') as typeof import('react');
   return {

@@ -12,6 +12,8 @@ import { useMachine, useStore } from '../../state/hooks';
 import { openSurface } from '../../state/navigation';
 import { colors } from '../../ui/theme';
 import { StatusBarScrim } from '../../ui/StatusBarScrim';
+import { contextMenuProps, useContextMenu } from '../../ui/ContextMenu';
+import { desktopBridge } from '../../platform/desktop';
 
 type Filter = 'all' | 'unread' | 'pending' | 'resolved';
 
@@ -20,6 +22,7 @@ type OpenRow = { id: string; methods: SwipeableMethods };
 /**
  * Notifications from cmux (a task finished, an agent waits for an answer).
  * Tapping one opens its terminal; swiping it left (or a long press) shows 删除.
+ * On the desktop a right click opens the row's menu instead.
  */
 export default function InboxScreen() {
   const insets = useSafeAreaInsets();
@@ -31,6 +34,8 @@ export default function InboxScreen() {
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   const openRow = useRef<OpenRow | null>(null);
+  const desktop = desktopBridge() !== null;
+  const rowMenu = useContextMenu();
 
   const shown = items.filter((item) => filter === 'unread' ? !item.read : filter === 'pending' ? isPending(item) : filter === 'resolved' ? Boolean(item.resolvedAt) : true);
 
@@ -136,9 +141,16 @@ export default function InboxScreen() {
           onSnooze={() => snooze(item)}
           onMarkRead={() => machine.inbox.markRead(item.id)}
           onSwipeOpen={rowOpened}
+          menuProps={desktop ? contextMenuProps((point) => rowMenu.open(point, [
+            ...(item.read ? [] : [{ label: '标为已读', onPress: () => machine.inbox.markRead(item.id) }]),
+            ...(item.needsInput ? [{ label: item.resolvedAt ? '重新打开' : '标为已处理', onPress: () => resolve(item) }] : []),
+            'separator',
+            { label: '删除', destructive: true, onPress: () => remove(item) },
+          ])) : undefined}
         />
       )}
     />
+    {rowMenu.element}
     <StatusBarScrim />
     </View>
   );
@@ -154,6 +166,7 @@ function InboxRow({
   onResolve,
   onSnooze,
   onSwipeOpen,
+  menuProps,
 }: {
   item: InboxItem;
   now: number;
@@ -164,6 +177,8 @@ function InboxRow({
   onResolve: () => void;
   onSnooze: () => void;
   onSwipeOpen: (id: string, methods: SwipeableMethods) => void;
+  /** Desktop: the row's right-click menu (`contextMenuProps`). */
+  menuProps?: object;
 }) {
   const swipeable = useRef<SwipeableMethods>(null);
   const subtitle = item.subtitle ?? workspaceTitle;
@@ -191,6 +206,7 @@ function InboxRow({
       )}
     >
       <Pressable
+        {...menuProps}
         onPress={onOpen}
         onLongPress={() => swipeable.current?.openRight()}
         style={({ pressed }) => [styles.item, isPending(item) && styles.itemNeedsInput, pressed && styles.pressed]}

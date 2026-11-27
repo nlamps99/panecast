@@ -16,7 +16,17 @@ type Options = {
   pollMs?: number;
   /** In the background only running terminals are read, this far apart (default 5 s). */
   backgroundPollMs?: number;
+  /**
+   * A desktop window that is hidden still reads every terminal (that is how
+   * it notifies), but at this pace (default 5 s), and each terminal less
+   * often (`HIDDEN_RECHECK`).
+   */
+  hiddenPollMs?: number;
 };
+
+/** How long a terminal's state is trusted before it is read again, by what it was doing. */
+const RECHECK = { running: 3_000, idle: 15_000 };
+const HIDDEN_RECHECK = { running: 5_000, idle: 45_000 };
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === 'string' ? value : '';
 
@@ -32,6 +42,7 @@ export class TerminalActivityStore {
   private disposed = false;
   private unsupported = false;
   private inBackground = false;
+  private hidden = false;
   private unsubscribe: () => void;
   private unwatch: () => void = () => {};
   private observed = new WeakSet<object>();
@@ -68,6 +79,19 @@ export class TerminalActivityStore {
     this.inBackground = background;
     if (!background && !this.disposed) { if (this.timer) clearTimeout(this.timer); void this.refresh(); }
   }
+  /**
+   * The desktop window was hidden or shown. Reads continue for every
+   * terminal, further apart; showing the window checks the due ones at once.
+   */
+  setHidden(hidden: boolean) {
+    if (this.hidden === hidden) return;
+    this.hidden = hidden;
+    if (!hidden && !this.disposed) { if (this.timer) clearTimeout(this.timer); void this.refresh(); }
+  }
+  private get tickMs() {
+    if (this.inBackground) return this.options.backgroundPollMs ?? 5000;
+    return this.hidden ? this.options.hiddenPollMs ?? 5000 : this.options.pollMs ?? 1000;
+  }
   prioritize(target: SurfaceTarget) { this.retryAfter.set(activityKey(target), -1); this.options.repository?.invalidate(target); }
   refresh(force = false): Promise<void> {
     if (this.pending) return this.pending;
@@ -101,8 +125,8 @@ export class TerminalActivityStore {
     };
     const task = worker().finally(() => {
       if (this.pending === task) this.pending = null;
-      if (generation === this.generation && !this.disposed && !this.unsupported) this.timer = setTimeout(() => { void this.refresh(); },
-        this.inBackground ? this.options.backgroundPollMs ?? 5000 : this.options.pollMs ?? 1000);
+      // Nothing is scheduled while disconnected; the next `open` starts the passes again.
+      if (generation === this.generation && !this.disposed && !this.unsupported && this.channel.isOpen) this.timer = setTimeout(() => { void this.refresh(); }, this.tickMs);
     });
     this.pending = task; return task;
   }
@@ -151,7 +175,8 @@ export class TerminalActivityStore {
       const at = started || completed ? Date.now() : this.state[key]?.at ?? 0;
       this.snapshots.set(key, snapshot);
       this.set(key, { status: raw.active ? 'running' : completed || (same && this.state[key]?.status === 'completed') ? 'completed' : 'idle', at, windowId: target.windowId });
-      this.retryAfter.set(key, Date.now() + (raw.active ? 3000 : 15_000));
+      const recheck = this.hidden ? HIDDEN_RECHECK : RECHECK;
+      this.retryAfter.set(key, Date.now() + (raw.active ? recheck.running : recheck.idle));
       if (started || completed) this.options.onActivity(target, at);
       if (completed) this.options.onComplete(target, `terminal-complete:${snapshot.conversation}:${snapshot.final}`, text(final?.text).slice(0, 500));
   }

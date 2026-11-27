@@ -17,8 +17,9 @@ const OUTPUT_FONT_SIZE = 12, OUTPUT_PADDING = 12;
 /** Small links keep their look but take a 44 pt touch. */
 const LINK_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
 
-export function TerminalChatView({ store, session, connected, onShowTerminal, readOnly = false }: {
-  store: TerminalConversationStore; session: TerminalSession; connected: boolean; onShowTerminal(): void; readOnly?: boolean;
+/** `active`: the terminal tab is on screen. A hidden tab stays mounted; its question card must not take keys. */
+export function TerminalChatView({ store, session, connected, onShowTerminal, readOnly = false, active = true }: {
+  store: TerminalConversationStore; session: TerminalSession; connected: boolean; onShowTerminal(): void; readOnly?: boolean; active?: boolean;
 }) {
   const state = useStore(store);
   const terminal = useStore(session);
@@ -41,7 +42,7 @@ export function TerminalChatView({ store, session, connected, onShowTerminal, re
     {state.fromCache && !connected ? <Text style={styles.meta}>本机缓存</Text> : null}
     {state.error ? <View style={styles.notice}><Text style={styles.error}>{state.error}</Text><Pressable onPress={() => void store.refresh()} accessibilityRole="button" hitSlop={LINK_SLOP}><Text style={styles.link}>重试读取</Text></Pressable></View> : null}
     {decision ? <TerminalDecisionCard key={decision.id} decision={decision} screen={terminal.screen} session={session}
-      enabled={connected && !readOnly && !terminal.input.busy && !state.blocked} onShowTerminal={onShowTerminal} /> : prompt ? <View style={styles.prompt} accessibilityLiveRegion="polite">
+      enabled={active && connected && !readOnly && !terminal.input.busy && !state.blocked} onShowTerminal={onShowTerminal} /> : prompt ? <View style={styles.prompt} accessibilityLiveRegion="polite">
       <Text style={styles.promptTitle}>终端等待选择</Text><Text selectable numberOfLines={6} style={styles.code}>{prompt}</Text>
       <Pressable onPress={onShowTerminal} accessibilityRole="button" hitSlop={LINK_SLOP}><Text style={styles.link}>打开终端进行选择 →</Text></Pressable>
     </View> : null}

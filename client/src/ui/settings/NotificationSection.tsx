@@ -120,7 +120,7 @@ function NotificationRules() {
     </> : null}
     <View style={[s.row, s.divided]}><View style={s.rowText}><Text style={s.rowTitle}>合并重复提醒</Text><Text style={s.rowDetail}>同一项目、同样内容，1 分钟内只提醒一次</Text></View><Switch value={rules.dedupe_seconds > 0} disabled={!loaded} onValueChange={(enabled) => store.update({ dedupe_seconds: enabled ? 60 : 0 })} accessibilityLabel="合并重复提醒" /></View>
     <View style={s.row}><Text style={s.rowDetail}>{Platform.OS === 'ios' && machine.computer
-      ? acknowledged ? '通知规则已同步到电脑，本机和后台推送都按规则提醒。' : '这台手机已按规则提醒。电脑还没确认这些规则，后台推送可能不受规则限制；连上电脑后会自动同步，一直不同步的话请在电脑上更新 Panecast。'
+      ? acknowledged ? '通知规则已同步到电脑，本机和后台推送都按规则提醒。' : `${desktopBridge() ? '本机' : '这台手机'}已按规则提醒。电脑还没确认这些规则，后台推送可能不受规则限制；连上电脑后会自动同步，一直不同步的话请在电脑上更新 Panecast。`
       : '规则应用于本机提醒；手动设置的稍后提醒和测试通知不受免打扰规则影响。'}</Text></View>
     {error ? <View style={s.row}><Text style={s.rowDetail}>{error}</Text></View> : null}
     <Sheet title="项目静音" visible={sheet.visible} onClose={() => sheet.close()} onClosed={sheet.onClosed}>

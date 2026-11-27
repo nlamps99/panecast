@@ -29,7 +29,11 @@ export type ComputerChannel = RpcChannel &
     start(): void;
     stop(): void;
     wake(): void;
+    /** The user asked to reconnect: start over now, from any state. */
+    reconnect(): void;
     readonly transport: ActiveTransport;
+    /** The direct path is this computer's own gateway (desktop app on the paired Mac). */
+    readonly directIsLocal: boolean;
     onTransport(listener: (transport: ActiveTransport) => void): () => void;
   };
 
@@ -158,12 +162,23 @@ export function createComputerChannel(
   // The desktop app on the computer it controls talks to that computer's
   // gateway over loopback instead of a round trip through the server.
   const desktop = desktopBridge()?.localGateway !== undefined && !computer.share;
-  const local = () => (desktop ? localGatewayFor(computer) : null);
+  // This computer's own gateway stays the direct path for a while after its
+  // credential file disappears (the gateway restarting rewrites it), so a
+  // refused old token is not taken for a stale LAN pairing and the status
+  // still blames the local gateway. Not for good: after the grace period, or
+  // once the server path connects meanwhile, it is an ordinary computer.
+  let localSeenAt: number | null = null;
+  const local = () => {
+    const gateway = desktop ? localGatewayFor(computer) : null;
+    if (gateway) localSeenAt = Date.now();
+    return gateway;
+  };
+  const restarting = () => localSeenAt !== null && Date.now() - localSeenAt < LOCAL_GATEWAY_GRACE_MS;
   const direct = () => local() ?? stored;
-  return new AutoChannel({
+  const channel = new AutoChannel({
     preference,
     hasLan: stored !== null || desktop,
-    lanLocal: () => desktop && local() !== null,
+    lanLocal: () => desktop && (local() !== null || restarting()),
     ...(desktop ? { lanRetryMinMs: 3_000, lanRetryMaxMs: 30_000, probeTimeoutMs: 800 } : {}),
     connect: (transport) => {
       const path = transport === 'lan' ? direct() : null;
@@ -185,7 +200,13 @@ export function createComputerChannel(
     network: expoNetworkWatcher,
     log,
   });
+  // The server reached the computer while its file is gone: its gateway is not restarting here.
+  if (desktop) channel.onStatus((status) => { if (status.state === 'open' && channel.transport === 'broker') localSeenAt = null; });
+  return channel;
 }
+
+/** How long this computer's gateway still counts as the direct path after its credential file disappeared. */
+export const LOCAL_GATEWAY_GRACE_MS = 3 * 60_000;
 
 /** The credential file the gateway on this computer leaves for the desktop app. */
 export type LocalGateway = { webSocketUrl: string; healthUrl: string; token: string; deviceId: string; relayId: string | null; brokerUrl: string | null };

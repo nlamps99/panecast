@@ -8,6 +8,7 @@ import { useAppState } from '../state/hooks';
 import { storageSupported } from '../state/pairingStorage';
 import { colors } from '../ui/theme';
 import { SignedOutNotice } from '../ui/SignedOutNotice';
+import { desktopBridge } from '../platform/desktop';
 
 const DEFAULT_SERVER = process.env.EXPO_PUBLIC_ACCOUNT_SERVER ?? 'https://panecast.drinklake.com/cmux-remote';
 
@@ -69,7 +70,7 @@ export default function AccountScreen() {
         <View style={s.row}><Action label="修改密码" onPress={() => { setManage('password'); setPassword(''); }} disabled={busy} />
           <Action label="退出登录" disabled={busy} onPress={() => Alert.alert(
             '退出登录？',
-            `这台手机上会移除这个账号的${bound.length ? ` ${bound.length} 台` : ''}电脑，以及它们的收件箱、常用输入、快捷键配置和缓存。电脑上的内容不受影响，重新登录后电脑会回来。`,
+            `${desktopBridge() ? '这个 App 里' : '这台手机上'}会移除这个账号的${bound.length ? ` ${bound.length} 台` : ''}电脑，以及它们的收件箱、常用输入、快捷键配置和缓存。电脑上的内容不受影响，重新登录后电脑会回来。`,
             [{ text: '取消', style: 'cancel' }, { text: '退出登录', style: 'destructive', onPress: () => void run(() => appStore.logout()) }],
           )} />
           <Action label="删除账号" onPress={() => { setManage('delete'); setPassword(''); }} disabled={busy} /></View>

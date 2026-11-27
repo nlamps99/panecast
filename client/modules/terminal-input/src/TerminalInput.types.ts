@@ -9,7 +9,12 @@ import type { StyleProp, ViewStyle } from 'react-native';
  */
 export type TerminalInputMode = 'line' | 'live';
 
-export type TerminalInputKey = 'enter' | 'backspace';
+/**
+ * Keys the field hands on instead of editing with: Return and Backspace on an
+ * empty live field; on the web, Escape on an empty line field and Ctrl+C
+ * (`interrupt`) with nothing selected in it.
+ */
+export type TerminalInputKey = 'enter' | 'backspace' | 'escape' | 'interrupt';
 
 export type TerminalHardwareKey = {
   key: string;
@@ -19,6 +24,9 @@ export type TerminalHardwareKey = {
   metaKey: boolean;
   altGraphKey: boolean;
 };
+
+/** Where the input method should compose: the terminal cursor's cell, in window coordinates. */
+export type TerminalImeAnchor = { left: number; top: number; height: number; background: string };
 
 /** UTF-16 selection offsets, matching UITextView, Android Editable, and textarea. */
 export type TerminalInputSnapshot = { text: string; composing: boolean; selectionStart: number; selectionEnd: number };
@@ -37,6 +45,12 @@ export type TerminalInputHandle = {
   getState(): Promise<TerminalInputSnapshot>;
   /** Applies a selection edit only if text still matches and no input method is composing. */
   applyEdit(expectedText: string, text: string, selectionStart: number, selectionEnd: number): Promise<boolean>;
+  /**
+   * Web only: focuses the field and handles a key pressed while focus was
+   * elsewhere as if it had been pressed in the field. Returns whether the key
+   * was used. Synchronous, so the caller can still prevent the key's default.
+   */
+  pressKey?(event: TerminalHardwareKey): boolean;
 };
 
 export type TerminalInputProps = {
@@ -51,12 +65,23 @@ export type TerminalInputProps = {
   caretColor?: string;
   fontFamily?: string;
   fontSize?: number;
+  /** On the web a field that is not editable stays focusable (read-only), so typing resumes without a click. */
   editable?: boolean;
   style?: StyleProp<ViewStyle>;
   onCommitText?: (text: string) => void;
   onKeyAction?: (key: TerminalInputKey) => void;
-  /** Web live input only. Return true when the remote terminal consumed the key. */
+  /**
+   * Web live input only. Return true when the remote terminal consumed the
+   * key. Also asked while the field is not editable (offline), so a key the
+   * terminal would take does not move focus out of it.
+   */
   onHardwareKey?: (event: TerminalHardwareKey) => boolean;
+  /**
+   * Web live input only: while the input method composes, the field moves
+   * here, so the composition and its candidate window appear at the terminal
+   * cursor rather than at the bottom of the window. Null: it stays put.
+   */
+  imeAnchor?: () => TerminalImeAnchor | null;
   onChangeState?: (state: { text: string; composing: boolean }) => void;
   onSubmit?: (text: string) => void;
   /** Height in points the text needs, including the 8 pt top and bottom inset. Native only. */

@@ -6,6 +6,9 @@ import type { RpcChannel } from '../session/terminalSession';
 import { Alert } from '../platform/alert';
 import { Sheet } from './Sheet';
 import { colors, fonts } from './theme';
+import { desktopBridge } from '../platform/desktop';
+
+const thisDevice = () => (desktopBridge() ? '这台电脑' : '这台手机');
 
 type Props = { visible: boolean; onClose(): void; onClosed(): void; library: InputLibrary; workspaceId: string; draft: string; channel: RpcChannel; onInsert(text: string): void };
 export function InputLibrarySheet({ visible, onClose, onClosed, library, workspaceId, draft, channel, onInsert }: Props) {
@@ -28,7 +31,7 @@ export function InputLibrarySheet({ visible, onClose, onClosed, library, workspa
     } catch { setMessage('电脑上的 Panecast 版本较旧，还不能导入。请在电脑上更新后再试'); }
   };
   const recentCount = entries.filter((e) => !e.favorite).length;
-  const confirmClearRecent = () => Alert.alert('清除最近输入？', `这台手机上 ${recentCount} 条没收藏的最近输入会被删除，收藏的不受影响。`, [
+  const confirmClearRecent = () => Alert.alert('清除最近输入？', `${thisDevice()}上 ${recentCount} 条没收藏的最近输入会被删除，收藏的不受影响。`, [
     { text: '取消', style: 'cancel' },
     { text: '清除', style: 'destructive', onPress: () => library.clearRecent() },
   ]);
@@ -61,7 +64,7 @@ export function InputLibrarySheet({ visible, onClose, onClosed, library, workspa
               <Pressable onPress={() => confirmRemove(e)} style={s.small} accessibilityRole="button"><Text style={s.smallText}>删除</Text></Pressable>
             </View>
           </View>)}
-          <Text style={s.muted}>点按填入输入框，编辑后再发送。记录仅保存在这台手机上。</Text>
+          <Text style={s.muted}>点按填入输入框，编辑后再发送。记录仅保存在{thisDevice()}上。</Text>
         </>}
       </View>
     </Sheet>

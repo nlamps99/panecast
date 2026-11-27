@@ -1,5 +1,5 @@
 import { SymbolView } from 'expo-symbols';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ActionSheetIOS, ActivityIndicator, Platform, Pressable, StyleSheet, Text, View, type TextStyle } from 'react-native';
 import { Alert } from '../platform/alert';
 
@@ -8,6 +8,7 @@ import { encodeImage, pickImage, type ImageSource } from '../input/attachImage';
 import { uploadAttachments, type AttachmentFile } from '../input/fileAttachments';
 import { pickFiles, useWebAttachments } from '../input/webAttachments';
 import { terminalHardwareKey } from '../input/hardwareKeys';
+import { refocusTerminalInput, terminalCursorAnchor } from '../input/terminalFocus';
 import { desktopBridge, desktopOnWindows } from '../platform/desktop';
 import {
   AttachmentError,
@@ -82,12 +83,23 @@ type Props = {
  * The photo button sends an image to the Mac (`file.upload`); the path the
  * relay saved it at goes into the command draft, or to the terminal in live
  * mode.
+ *
+ * Desktop live mode: a paste with line breaks reaches the program as one
+ * paste (`terminal.paste`), and Shift+Enter as a pasted line break, so
+ * neither submits line by line. Esc and Ctrl+C reach the terminal from an
+ * empty command line too. Focus comes back to the input after a send, a
+ * reconnect, a mode switch or a closed sheet.
  */
 export function InputBar({ session, disabled, error, inputRef, presentation = 'terminal', onSubmitLine, compactHeight = false }: Props) {
   const { inputMode, desktopInputMode } = usePrefs();
   const desktop = desktopBridge() !== null;
   const chat = presentation === 'chat';
-  const mode = chat ? 'line' : desktop ? desktopInputMode : inputMode;
+  const savedMode = desktop ? desktopInputMode : inputMode;
+  // A snippet picked in live mode opens in the command line to be edited; this
+  // terminal goes back to live mode once that line is sent or dismissed. The
+  // saved mode never changes for it.
+  const [snippetLine, setSnippetLine] = useState(false);
+  const mode = chat || snippetLine ? 'line' : savedMode;
   const [keysOpen, setKeysOpen] = useState(false);
   const phoneKeys = !desktop && (!chat || keysOpen);
   const profileEditor = useKeyboardProfileEditor(session);
@@ -124,6 +136,17 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
+  // Only the input part of the session: a send that answers quickly changes nothing here.
+  const inputStatus = useSyncExternalStore(session.subscribe, () => session.getState().input, () => session.getState().input);
+
+  /** Desktop: typing goes back to the input after a button, a sheet or a send. */
+  const refocus = () => {
+    if (desktop && mounted.current) refocusTerminalInput(inputRef.current);
+  };
+  // A new input (another terminal or mode) and a reconnect resume typing where it was.
+  useEffect(() => {
+    if (desktop && ready) refocusTerminalInput(inputRef.current);
+  }, [desktop, ready, connected, inputRef]);
 
   useEffect(() => {
     mounted.current = true;
@@ -214,6 +237,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
     if (mounted.current) {
       if (receipt.status === 'sent') showNote(chat ? null : receipt.message, DELIVERED_NOTE_MS);
       else { showNote(null); setHint(receipt.message); }
+      // The snippet's line is sent: back to typing straight into the terminal.
+      if (receipt.status === 'sent' && snippetLine && !expanded) leaveSnippetLine(true);
     }
     return receipt;
   };
@@ -238,6 +263,8 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
     draft.current = { text, composing: false };
     setHasText(text.length > 0);
     setExpanded(null);
+    // After the editor's modal is gone.
+    setTimeout(refocus, 0);
   };
 
   const submitCurrent = async () => {
@@ -248,6 +275,13 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   };
 
   const sendCommitted = (text: string) => {
+    // Desktop live mode never puts a typed Return in the field, so a line
+    // break there was pasted: it goes whole, instead of submitting each line.
+    // (A phone keyboard may commit its Return as "\n", which stays Enter.)
+    if (desktop && /[\r\n]/.test(text)) {
+      void session.pasteText(text, translateCommitted(text));
+      return;
+    }
     for (const action of translateCommitted(text)) {
       if (action.kind === 'text') session.sendText(action.text);
       else session.sendKey(action.key);
@@ -255,16 +289,39 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   };
 
   const sendKeyAction = (key: TerminalInputKey) => {
+    // Esc on the snippet's emptied command line dismisses it instead.
+    if (key === 'escape' && snippetLine) { leaveSnippetLine(true); return; }
+    if (key === 'escape' || key === 'interrupt') {
+      // From an empty command line or the chat box: Esc and Ctrl+C go to the program.
+      if (disabled || !connected) { setHint('还没有连上电脑，按键没有发送'); return; }
+      session.sendKey(key === 'escape' ? Keys.escape : Keys.ctrlC);
+      return;
+    }
     session.sendKey(key === 'enter' ? Keys.enter : Keys.backspace);
   };
 
-  const switchMode = (next: 'line' | 'live') => {
-    if (next === mode) return;
+  const resetEdit = () => {
     setHint(null);
     clearAttachError();
     setHasText(false);
     draft.current = { text: '', composing: false };
     setInputHeight(INPUT_MIN_HEIGHT);
+  };
+
+  /** Ends the snippet's command line; the field typed in keeps the keyboard (and focus) where it had them. */
+  const leaveSnippetLine = (keepFocus: boolean) => {
+    resetEdit();
+    setSnippetLine(false);
+    if (keepFocus) setTimeout(() => { if (!mounted.current) return; if (desktop) refocus(); else void inputRef.current?.focus(); }, 0);
+  };
+
+  const switchMode = (next: 'line' | 'live') => {
+    if (next === mode) return;
+    if (snippetLine) {
+      // Leaving the snippet's command line is enough to be back in the saved mode.
+      leaveSnippetLine(false);
+      if (next === savedMode) return;
+    } else resetEdit();
     setPrefs(desktop ? { desktopInputMode: next } : { inputMode: next });
   };
 
@@ -303,7 +360,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
       if (mounted.current) { setAttach(ATTACH_IDLE); setHint(count ? `已上传 ${count} 个附件，${modeRef.current === 'live' ? '路径已写入终端，按 Enter 提交' : '路径已填入输入框'}` : null); }
     } catch (failure) {
       if (mounted.current) setAttach({ kind: 'error', message: failure instanceof AttachmentError ? failure.message : `文件没有发出去：${describeError(failure)}` });
-    } finally { attaching.current = false; }
+    } finally { attaching.current = false; refocus(); }
   };
 
   const dragging = useWebAttachments({
@@ -392,22 +449,26 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
   } else if (!message && error) {
     message = error;
     messageStyle = styles.messageError;
+  } else if (!message && desktop && libraryState.error) {
+    // The phone shows it in its shortcut row, which the desktop does not have.
+    message = libraryState.error;
+    messageStyle = styles.messageError;
   }
   const attachBusy = attach.kind === 'busy';
   const maxHeight = mode === 'line' ? INPUT_MAX_HEIGHT : INPUT_MIN_HEIGHT;
+  // Typing waits behind a send the computer has not answered for a while; say so instead of going quiet.
+  const shownNote = note ?? (inputStatus.busy ? '发送中…' : null);
 
   return (
     <View>
       {dragging ? <View style={{ padding: 14, borderWidth: 1, borderColor: colors.green, borderRadius: 10, backgroundColor: colors.surfaceRaised }}><Text style={{ color: colors.green, textAlign: 'center' }}>松开文件，上传到 {computer?.name ?? '当前电脑'}</Text></View> : null}
-      {note ? <View style={styles.noteWrap}><Text style={styles.note} accessibilityLiveRegion="polite">{note}</Text></View> : null}
+      {shownNote ? <View style={styles.noteWrap}><Text style={styles.note} accessibilityLiveRegion="polite">{shownNote}</Text></View> : null}
       {message ? <Text style={[styles.message, messageStyle]}>{message}</Text> : null}
-      {/* Landscape hides the row in terminal mode, whose keys sit outside it; chat mode keeps it for 终端按键. */}
-      {!(compactHeight && !chat) && (desktop || !keyboardVisible) ? <View style={[styles.libraryRow, !desktop && styles.phoneLibraryRow]}>
-        {desktop ? <Text style={styles.libraryText}>{mode === 'live' ? '直接输入 · Tab、方向键、Ctrl 快捷键' : 'Enter 发送 · Shift+Enter 换行'}</Text> : null}
-        {chat && !desktop ? <Pressable onPress={() => setKeysOpen(!keysOpen)} style={styles.libraryButton} hitSlop={LINK_SLOP} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
-        <Pressable onPress={sheet.open} disabled={!ready} style={!desktop && styles.libraryButton} hitSlop={desktop ? undefined : LINK_SLOP} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
-        {desktop && !chat ? <Pressable onPress={() => switchMode(mode === 'live' ? 'line' : 'live')} disabled={!ready || sending || attachBusy} accessibilityRole="button"><Text style={styles.libraryText}>{mode === 'live' ? '编辑命令' : '直接输入'}</Text></Pressable> : null}
-        {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} style={!desktop && styles.libraryButton} hitSlop={desktop ? undefined : LINK_SLOP} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
+      {/* Phones: a row of shortcuts above the input. Landscape hides it in terminal mode, whose keys sit outside it; chat mode keeps it for 终端按键. */}
+      {!desktop && !(compactHeight && !chat) && !keyboardVisible ? <View style={[styles.libraryRow, styles.phoneLibraryRow]}>
+        {chat ? <Pressable onPress={() => setKeysOpen(!keysOpen)} style={styles.libraryButton} hitSlop={LINK_SLOP} accessibilityRole="button" accessibilityState={{ expanded: keysOpen }}><Text style={styles.libraryText}>终端按键 {keysOpen ? '▴' : '▾'}</Text></Pressable> : null}
+        <Pressable onPress={sheet.open} disabled={!ready} style={styles.libraryButton} hitSlop={LINK_SLOP} accessibilityRole="button"><Text style={styles.libraryText}>常用输入 · 最近输入</Text></Pressable>
+        {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} style={styles.libraryButton} hitSlop={LINK_SLOP} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开编辑 ↗</Text></Pressable> : null}
         {libraryState.error ? <Text style={styles.messageError}>{libraryState.error}</Text> : null}
         {!connected ? <Text style={styles.libraryText}>离线 · 可以继续写草稿</Text> : null}
         {phoneKeys ? profileEditor.button : null}
@@ -435,13 +496,19 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
         </View> : null}
         <View style={styles.inputBox}>
           <TerminalInputView
+            // A fresh field per mode, as when the saved mode changes (the whole bar is new then).
+            key={mode}
             ref={inputRef}
             mode={mode}
             // Phones put newlines in chat messages and send with the button; desktops keep Enter to send, Shift-Enter for a newline.
             submitOnEnter={!chat || desktop}
             // Not tied to `sending`: a UITextView or EditText that stops being editable gives up focus and drops the keyboard.
             editable={!disabled && ready && (mode === 'line' || connected)}
-            placeholder={mode === 'line' && !connected ? '离线 · 可以先写草稿' : chat ? '发消息到当前终端…' : mode === 'live' ? desktop ? '直接操作终端，支持中文输入…' : '打字直接发到终端' : '输入命令'}
+            // The desktop has no shortcut row: the keys it takes are named here.
+            placeholder={mode === 'line' && !connected ? '离线 · 可以先写草稿'
+              : desktop ? (mode === 'live' ? (connected ? '直接操作终端 · 支持中文输入、Tab、方向键和 Ctrl 快捷键' : '离线 · 连上电脑后可以直接输入')
+                : `${chat ? '发消息到当前终端' : '编辑命令'} · Enter 发送，Shift+Enter 换行`)
+              : chat ? '发消息到当前终端…' : mode === 'live' ? '打字直接发到终端' : '输入命令'}
             placeholderColor={colors.muted}
             textColor={colors.ink}
             caretColor={colors.green}
@@ -463,17 +530,30 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
             onCommitText={sendCommitted}
             onKeyAction={sendKeyAction}
             onHardwareKey={desktop && mode === 'live' ? event => {
+              // No terminal, or one that is read-only: keys keep their usual meaning.
+              if (disabled) return false;
               const key = terminalHardwareKey(event, { windows: desktopOnWindows(),
                 selection: typeof window !== 'undefined' && window.getSelection()?.isCollapsed === false });
               if (!key) return false;
-              if (!disabled && ready && !sending && connected) {
-                if (key.name === 'enter' && attaching.current) setHint('附件正在上传，完成后再发送');
+              // Taken even while it cannot go, so Tab and the arrows do not move focus away from the terminal.
+              if (!connected) setHint('还没有连上电脑，按键没有发送');
+              else if (ready && !sending) {
+                // A line break in the prompt (Claude Code, Codex, a shell's continuation), as a paste; typed Enter where the computer cannot paste.
+                if (key.name === 'enter' && key.modifiers?.length === 1 && key.modifiers[0] === 'shift') void session.pasteText('\n', [{ kind: 'key', key }]);
+                else if (key.name === 'enter' && attaching.current) setHint('附件正在上传，完成后再发送');
                 else session.sendKey(key);
               }
               return true;
             } : undefined}
+            imeAnchor={desktop && mode === 'live' && !chat ? () => terminalCursorAnchor(colors.surfaceRaised) : undefined}
           />
         </View>
+        {/* Desktop: the shortcuts sit in the input's own row instead of a row of their own. */}
+        {desktop ? <View style={styles.desktopLinks}>
+          <Pressable onPress={sheet.open} disabled={!ready} style={styles.desktopLink} accessibilityRole="button" accessibilityLabel="常用输入和最近输入"><Text style={styles.libraryText}>常用输入</Text></Pressable>
+          {!chat ? <Pressable onPress={() => switchMode(mode === 'live' ? 'line' : 'live')} disabled={!ready || sending || attachBusy} style={styles.desktopLink} accessibilityRole="button"><Text style={styles.libraryText}>{mode === 'live' ? '编辑命令' : '直接输入'}</Text></Pressable> : null}
+          {mode === 'line' ? <Pressable onPress={() => void openExpanded().catch(() => setHint('暂时无法展开，请重试'))} disabled={!ready || sending || disabled || attachBusy} style={styles.desktopLink} accessibilityRole="button" accessibilityLabel="全屏编辑长文本"><Text style={styles.libraryText}>展开 ↗</Text></Pressable> : null}
+        </View> : null}
         <Pressable
           onPress={chooseImageSource}
           disabled={disabled || attachBusy || sending || !ready}
@@ -491,7 +571,7 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
         </Pressable>
         {mode === 'line' ? (
           <Pressable
-            onPress={() => void submitCurrent().catch(() => setHint('暂时无法发送，草稿已保留'))}
+            onPress={() => void submitCurrent().catch(() => setHint('暂时无法发送，草稿已保留')).finally(refocus)}
             disabled={disabled || !ready || sending || attachBusy || (chat && !hasText)}
             // An empty command line sends Enter, so it says so instead of looking disabled.
             style={({ pressed }) => [styles.send, !hasText && (chat ? styles.sendEmpty : styles.sendEnter), pressed && styles.sendPressed]}
@@ -503,13 +583,16 @@ export function InputBar({ session, disabled, error, inputRef, presentation = 't
           </Pressable>
         ) : null}
       </View>
-      <InputLibrarySheet visible={sheet.visible} onClose={() => sheet.close()} onClosed={sheet.onClosed}
+      <InputLibrarySheet visible={sheet.visible} onClose={() => sheet.close(refocus)} onClosed={sheet.onClosed}
         library={library} workspaceId={target?.workspaceId ?? ''} draft={libraryState.drafts[savedKey] ?? ''} channel={channel}
         onInsert={(text) => sheet.close(() => {
           if (!mounted.current) return;
           if (mode === 'live') {
+            // Into the command line to edit before sending, as the sheet says; live mode comes back after.
             library.setDraft(savedKey, text);
-            setPrefs(desktop ? { desktopInputMode: 'line' } : { inputMode: 'line' });
+            resetEdit();
+            setSnippetLine(true);
+            setTimeout(refocus, 0);
           } else {
             void inputRef.current?.insertText(text);
             void inputRef.current?.focus();
@@ -531,6 +614,8 @@ const styles = StyleSheet.create({
   phoneLibraryRow: { justifyContent: 'flex-start', alignItems: 'center', columnGap: 16, paddingTop: 0 },
   libraryText: { color: colors.muted, fontSize: 12, paddingVertical: 4 },
   libraryButton: { minHeight: 34, justifyContent: 'center' },
+  desktopLinks: { height: 36, flexDirection: 'row', alignItems: 'center', gap: 2 },
+  desktopLink: { height: 36, paddingHorizontal: 6, justifyContent: 'center', borderRadius: 6 },
   noteWrap: { position: 'absolute', right: 12, bottom: '100%', marginBottom: 6, pointerEvents: 'none' },
   note: { color: colors.inkDim, fontSize: 12, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.surfaceRaised },
   message: { color: colors.yellow, fontSize: 12, paddingHorizontal: 14, paddingTop: 4 },

@@ -24,6 +24,9 @@ const ICONS = {
   close: { ios: 'xmark', android: 'close', web: 'close' },
   expand: { ios: 'chevron.down', android: 'expand_more', web: 'expand_more' },
   demo: { ios: 'play.rectangle', android: 'slideshow', web: 'slideshow' },
+  wrap: { ios: 'text.alignleft', android: 'wrap_text', web: 'wrap_text' },
+  folder: { ios: 'folder', android: 'folder', web: 'folder' },
+  copy: { ios: 'doc.on.doc', android: 'content_copy', web: 'content_copy' },
 } as const satisfies Record<string, SymbolName>;
 
 export type IconName = keyof typeof ICONS;

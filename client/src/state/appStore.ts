@@ -28,8 +28,9 @@ import { AccountError, accountRequest, accountServer, type AccountComputer, type
 import { loadAccount, saveAccount, signIn } from '../account/store';
 import { desktopBridge } from '../platform/desktop';
 import { moveComputers, movedBroker } from './brokerMove';
-import { TerminalActivityStore } from '../session/terminalActivity';
+import { TerminalActivityStore, type ActivityTarget } from '../session/terminalActivity';
 import { TerminalRepository, terminalCaches, forgetTerminalCaches } from '../session/terminalRepository';
+import { watchDesktopLifecycle, type WakeReason } from './desktopLifecycle';
 
 export { PairingError } from './connect';
 
@@ -47,6 +48,12 @@ export type Machine = {
   activity?: TerminalActivityStore;
   terminalRepository?: TerminalRepository;
 };
+
+/**
+ * Another paired computer the desktop app stays connected to only for its
+ * notifications (see `AppStore.watchedInboxes`).
+ */
+export type InboxWatch = { computer: StoredComputer; preference: TransportPreference; channel: ComputerChannel; inbox: InboxStore; activity: TerminalActivityStore };
 
 export type AppStoreState = {
   /** `loading` until SecureStore has been read. */
@@ -80,6 +87,10 @@ export class AppStore {
   private accountRefresh: Promise<void> | null = null;
   private accountGeneration = 0;
   private computerWrites: Promise<void> = Promise.resolve();
+  private watches = new Map<string, InboxWatch>();
+  private stopLifecycle: (() => void) | null = null;
+  private windowHidden = false;
+  private keptAwake: boolean | null = null;
 
   getState = (): AppStoreState => this.state;
 
@@ -111,6 +122,11 @@ export class AppStore {
     this.connect(computers);
     if (this.state.account) void this.refreshAccount().catch(() => {});
     void this.followBrokerMoves().catch(() => {});
+    // A desktop window that is hidden or that slept gets no `AppState`
+    // change; check the connections when it comes back instead.
+    if (desktopBridge() && !this.stopLifecycle) {
+      this.stopLifecycle = watchDesktopLifecycle({ onWake: (reason) => this.wake(reason), onHidden: (hidden) => this.setWindowHidden(hidden) });
+    }
   }
 
   /** Moves stored computers (and the account) to the address their broker now reports. */
@@ -253,13 +269,47 @@ export class AppStore {
     this.connect(this.state.computers);
   }
 
-  /** Called when the app returns to the foreground. */
-  wake(): void {
+  /**
+   * Called when the app returns to the foreground, and on the desktop when
+   * the window is shown or focused, the network returns or the Mac woke: each
+   * connection skips its backoff, restarts a hanging attempt or checks that
+   * an open socket still answers. A mere focus does not refresh the account.
+   */
+  wake(reason?: WakeReason): void {
     const channel = this.state.machine?.channel;
     if (isComputerChannel(channel)) channel.wake();
+    for (const watch of this.watches.values()) watch.channel.wake();
     this.state.machine?.activity?.setBackground(false);
     this.state.machine?.workspaces.setBackground(false);
-    if (this.state.account) void this.refreshAccount().catch(() => {});
+    if (this.state.account && reason !== 'focus') void this.refreshAccount().catch(() => {});
+  }
+
+  /** 「重新连接」: the current computer's connection starts over now, whatever its state. */
+  reconnect(): void {
+    const channel = this.state.machine?.channel;
+    if (isComputerChannel(channel)) {
+      if (typeof channel.reconnect === 'function') channel.reconnect();
+      else channel.wake();
+    }
+    for (const watch of this.watches.values()) watch.channel.wake();
+  }
+
+  /**
+   * The desktop window was hidden (⌘W) or shown. It keeps watching every
+   * terminal while hidden, since that is how it notifies, only less often.
+   */
+  setWindowHidden(hidden: boolean): void {
+    this.windowHidden = hidden;
+    this.state.machine?.activity?.setHidden(hidden);
+  }
+
+  /**
+   * Desktop only: the other paired computers, each with one connection that
+   * carries nothing but its inbox, so their completions and questions raise
+   * notifications too. Changes notify `subscribe` listeners.
+   */
+  watchedInboxes(): readonly InboxWatch[] {
+    return [...this.watches.values()];
   }
 
   /**
@@ -325,7 +375,7 @@ export class AppStore {
       if (generation !== this.accountGeneration) return;
       if (error instanceof AccountError && error.status === 401) {
         await this.clearAccount();
-        this.setState({ ...this.state, signedOut: `账号「${account.user.username}」的登录已过期，已自动退出。它的电脑已从这台手机移除，重新登录后会回来。` });
+        this.setState({ ...this.state, signedOut: `账号「${account.user.username}」的登录已过期，已自动退出。它的电脑已从${desktopBridge() ? '这个 App' : '这台手机'}移除，重新登录后会回来。` });
         throw error;
       }
       this.setState({ ...this.state, accountError: error instanceof Error ? error.message : '同步失败，请重试。' });
@@ -404,6 +454,8 @@ export class AppStore {
       this.activate(computers, null);
       return;
     }
+    // One live inbox per computer: the selected one takes over from its watch.
+    this.releaseWatch(computer.id);
     const channel = createComputerChannel(computer, computers.transport?.[computer.id] ?? 'auto', log);
     this.activate(computers, channel ? { mode: 'relay', computer, channel, ...this.stores(channel, computer) } : null);
   }
@@ -428,25 +480,75 @@ export class AppStore {
     const inbox = new InboxStore(channel, computer ? { storageKey: inboxStorageKey(computer.id) } : {});
     const activity = computer ? new TerminalActivityStore(channel, {
       repository: terminalRepository,
-      // A phone is often on mobile data and battery; half the desktop's pace is still prompt.
-      pollMs: desktop ? 1000 : 2000,
+      // Passes over the terminals that are not on screen (the one shown reads
+      // itself), with at most one batched read each, so this bounds the request
+      // rate: a running terminal is read every few seconds, an idle one every
+      // quarter minute, and less often while the desktop window is hidden.
+      pollMs: 2000,
       targets: () => {
         return [...sessionMemory.computer(computer.id).recent, ...workspaces.activityTargets()];
       },
       onActivity: (target, at) => sessionMemory.activity(computer.id, target, at),
-      onComplete: (target, id, body) => {
-        // Some hosts already send completion hooks. Keep one alert for the turn.
-        if (inbox.getState().items.some(item => !item.id.startsWith('terminal-complete:') && !item.needsInput && item.workspaceId === target.workspaceId &&
-          (!item.surfaceId || item.surfaceId === target.surfaceId) && Date.now() - item.at < 10_000)) return;
-        inbox.ingest({ type: 'event', category: 'notification', name: 'notification.created', payload: {
-          id, task_id: id, workspace_id: target.workspaceId, surface_id: target.surfaceId, state: 'completed',
-          title: '对话已完成', subtitle: `${target.workspaceTitle} · ${target.title}`, body, ts: Date.now() / 1000,
-        } });
-      },
+      onComplete: completionAlert(inbox),
     }) : undefined;
+    if (this.windowHidden) activity?.setHidden(true);
     return {
       session, workspaces, inbox, activity, terminalRepository,
     };
+  }
+
+  private releaseWatch(computerId: string): void {
+    const watch = this.watches.get(computerId);
+    if (!watch) return;
+    this.watches.delete(computerId);
+    watch.activity.dispose();
+    watch.inbox.dispose();
+    watch.channel.stop();
+  }
+
+  /**
+   * Keeps one inbox-only connection to every paired computer but the
+   * selected one (desktop). The gateway pushes notification events to every
+   * connected device and `inbox.sync` replays what was missed; no terminal is
+   * subscribed. The terminals visited recently there are read now and then,
+   * at the pace of a hidden window, so a turn that finishes without a hook
+   * still raises 「对话已完成」. Shared windows are left out: their key only
+   * reaches one terminal.
+   */
+  private syncWatches(): void {
+    const desktop = desktopBridge() !== null;
+    const selected = this.state.machine?.computer?.id ?? null;
+    const transport = this.state.computers.transport ?? {};
+    const wanted = new Map(desktop && this.state.phase !== 'loading'
+      ? this.state.computers.computers.filter((c) => c.id !== selected && !c.share).map((c) => [c.id, c] as const) : []);
+    for (const [id, watch] of [...this.watches]) {
+      const computer = wanted.get(id);
+      if (!computer || !sameCredentials(computer, watch.computer) || (transport[id] ?? 'auto') !== watch.preference) this.releaseWatch(id);
+    }
+    for (const [id, computer] of wanted) {
+      if (this.watches.has(id)) continue;
+      const preference = transport[id] ?? 'auto';
+      const channel = createComputerChannel(computer, preference, (message) => log(`[inbox ${computer.name}] ${message}`));
+      if (!channel) continue;
+      const inbox = new InboxStore(channel, { storageKey: inboxStorageKey(id) });
+      const activity = new TerminalActivityStore(channel, {
+        targets: () => [...sessionMemory.computer(id).recent],
+        onActivity: (target, at) => sessionMemory.activity(id, target, at),
+        onComplete: completionAlert(inbox),
+        pollMs: 5000, hiddenPollMs: 10_000,
+      });
+      // Nobody is looking at this computer: pace it like a hidden window.
+      activity.setHidden(true);
+      this.watches.set(id, { computer, preference, channel, inbox, activity });
+      channel.start();
+    }
+    // While any computer is paired, the Mac must not nap the app: hidden, it
+    // still keeps the connections and raises the notifications.
+    const awake = desktop && this.state.computers.computers.length > 0;
+    if (desktop && awake !== this.keptAwake) {
+      this.keptAwake = awake;
+      void desktopBridge()?.keepAwake?.(awake)?.catch(() => {});
+    }
   }
 
   private activate(computers: ComputerList, machine: Machine | null): void {
@@ -519,9 +621,29 @@ export class AppStore {
   }
 
   private setState(state: AppStoreState): void {
+    const previous = this.state;
     this.state = state;
+    if (state.computers !== previous.computers || state.machine !== previous.machine || state.phase !== previous.phase) this.syncWatches();
     for (const listener of this.listeners) listener();
   }
+}
+
+/** A finished turn found by reading the terminal becomes an inbox item (once, unless a hook already reported it). */
+function completionAlert(inbox: InboxStore) {
+  return (target: ActivityTarget, id: string, body: string) => {
+    // Some hosts already send completion hooks. Keep one alert for the turn.
+    if (inbox.getState().items.some(item => !item.id.startsWith('terminal-complete:') && !item.needsInput && item.workspaceId === target.workspaceId &&
+      (!item.surfaceId || item.surfaceId === target.surfaceId) && Date.now() - item.at < 10_000)) return;
+    inbox.ingest({ type: 'event', category: 'notification', name: 'notification.created', payload: {
+      id, task_id: id, workspace_id: target.workspaceId, surface_id: target.surfaceId, state: 'completed',
+      title: '对话已完成', subtitle: `${target.workspaceTitle} · ${target.title}`, body, ts: Date.now() / 1000,
+    } });
+  };
+}
+
+function sameCredentials(a: StoredComputer, b: StoredComputer): boolean {
+  return a.broker.serverUrl === b.broker.serverUrl && a.broker.relayId === b.broker.relayId && a.broker.token === b.broker.token
+    && a.broker.deviceId === b.broker.deviceId && a.lan?.url === b.lan?.url && a.lan?.token === b.lan?.token;
 }
 
 export const appStore = new AppStore();

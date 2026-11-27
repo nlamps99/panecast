@@ -1,5 +1,5 @@
 import { DEFAULT_ATTR, intern } from '../../terminal/ansi';
-import { fitFontSize, liveCursor, splitAtCursor } from '../TerminalView';
+import { liveCursor, splitAtCursor } from '../TerminalView';
 import type { TerminalState } from '../../session/terminalSession';
 
 const bold = intern(null, null, 1);
@@ -34,11 +34,5 @@ describe('the terminal cursor', () => {
     expect(splitAtCursor([{ text: '$', attr: DEFAULT_ATTR }], 3)).toEqual({
       before: [{ text: '$', attr: DEFAULT_ATTR }, { text: '  ', attr: DEFAULT_ATTR }], at: { text: ' ', attr: DEFAULT_ATTR }, after: [],
     });
-  });
-
-  it('fits a wide terminal into the window without growing past the chosen size', () => {
-    expect(fitFontSize(1000, 80, 13)).toBe(13);
-    expect(fitFontSize(1000, 160, 13)).toBe(10);
-    expect(fitFontSize(600, 300, 13)).toBe(9);
   });
 });

@@ -15,7 +15,7 @@ jest.mock('react-native', () => {
   return { View, ScrollView: View, Text: View, TextInput: () => null, Pressable, Platform: { OS: 'web' }, Alert: {},
     StyleSheet: { create: (value: unknown) => value, hairlineWidth: 1 } };
 });
-jest.mock('../../platform/desktop', () => ({ desktopBridge: () => mockDesktop ? { version: 1, dialog: mockDialog } : null }));
+jest.mock('../../platform/desktop', () => ({ desktopBridge: () => mockDesktop ? { version: 1, dialog: mockDialog } : null, desktopOnWindows: () => false }));
 jest.mock('../../state/hooks', () => {
   const React = jest.requireActual('react') as typeof import('react');
   return { useMachine: () => mockMachine, useConnectionStatus: () => ({ state: mockMachine.channel.isOpen ? 'open' : 'idle' }),
@@ -25,6 +25,8 @@ jest.mock('../../state/navigation', () => ({ openSurface: (...args: unknown[]) =
 jest.mock('../../state/sessionMemory', () => ({ useSessionMemory: () => ({ pinned: [] }), sessionMemory: { pin: jest.fn() } }));
 jest.mock('../ComputerSwitcher', () => ({ ComputerSwitcher: () => null }));
 jest.mock('../WindowChips', () => ({ WindowChips: () => null }));
+jest.mock('../ConnectionNotice', () => ({ ConnectionNotice: () => null }));
+jest.mock('../NameDialog', () => ({ NameDialog: () => null }));
 jest.mock('../Icon', () => ({ Icon: () => '×' }));
 
 let dom: { window: Window & typeof globalThis };

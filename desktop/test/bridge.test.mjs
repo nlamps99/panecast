@@ -84,3 +84,37 @@ test('HTTP cancellation before native registration is delivered once registered'
   bridge.abortRequest('http');
   assert.equal(calls.length, 2);
 });
+
+test('menu items arrive by id and closing the window goes back to native code', async () => {
+  const listened = [], emitted = [];
+  const window = { __TAURI__: {
+    core: { Channel: class {}, invoke: async () => {} },
+    event: {
+      listen: async (name, handler) => { listened.push({ name, handler }); return () => { listened.find(item => item.handler === handler).stopped = true; }; },
+      emit: async (name, payload) => { emitted.push({ name, payload }); },
+    },
+  } };
+  vm.runInNewContext(source, { window });
+  const bridge = window.panecastDesktop;
+  const ids = [];
+  const stop = bridge.onMenu(id => ids.push(id));
+  await tick();
+  const menu = listened.find(item => item.name === 'panecast-menu');
+  menu.handler({ payload: 'new-terminal' });
+  menu.handler({ payload: { id: 'not a string' } });
+  assert.deepEqual(ids, ['new-terminal']);
+  stop();
+  assert.equal(menu.stopped, true);
+  menu.handler({ payload: 'find' });
+  assert.deepEqual(ids, ['new-terminal']);
+  bridge.closeWindow();
+  assert.deepEqual(emitted, [{ name: 'panecast-close-window', payload: undefined }]);
+});
+
+test('keeping the app awake goes to the native App Nap guard with a strict flag', async () => {
+  const { bridge, calls } = setup(async () => {});
+  await bridge.keepAwake(true);
+  await bridge.keepAwake('yes');
+  await bridge.keepAwake(false);
+  assert.deepEqual(calls.map(call => [call.command, call.args.active]), [['keep_awake', true], ['keep_awake', false], ['keep_awake', false]]);
+});

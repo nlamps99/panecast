@@ -16,6 +16,8 @@ export type Prefs = {
   terminalWrap: boolean;
   /** The desktop shows the computer's own columns unless the user turns wrapping on. */
   desktopTerminalWrap: boolean;
+  /** Desktop ⌘= / ⌘-: an explicit terminal text size over fitting the window; null fits (⌘0). */
+  desktopFontZoom: number | null;
   terminalPresentation: 'terminal' | 'chat';
   tabletSidebar: boolean;
 };
@@ -36,6 +38,7 @@ export const DEFAULT_PREFS: Prefs = {
   extraKeyRow: false,
   terminalWrap: true,
   desktopTerminalWrap: false,
+  desktopFontZoom: null,
   terminalPresentation: 'terminal',
   tabletSidebar: true,
 };
@@ -71,6 +74,7 @@ export function sanitizePrefs(value: unknown): Prefs {
     extraKeyRow: typeof v.extraKeyRow === 'boolean' ? v.extraKeyRow : DEFAULT_PREFS.extraKeyRow,
     terminalWrap: typeof v.terminalWrap === 'boolean' ? v.terminalWrap : DEFAULT_PREFS.terminalWrap,
     desktopTerminalWrap: typeof v.desktopTerminalWrap === 'boolean' ? v.desktopTerminalWrap : DEFAULT_PREFS.desktopTerminalWrap,
+    desktopFontZoom: typeof v.desktopFontZoom === 'number' && Number.isFinite(v.desktopFontZoom) ? clampFontSize(v.desktopFontZoom) : null,
     terminalPresentation: v.terminalPresentation === 'chat' ? 'chat' : 'terminal',
     tabletSidebar: typeof v.tabletSidebar === 'boolean' ? v.tabletSidebar : DEFAULT_PREFS.tabletSidebar,
   };

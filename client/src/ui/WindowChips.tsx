@@ -31,7 +31,7 @@ export function WindowChips({ windows, selectedId, onSelect, activity }: Props) 
             onPress={() => {
               if (!selected) onSelect(window.id);
             }}
-            style={({ pressed }) => [styles.chip, selected && styles.chipSelected, pressed && !selected && styles.pressed]}
+            style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [styles.chip, selected && styles.chipSelected, (pressed || hovered) && !selected && styles.pressed]}
             accessibilityRole="button"
             accessibilityState={{ selected }}
             accessibilityLabel={[label, count !== null ? `${count} 个工作区` : null, window.key ? '电脑上正在用' : null]

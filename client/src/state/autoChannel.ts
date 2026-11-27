@@ -69,7 +69,8 @@ export type AutoChannelOptions = {
    * The direct path is this computer's own gateway (the desktop app beside
    * it): reachable over loopback whatever the network, and its credentials
    * are re-read before every probe, so a rejected token is retried later
-   * instead of disabling the path.
+   * instead of disabling the path. Statuses that are not open then carry
+   * `local: true`, so the UI can say that this computer's gateway is down.
    */
   lanLocal?: () => boolean;
   log?: (message: string) => void;
@@ -95,6 +96,12 @@ type Path = {
   dispose: () => void;
   /** Opened since its last failure. A second failure without reopening skips the LAN health check. */
   healthy: boolean;
+  /**
+   * A direct path to this computer's own gateway. Captured when the path is
+   * made: the credential file can be missing for a moment while the gateway
+   * restarts, and a rejection then must not read as a stale LAN token.
+   */
+  local: boolean;
 };
 
 /**
@@ -234,6 +241,17 @@ export class AutoChannel {
     }
     this.reportedKind = null;
     this.setStatus({ state: 'idle' });
+  }
+
+  /**
+   * The user asked to reconnect: everything starts over (path choice, LAN
+   * probe, a LAN path disabled by an earlier rejection), as at launch.
+   */
+  reconnect(): void {
+    if (!this.running) return;
+    this.stop();
+    this.lanBlocked = false;
+    this.start();
   }
 
   /** The app came to the foreground: reconnect now, and re-decide the path under `auto`. */
@@ -382,8 +400,9 @@ export class AutoChannel {
   }
 
   private createPath(transport: ActiveTransport): Path {
+    const local = transport === 'lan' && this.opts.lanLocal();
     const connection = this.opts.connect(transport);
-    const path: Path = { transport, connection, dispose: () => {}, healthy: false };
+    const path: Path = { transport, connection, dispose: () => {}, healthy: false, local };
     const offStatus = connection.onStatus((status) => {
       if (this.active === path) this.onActiveStatus(path, status);
       else if (this.candidate === path) this.onCandidateStatus(path, status);
@@ -447,7 +466,7 @@ export class AutoChannel {
 
   /** The active LAN path failed under `auto`. */
   private onLanFailed(path: Path, status: ConnectionStatus): void {
-    if (status.state === 'auth_failed' && this.opts.lanLocal()) {
+    if (status.state === 'auth_failed' && (path.local || this.opts.lanLocal())) {
       // The local gateway restarted with a new token; the next probe re-reads it.
       this.fallBackToBroker('the local gateway rotated its credential');
       return;
@@ -493,7 +512,7 @@ export class AutoChannel {
       return;
     }
     if (status.state === 'connecting') return;
-    if (status.state === 'auth_failed' && !this.opts.lanLocal()) {
+    if (status.state === 'auth_failed' && !path.local && !this.opts.lanLocal()) {
       this.lanBlocked = true;
       this.log('auto: the LAN relay rejected this phone; using the broker only');
     } else {
@@ -580,8 +599,10 @@ export class AutoChannel {
   }
 
   private setStatus(status: ConnectionStatus): void {
-    this.currentStatus = status;
-    for (const listener of this.statusListeners) listener(status);
+    // Kept as the stored object: `useSyncExternalStore` reads `status` on every render.
+    const next = (status.state === 'waiting' || status.state === 'connecting') && this.opts.lanLocal() ? { ...status, local: true } : status;
+    this.currentStatus = next;
+    for (const listener of this.statusListeners) listener(next);
   }
 
   private log(message: string): void {

@@ -20,6 +20,9 @@ const DISMISS_DRAG = 24;
 
 type Shown = { id: string; machine: Machine; seq: number };
 
+/** On the desktop the banner is a notification-sized card in the top-right corner, not a strip across the window. */
+const DESKTOP_WIDTH = 420;
+
 /**
  * A short banner at the top of the screen when an inbox item arrives and the
  * user is not on that item's terminal (nor on the inbox). Tapping it opens
@@ -57,7 +60,7 @@ function MachineToast({ machine }: { machine: Machine }) {
         for (const [group, at] of groups.current) if (now - at > 3600_000) groups.current.delete(group);
         if (seconds && now - (groups.current.get(key) ?? -Infinity) < seconds * 1000) return;
         groups.current.set(key, now);
-        if (desktopBridge() ? pathnameRef.current === '/inbox' : !shouldAnnounce(item, pathnameRef.current, machine.session.getState().target)) return;
+        if (!shouldAnnounce(item, pathnameRef.current, machine.session.getState().target)) return;
         seq.current += 1;
         setShown({ id: item.id, machine, seq: seq.current });
         AccessibilityInfo.announceForAccessibility(`新通知：${item.title}`);
@@ -100,8 +103,9 @@ function MachineToast({ machine }: { machine: Machine }) {
 
   const subtitle = item ? (item.subtitle ?? workspaces.find((w) => w.id === item.workspaceId)?.title ?? null) : null;
 
+  const desktop = desktopBridge() !== null;
   return (
-    <View style={[styles.host, { top: insets.top + 6, left: insets.left + 12, right: insets.right + 12 }]}>
+    <View style={[styles.host, desktop ? styles.desktopHost : { top: insets.top + 6, left: insets.left + 12, right: insets.right + 12 }]}>
       {visible && shown ? (
         <Animated.View key={shown.seq} entering={FadeInUp.duration(180)} exiting={FadeOutUp.duration(160)}>
           <RNAnimated.View style={{ transform: [{ translateY: drag }] }} {...swipe.panHandlers}>
@@ -139,6 +143,7 @@ function MachineToast({ machine }: { machine: Machine }) {
 
 const styles = StyleSheet.create({
   host: { position: 'absolute', zIndex: 100, pointerEvents: 'box-none' },
+  desktopHost: { top: 12, right: 16, width: DESKTOP_WIDTH, maxWidth: '60%' },
   card: {
     gap: 3,
     paddingHorizontal: 14,

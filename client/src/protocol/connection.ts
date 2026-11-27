@@ -31,9 +31,13 @@ export type CloseReason =
 
 export type ConnectionStatus =
   | { state: 'idle' }
-  | { state: 'connecting'; attempt: number }
+  | { state: 'connecting'; attempt: number; local?: boolean }
   | { state: 'open' }
-  | { state: 'waiting'; attempt: number; retryAt: number; reason: CloseReason }
+  /**
+   * `local` (set by `AutoChannel`): the computer is the one this desktop app
+   * runs on, so what is not answering is its own gateway, not a remote Mac.
+   */
+  | { state: 'waiting'; attempt: number; retryAt: number; reason: CloseReason; local?: boolean }
   | { state: 'auth_failed' };
 
 export class RpcCallError extends Error {
@@ -68,6 +72,15 @@ export type RelayConnectionOptions = {
   idleProbeMs?: number;
   probeTimeoutMs?: number;
   probeMethod?: string;
+  /** A socket that has not opened by then is dropped and retried. */
+  connectTimeoutMs?: number;
+  /**
+   * `wake` (window shown, system woke): an open socket gets a probe with this
+   * shorter deadline, unless something arrived within `wakeFreshMs`; a
+   * connection attempt older than this is started again.
+   */
+  wakeProbeTimeoutMs?: number;
+  wakeFreshMs?: number;
   log?: (message: string) => void;
 };
 
@@ -97,6 +110,8 @@ export class RelayConnection {
   private openedAt = 0;
   private lastInboundAt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectStartedAt = 0;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private probeInFlight = false;
   private currentStatus: ConnectionStatus = { state: 'idle' };
@@ -112,6 +127,9 @@ export class RelayConnection {
       idleProbeMs: 20_000,
       probeTimeoutMs: 8_000,
       probeMethod: 'host.battery',
+      connectTimeoutMs: 20_000,
+      wakeProbeTimeoutMs: 4_000,
+      wakeFreshMs: 3_000,
       ...options,
     };
   }
@@ -144,6 +162,7 @@ export class RelayConnection {
   stop(): void {
     this.running = false;
     this.clearRetry();
+    this.clearConnectTimer();
     this.stopWatchdog();
     this.dropSocket(1000, 'client stopped');
     this.failAllPending('closed', 'connection stopped');
@@ -151,17 +170,48 @@ export class RelayConnection {
   }
 
   /**
-   * Call when the app returns to the foreground or the network changes: skips
-   * a pending backoff, or checks that an "open" socket still works.
+   * Call when the app returns to the foreground, the desktop window is shown
+   * again, the system wakes or the network changes: skips a pending backoff,
+   * restarts an attempt that has been hanging (it may have been started
+   * before the system slept), and checks with a short deadline that an
+   * "open" socket still works. A rejected token stays rejected.
    */
   wake(): void {
     if (!this.running) return;
-    if (this.currentStatus.state === 'waiting') {
-      this.clearRetry();
-      this.openSocket();
-    } else if (this.currentStatus.state === 'open') {
-      this.probe();
+    switch (this.currentStatus.state) {
+      case 'waiting':
+        this.clearRetry();
+        this.openSocket();
+        return;
+      case 'connecting':
+        if (Date.now() - this.connectStartedAt >= this.opts.wakeProbeTimeoutMs) {
+          this.log('connection attempt still pending on wake; starting it again');
+          this.openSocket();
+        }
+        return;
+      case 'open':
+        if (Date.now() - this.lastInboundAt >= this.opts.wakeFreshMs) this.probe(this.opts.wakeProbeTimeoutMs);
+        return;
+      default:
+        return;
     }
+  }
+
+  /**
+   * The user asked to reconnect: a new socket now, whatever the state, with
+   * the backoff reset. Starts a connection that was stopped by a rejected
+   * token too, so a credential that was fixed meanwhile is tried again.
+   */
+  reconnect(): void {
+    if (!this.running) {
+      this.start();
+      return;
+    }
+    this.clearRetry();
+    this.stopWatchdog();
+    this.attempt = 0;
+    this.failAllPending('closed', '连接已断开');
+    this.openSocket();
   }
 
   call<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
@@ -188,6 +238,7 @@ export class RelayConnection {
   private openSocket(): void {
     this.dropSocket(1000, 'reconnecting');
     const generation = ++this.generation;
+    this.connectStartedAt = Date.now();
     this.setStatus({ state: 'connecting', attempt: this.attempt });
     let socket: SocketLike;
     try {
@@ -201,10 +252,19 @@ export class RelayConnection {
     }
     this.socket = socket;
     let opened = false;
+    this.clearConnectTimer();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (generation !== this.generation || opened || !this.running) return;
+      this.log('socket did not open in time; retrying');
+      this.dropSocket(4000, 'connect timeout');
+      this.scheduleRetry('network');
+    }, this.opts.connectTimeoutMs);
 
     socket.onopen = () => {
       if (generation !== this.generation) return;
       opened = true;
+      this.clearConnectTimer();
       // Must be the first frame and must go out now: the relay closes
       // connections whose hello does not arrive within 100 ms.
       const hello: Hello = {
@@ -237,6 +297,7 @@ export class RelayConnection {
     socket.onclose = (event) => {
       if (generation !== this.generation) return;
       this.socket = null;
+      this.clearConnectTimer();
       this.stopWatchdog();
       this.failAllPending('closed', '连接已断开');
       const reason = classifyClose(opened, event.code, event.reason);
@@ -315,11 +376,11 @@ export class RelayConnection {
     this.watchdog = null;
   }
 
-  private probe(): void {
+  private probe(timeoutMs = this.opts.probeTimeoutMs): void {
     if (this.probeInFlight || !this.isOpen) return;
     this.probeInFlight = true;
     const generation = this.generation;
-    this.call(this.opts.probeMethod, {}, this.opts.probeTimeoutMs)
+    this.call(this.opts.probeMethod, {}, timeoutMs)
       .catch((error: unknown) => {
         // Any RPC error reply still proves the link is alive.
         if (error instanceof RpcCallError && error.code === 'timeout' && generation === this.generation) {
@@ -345,6 +406,7 @@ export class RelayConnection {
     const socket = this.socket;
     this.socket = null;
     this.generation++;
+    this.clearConnectTimer();
     if (!socket) return;
     socket.onopen = null;
     socket.onmessage = null;
@@ -360,6 +422,11 @@ export class RelayConnection {
   private clearRetry(): void {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = null;
   }
 
   private failAllPending(code: string, message: string): void {

@@ -36,7 +36,7 @@ export default function TabsLayout() {
   const { unread } = useStore(inbox);
   // The layout lives as long as the connection, so the history-lines pref follows changes here.
   useLiveLinesPref(session);
-  useDesktopShortcuts(machine, desktop);
+  useDesktopShortcuts(machine, desktop, pathname);
 
   const tabs = (
     <Tabs

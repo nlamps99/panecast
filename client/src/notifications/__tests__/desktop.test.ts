@@ -1,4 +1,4 @@
-import { desktopNotifications, watchDesktopNotifications } from '../desktop';
+import { desktopNotifications, watchAllDesktopNotifications, watchDesktopNotifications } from '../desktop';
 import { InboxStore } from '../../session/inboxStore';
 import type { RpcChannel } from '../../session/terminalSession';
 import type { Machine } from '../../state/appStore';
@@ -47,4 +47,39 @@ it('does not notify for demo sessions or recovered inbox entries', async () => {
   inbox.ingest(event('demo')); await tick(); expect(notify).not.toHaveBeenCalled(); stop();
   stop = watchDesktopNotifications(machine, bridge);
   inbox.ingest(event('replay'), true); await tick(); expect(notify).not.toHaveBeenCalled();
+});
+
+it('notifies for every paired computer and follows the selection without replaying anything', async () => {
+  const other = new InboxStore(channel);
+  const listeners = new Set<() => void>();
+  let state = { machine } as { machine: Machine | null };
+  let watches = [{ computer: { id: 'other' }, inbox: other }];
+  const store = {
+    getState: () => state as never, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    watchedInboxes: () => watches as never,
+  };
+  stop = watchAllDesktopNotifications(store, bridge);
+  other.ingest(event('elsewhere', '另一台电脑完成'));
+  inbox.ingest(event('here'));
+  await tick();
+  expect(notify).toHaveBeenCalledTimes(2);
+  // No in-app banner exists for a computer that is not on screen, so its alert shows even over a focused window.
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ computerId: 'other', notificationId: 'elsewhere', force: true }));
+  const here = (notify.mock.calls as unknown as [{ notificationId?: string; force?: boolean }][]).find(([options]) => options.notificationId === 'here')?.[0];
+  expect(here?.force).toBeUndefined();
+  // The other computer is selected: its inbox now belongs to the machine; the old one is watched instead.
+  const selected = new InboxStore(channel);
+  state = { machine: { mode: 'relay', computer: { id: 'other' }, inbox: selected } as Machine };
+  watches = [{ computer: { id: 'computer' }, inbox }];
+  for (const listener of listeners) listener();
+  other.ingest(event('stale-watch', '旧的监视'));
+  selected.ingest(event('after-switch', '切换之后'));
+  inbox.ingest(event('now-watched', '改为监视'));
+  await tick();
+  expect((notify.mock.calls as unknown as [{ notificationId?: string }][]).map(([options]) => options.notificationId).sort()).toEqual(['after-switch', 'elsewhere', 'here', 'now-watched']);
+  stop(); stop = () => {};
+  selected.ingest(event('after-stop', '停止之后')); await tick();
+  expect(notify).toHaveBeenCalledTimes(4);
+  expect(listeners.size).toBe(0);
+  other.dispose(); selected.dispose();
 });

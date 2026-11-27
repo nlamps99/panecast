@@ -362,11 +362,24 @@ function mayPromoteToEmoji(cp: number): boolean {
  */
 export class LayoutCache {
   private cache = new Map<string, VisualLine[]>();
+  private widths = new Map<string, number>();
   private columns = 0;
   private wrap = true;
 
   constructor(private readonly maxEntries = 4_000) {}
 
+  /** `terminalRowColumns`, cached: an unwrapped terminal measures every row on every frame. */
+  rowColumns(row: string): number {
+    let width = this.widths.get(row);
+    if (width === undefined) {
+      width = terminalRowColumns(row);
+      if (this.widths.size >= this.maxEntries) this.widths.clear();
+      this.widths.set(row, width);
+    }
+    return width;
+  }
+
+  /** Every caller must pass the same `columns` and `wrap` for one frame: a change clears the cache. */
   get(row: string, columns: number, wrap = true): VisualLine[] {
     if (columns !== this.columns || wrap !== this.wrap) {
       this.cache.clear();
@@ -400,7 +413,7 @@ export function buildInvertedLines(
 ): VisualLine[] {
   let end = rows.length;
   if (trimBottom) {
-    while (end > 0 && isBlank(cache.get(rows[end - 1], columns))) end--;
+    while (end > 0 && isBlankLayout(cache.get(rows[end - 1], columns))) end--;
   }
   const out: VisualLine[] = [];
   for (let r = end - 1; r >= 0; r--) {
@@ -410,6 +423,7 @@ export function buildInvertedLines(
   return out;
 }
 
-function isBlank(lines: VisualLine[]): boolean {
+/** A row with nothing visible on it: blank, or spaces with no background. */
+export function isBlankLayout(lines: readonly VisualLine[]): boolean {
   return lines.length === 1 && lines[0] === EMPTY_LINE;
 }

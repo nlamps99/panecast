@@ -1,7 +1,8 @@
 import { sha256, toHex, utf8Encode } from '../protocol/sha256';
 import type { ConversationStorage } from './conversationCache';
 
-type Entry<T> = { value?: T; at: number; bytes: number };
+/** `at`: last use (for eviction). `saved`: when the value was last known to be current. */
+type Entry<T> = { value?: T; at: number; bytes: number; saved?: number };
 const file = (key: string) => `${toHex(sha256(utf8Encode(key)))}.json`;
 
 /** Bounded local snapshots. Memory serves repeat clicks synchronously; disk survives relaunch. */
@@ -25,7 +26,7 @@ export class SnapshotCache<T> {
       for (const item of data.entries.slice(0, this.limits.entries)) {
         if (typeof item.key === 'string' && typeof item.at === 'number' && typeof item.bytes === 'number' &&
           item.bytes >= 0 && item.bytes <= this.limits.bytes && !this.entries.has(item.key) && !this.deleted.has(item.key)) {
-          this.entries.set(item.key, { at: item.at, bytes: item.bytes });
+          this.entries.set(item.key, { at: item.at, bytes: item.bytes, ...(typeof item.saved === 'number' ? { saved: item.saved } : {}) });
         }
       }
     } catch { /* An unavailable cache must not prevent a live connection. */ }
@@ -47,15 +48,26 @@ export class SnapshotCache<T> {
         if (this.stopped || this.deleted.has(key)) return null;
         const current = this.peek(key); if (current) return current;
         const value = raw ? this.parse(JSON.parse(raw)) : null;
-        if (value) this.entries.set(key, { value, at: Date.now(), bytes: raw!.length * 2 });
+        if (value) this.entries.set(key, { value, at: Date.now(), bytes: raw!.length * 2, saved: this.entries.get(key)?.saved });
         return value;
       } catch { return null; }
     })().finally(() => this.reads.delete(key));
     this.reads.set(key, task); return task;
   }
+  /** When the value under `key` was stored or last confirmed (`touch`); null when unknown. */
+  savedAt(key: string): number | null {
+    return this.entries.get(key)?.saved ?? null;
+  }
+  /** The stored value is still current (nothing changed, the source just went away). */
+  touch(key: string) {
+    const entry = this.entries.get(key);
+    if (this.stopped || !entry?.value) return;
+    entry.saved = Date.now(); this.schedule();
+  }
   set(key: string, value: T) {
     if (this.stopped || this.entries.get(key)?.value === value) return;
-    this.entries.set(key, { value, at: Date.now(), bytes: this.entries.get(key)?.bytes ?? 0 });
+    const now = Date.now();
+    this.entries.set(key, { value, at: now, bytes: this.entries.get(key)?.bytes ?? 0, saved: now });
     this.deleted.delete(key); this.dirty.add(key);
     // Bound memory before serialization, and coalesce rapid screen updates.
     while (this.entries.size > this.limits.entries) this.remove([...this.entries].sort((a, b) => a[1].at - b[1].at)[0][0]);
@@ -81,7 +93,7 @@ export class SnapshotCache<T> {
         bytes -= entry.bytes; this.remove(key);
       }
       for (const key of [...this.deleted]) { await this.storage.remove(file(key)); this.deleted.delete(key); }
-      await this.storage.write('index.json', JSON.stringify({ version: 1, entries: [...this.entries].map(([key, entry]) => ({ key, at: entry.at, bytes: entry.bytes })) }));
+      await this.storage.write('index.json', JSON.stringify({ version: 1, entries: [...this.entries].map(([key, entry]) => ({ key, at: entry.at, bytes: entry.bytes, ...(entry.saved === undefined ? {} : { saved: entry.saved }) })) }));
     }).catch(() => { /* Keep memory usable when persistence is unavailable. */ });
     return this.writes;
   }

@@ -229,6 +229,80 @@ describe('RelayConnection', () => {
     expect(sockets).toHaveLength(2);
   });
 
+  it('drops and retries a socket that never opens', () => {
+    const { connection, sockets } = setup({ connectTimeoutMs: 10_000, backoffBaseMs: 1_000 });
+    connection.start();
+    jest.advanceTimersByTime(9_999);
+    expect(connection.status.state).toBe('connecting');
+    jest.advanceTimersByTime(1);
+    expect(sockets[0].closed).not.toBeNull();
+    expect(connection.status).toMatchObject({ state: 'waiting', reason: 'network' });
+    jest.advanceTimersByTime(1_000);
+    expect(sockets).toHaveLength(2);
+    // An opened socket is never timed out.
+    sockets[1].open();
+    jest.advanceTimersByTime(60_000);
+    expect(connection.status.state).toBe('open');
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('wake() checks an open socket with a short deadline and reconnects when it does not answer', async () => {
+    const { connection, sockets, latest } = setup({ wakeProbeTimeoutMs: 3_000, wakeFreshMs: 2_000, idleProbeMs: 24 * 3_600_000 });
+    connection.start();
+    latest().open();
+    // Just heard from the relay: nothing to check.
+    connection.wake();
+    expect(latest().sent).toHaveLength(1);
+    jest.advanceTimersByTime(2_000);
+    connection.wake();
+    expect(latest().json(1).method).toBe('host.battery');
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(sockets[0].closed).not.toBeNull();
+    expect(connection.status.state).toBe('waiting');
+  });
+
+  it('wake() keeps an open socket that answers the check', async () => {
+    const { connection, sockets, latest } = setup({ wakeFreshMs: 0, idleProbeMs: 24 * 3_600_000 });
+    connection.start();
+    latest().open();
+    connection.wake();
+    latest().receive({ id: latest().json(1).id, ok: false, error: { code: 'no_battery', message: '' } });
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(connection.status.state).toBe('open');
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('wake() restarts an attempt that has been hanging, but not a fresh one', () => {
+    const { connection, sockets } = setup({ wakeProbeTimeoutMs: 4_000, connectTimeoutMs: 60_000 });
+    connection.start();
+    jest.advanceTimersByTime(1_000);
+    connection.wake();
+    expect(sockets).toHaveLength(1);
+    jest.advanceTimersByTime(3_000);
+    connection.wake();
+    expect(sockets).toHaveLength(2);
+    expect(sockets[0].closed).not.toBeNull();
+    expect(connection.status.state).toBe('connecting');
+  });
+
+  it('reconnect() starts over from any state, also after a rejected token', async () => {
+    const { connection, sockets, latest } = setup({ backoffBaseMs: 10_000 });
+    connection.start();
+    latest().serverClose(1006, 'Received bad response code from server: 401.');
+    expect(connection.status.state).toBe('auth_failed');
+    connection.wake();
+    expect(sockets).toHaveLength(1);
+    connection.reconnect();
+    expect(sockets).toHaveLength(2);
+    latest().open();
+    const call = connection.call('slow');
+    connection.reconnect();
+    await expect(call).rejects.toMatchObject({ code: 'closed' });
+    expect(sockets).toHaveLength(3);
+    expect(sockets[1].closed).not.toBeNull();
+    expect(connection.status).toEqual({ state: 'connecting', attempt: 0 });
+  });
+
   it('stop() closes the socket and does not reconnect', async () => {
     const { connection, sockets, latest } = setup();
     connection.start();

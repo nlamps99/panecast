@@ -5,9 +5,12 @@ import { readingAnchor } from '../../session/readingPosition';
 import { TerminalView } from '../TerminalView';
 import { RpcCallError } from '../../protocol/connection';
 import { KeyBar } from '../KeyBar';
+import { setPrefs } from '../../state/prefs';
 
 type NativeProps = { testID?: string; children?: ReactNode; data?: unknown[]; renderItem?: (args: { item: unknown; index: number }) => ReactNode; ListFooterComponent?: ReactNode; [key: string]: unknown };
 const mockNative = new Map<string, NativeProps>();
+/** Every render of a terminal line's outer Text, with its props. */
+const mockLineRenders: NativeProps[] = [];
 const mockScrollToOffset = jest.fn();
 const mockScrollTo = jest.fn();
 let mockWrap = true;
@@ -15,8 +18,12 @@ let mockReadOnly = false;
 let mockShowKeys = false;
 let mockOS = 'ios';
 let mockCompact = false;
+let mockFontSize = 13;
+let mockZoom: number | null = null;
 type MockPan = { enabled?: boolean; onActivate?: () => void; onUpdate?: (event: { changeY: number }) => void; onDeactivate?: (event: { canceled: boolean; velocityY: number }) => void };
 let mockPan: MockPan = {};
+type MockPinch = { onActivate?: () => void; onDeactivate?: (event: { scale: number }) => void };
+let mockPinch: MockPinch = {};
 let mockPlaceholder: { text: string | null; action: { label: string; onPress: () => void } | null } = { text: null, action: null };
 
 jest.mock('react-native', () => {
@@ -27,20 +34,21 @@ jest.mock('react-native', () => {
   const host = (name: string) => React.forwardRef(function NativeTestHost(props: NativeProps, ref) {
     if (props.testID) mockNative.set(props.testID, props);
     if (typeof props.accessibilityLabel === 'string') mockNative.set(props.accessibilityLabel, props);
+    if (name === 'Text' && (props.dataSet as { terminalLine?: string } | undefined)?.terminalLine) mockLineRenders.push(props);
     const node = React.useRef<HTMLDivElement>(null);
-    React.useImperativeHandle(ref, () => ({ scrollToOffset: mockScrollToOffset, scrollTo: mockScrollTo, getScrollableNode: () => node.current }));
+    React.useImperativeHandle(ref, () => ({ scrollToOffset: mockScrollToOffset, scrollTo: mockScrollTo, getScrollableNode: () => node.current, focus: () => {} }));
     const children = name === 'FlatList'
       ? [...(props.data ?? []).map((item, index) => React.createElement(React.Fragment, { key: index }, props.renderItem?.({ item, index }))), React.createElement(React.Fragment, { key: 'footer' }, props.ListFooterComponent)]
       : props.children;
     return React.createElement(name === 'Text' ? 'span' : 'div', { ref: node, 'data-testid': props.testID, 'data-native': name }, children);
   });
-  return { View: host('View'), Text: host('Text'), Pressable: host('Pressable'), ScrollView: host('ScrollView'), FlatList: host('FlatList'), Platform: { get OS() { return mockOS; } },
+  return { View: host('View'), Text: host('Text'), TextInput: host('TextInput'), Pressable: host('Pressable'), ScrollView: host('ScrollView'), FlatList: host('FlatList'), Platform: { get OS() { return mockOS; } },
     StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1, absoluteFill: {} } };
 });
-jest.mock('react-native-gesture-handler', () => ({ usePinchGesture: () => ({}), useNativeGesture: () => ({}),
+jest.mock('react-native-gesture-handler', () => ({ usePinchGesture: (config: MockPinch) => { mockPinch = config; return {}; }, useNativeGesture: () => ({}),
   usePanGesture: (config: MockPan) => { mockPan = config; return {}; }, useSimultaneousGestures: () => ({}),
   GestureDetector: ({ children }: { children: ReactNode }) => children }));
-jest.mock('../../state/prefs', () => ({ usePrefs: () => ({ terminalWrap: mockWrap, keyHaptics: false, extraKeyRow: true }), setPrefs: jest.fn(), clampFontSize: (value: number) => value }));
+jest.mock('../../state/prefs', () => ({ usePrefs: () => ({ terminalWrap: mockWrap, keyHaptics: false, extraKeyRow: true, desktopFontZoom: mockZoom }), setPrefs: jest.fn(), clampFontSize: (value: number) => value }));
 jest.mock('expo-haptics', () => ({}));
 jest.mock('../../state/hooks', () => ({ useMachine: () => ({ computer: { id: 'test' } }) }));
 jest.mock('../../input/keyboardProfiles', () => {
@@ -84,7 +92,7 @@ beforeAll(() => {
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mockOS = 'ios'; mockCompact = false; mockWrap = true; mockReadOnly = false; mockShowKeys = false; mockNative.clear(); mockScrollToOffset.mockClear(); mockScrollTo.mockClear();
-  mockPan = {}; mockPlaceholder = { text: null, action: null };
+  mockPan = {}; mockPlaceholder = { text: null, action: null }; mockLineRenders.length = 0; mockFontSize = 13; mockZoom = null;
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   channel = new Channel(); session = new TerminalSession(channel);
 });
@@ -92,15 +100,15 @@ afterEach(async () => { await act(async () => root.unmount()); session.dispose()
 afterAll(() => dom.window.close());
 function Harness() {
   const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
-  return <><TerminalView session={session} state={state} fontSize={13} onFontSizeChange={() => {}} placeholder={mockPlaceholder.text} placeholderAction={mockPlaceholder.action} onTap={() => {}} readOnly={mockReadOnly} compact={mockCompact} />{mockShowKeys ? <KeyBar session={session} /> : null}</>;
+  return <><TerminalView session={session} state={state} fontSize={mockFontSize} onFontSizeChange={() => {}} placeholder={mockPlaceholder.text} placeholderAction={mockPlaceholder.action} onTap={() => {}} readOnly={mockReadOnly} compact={mockCompact} />{mockShowKeys ? <KeyBar session={session} /> : null}</>;
 }
 function callback(id: string, name: string, event: unknown) { (mockNative.get(id)?.[name] as (event: unknown) => void)(event); }
 function scroll(offset: number, content = 2000) { return { nativeEvent: { contentOffset: { x: 0, y: offset }, contentSize: { width: 390, height: content }, layoutMeasurement: { width: 390, height: 480 } } }; }
-async function mount(rows = Array.from({ length: 120 }, (_, index) => `line ${index}`)) {
+async function mount(rows = Array.from({ length: 120 }, (_, index) => `line ${index}`), cursor = { x: 0, y: 0 }) {
   channel.rows = rows;
   await act(async () => {
     session.setTarget({ workspaceId: 'cmux-workspace', surfaceId: 'cmux-surface' });
-    channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 1, rows, cols: 120, rowsCount: rows.length, cursor: { x: 0, y: 0 } });
+    channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 1, rows, cols: 120, rowsCount: rows.length, cursor });
     root.render(<Harness />);
   });
   await act(async () => {
@@ -109,6 +117,8 @@ async function mount(rows = Array.from({ length: 120 }, (_, index) => `line ${in
   });
 }
 
+/** Waits past the pause that ends a wheel gesture. */
+async function wheelEnd() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); }); }
 async function wheel(deltaY: number, options = {}) {
   const event = new dom.window.WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true, ...options });
   await act(async () => { container.querySelector('[data-testid="terminal-output-list"]')!.dispatchEvent(event); });
@@ -122,7 +132,9 @@ it('loads short-screen history on a desktop wheel gesture, with natural directio
   expect(mockScrollToOffset).toHaveBeenLastCalledWith({ offset: 80, animated: false });
   await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: ['new output'], cols: 80, rowsCount: 1, cursor: { x: 0, y: 0 } }));
   expect(session.getState().browse?.frozenRows).toEqual(['short screen']);
-  await wheel(1000); expect(session.getState().browse).toBeNull();
+  // Back at the bottom: live again once the gesture ends there.
+  await wheel(1000); expect(session.getState().browse).not.toBeNull();
+  await wheelEnd(); expect(session.getState().browse).toBeNull();
 });
 it('normalizes line wheels and leaves horizontal scrolling and pinch zoom to WebKit', async () => {
   mockOS = 'web'; await mount();
@@ -267,6 +279,7 @@ it('keeps history retry visible outside the horizontal content and replaces expi
   expect(session.getState().browse?.olderRows).toEqual(['old']);
   await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(100)));
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0)));
+  await act(async () => callback('terminal-output-list', 'onScrollEndDrag', scroll(0)));
   expect(session.getState().browse).toBeNull();
 });
 it('floats phone history status over the terminal only while browsing', async () => {
@@ -330,6 +343,7 @@ it.each([true, false])('reads a full-screen program\'s history from its session 
   expect(container.querySelector('[data-testid="terminal-history-status"]')?.textContent).toContain('会话记录');
   // Back at the bottom: live again, and the program was never touched.
   await act(async () => callback('terminal-output-list', 'onScroll', scroll(0, 8000)));
+  await act(async () => callback('terminal-output-list', 'onMomentumScrollEnd', scroll(0, 8000)));
   expect(session.getState().browse).toBeNull();
   expect(scrolls()).toEqual([]);
 });
@@ -477,4 +491,248 @@ it('shows a retry button under the placeholder of an empty terminal', async () =
   expect(container.querySelector('[data-testid="terminal-placeholder"]')?.textContent).toContain('打不开这个终端');
   await act(async () => (mockNative.get('terminal-placeholder-action')?.onPress as () => void)());
   expect(retry).toHaveBeenCalledTimes(1);
+});
+
+type ListProps = { data: PositionedLineLike[]; renderItem: (info: { item: unknown; index: number }) => { props: Record<string, unknown> }; keyExtractor: (item: unknown, index: number) => string };
+type PositionedLineLike = { plain: string; rowFromBottom: number; segmentFromBottom: number };
+const outputList = () => mockNative.get('terminal-output-list') as unknown as ListProps;
+const lineProps = (index: number) => outputList().renderItem({ item: outputList().data[index], index }).props;
+const pause = (ms: number) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+
+it('keeps runs of spaces and the text cursor on web terminal lines', async () => {
+  mockOS = 'web'; await mount(['  indented    two columns', '│ box │', '$ ']);
+  const line = mockLineRenders.at(-1)!;
+  // react-native-web's one-line Text is `white-space: nowrap`, which collapses spaces and adds "…".
+  expect(line.style).toMatchObject({ whiteSpace: 'pre', textOverflow: 'clip' });
+  // `onPress` would give the line a pointing hand; a click handler keeps the text cursor and selection.
+  expect(line.onPress).toBeUndefined();
+  expect(line.onClick).toEqual(expect.any(Function));
+  expect(line.selectable).toBe(true);
+});
+it('leaves phone terminal lines as they were', async () => {
+  await mount(['  indented']);
+  const line = mockLineRenders.at(-1)!;
+  expect(line.style).not.toHaveProperty('whiteSpace');
+  expect(line.onPress).toEqual(expect.any(Function));
+});
+
+it('redraws only the line a screen diff changed, keyed by its place from the bottom', async () => {
+  await mount();
+  mockLineRenders.length = 0;
+  await act(async () => channel.push({ type: 'screen.diff', surfaceId: 'cmux-surface', rev: 2, ops: [{ op: 'row', y: 100, text: 'changed' }] }));
+  expect(outputList().data[19].plain).toBe('changed');
+  expect(mockLineRenders).toHaveLength(1);
+  expect(outputList().keyExtractor(outputList().data[19], 19)).toBe('19:0');
+});
+
+it('draws the cursor on a blank last row instead of trimming that row', async () => {
+  await mount(['$ cat', 'typed', ''], { x: 0, y: 2 });
+  expect(outputList().data[0]).toMatchObject({ plain: '', rowFromBottom: 0 });
+  expect(lineProps(0).cursor).toBe(0);
+});
+
+it('draws a newly opened terminal at the last measured width, without flashing the placeholder', async () => {
+  await mount();
+  mockPlaceholder = { text: '正在打开终端…', action: null };
+  // Switching terminals mounts a new view; nothing has measured it yet.
+  await act(async () => root.render(<Harness key="next" />));
+  expect(outputList().data.length).toBeGreaterThan(0);
+  expect(container.querySelector('[data-testid="terminal-placeholder"]')).toBeNull();
+});
+
+describe('desktop text size', () => {
+  const grid = (columns: number) => ({ render_grid: { active_screen: 'primary', columns, rows: 40 } });
+  const drawnSize = () => (mockLineRenders.at(-1)?.style as { fontSize: number }).fontSize;
+  beforeEach(() => { (window as { panecastDesktop?: unknown }).panecastDesktop = { version: 1 }; });
+  afterEach(() => { delete (window as { panecastDesktop?: unknown }).panecastDesktop; });
+
+  it('fits the computer\'s columns into the window until a size is chosen, and fits again after ⌘0', async () => {
+    channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? grid(60) : {});
+    await mount(['x'.repeat(60), '$ ']);
+    await pause(0);
+    // 60 columns in 390 points: 10 pt, under the 13 pt preference.
+    expect(drawnSize()).toBe(10);
+    expect((mockNative.get('terminal-horizontal-scroll')?.contentContainerStyle as { width: number }).width).toBe(390);
+    // ⌘= / ⌘- fixed a size: it wins over the fit, and the wider terminal scrolls sideways.
+    mockZoom = 12;
+    await act(async () => root.render(<Harness />));
+    expect(drawnSize()).toBe(12);
+    expect((mockNative.get('terminal-horizontal-scroll')?.contentContainerStyle as { width: number }).width).toBeGreaterThan(390);
+    mockZoom = null;
+    await act(async () => root.render(<Harness />));
+    expect(drawnSize()).toBe(10);
+  });
+
+  it('fits a terminal opened again from its last column count, before the computer answers', async () => {
+    channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? grid(60) : {});
+    await mount(['x'.repeat(60), '$ ']);
+    await pause(0);
+    channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? new Promise(() => {}) : {});
+    await act(async () => { session.setTarget({ workspaceId: 'cmux-workspace', surfaceId: 'other' }); root.render(<Harness key="other" />); });
+    await act(async () => {
+      session.setTarget({ workspaceId: 'cmux-workspace', surfaceId: 'cmux-surface' });
+      channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 5, rows: ['x'.repeat(60), '$ '], cols: 60, rowsCount: 2, cursor: { x: 0, y: 0 } });
+      root.render(<Harness key="again" />);
+    });
+    expect(session.getState().terminalColumns ?? null).toBeNull();
+    expect(drawnSize()).toBe(10);
+  });
+
+  it('pinches the size it shows into the desktop zoom, not the phone preference', async () => {
+    channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? grid(60) : {});
+    await mount(['x'.repeat(60), '$ ']);
+    await pause(0);
+    (setPrefs as jest.Mock).mockClear();
+    await act(async () => { mockPinch.onActivate?.(); mockPinch.onDeactivate?.({ scale: 1.2 }); });
+    expect(setPrefs).toHaveBeenCalledWith({ desktopFontZoom: 12 });
+  });
+
+  it('never changes the size on phones', async () => {
+    delete (window as { panecastDesktop?: unknown }).panecastDesktop;
+    mockZoom = 18;
+    channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? grid(200) : {});
+    await mount(['x'.repeat(200)]);
+    await pause(0);
+    expect(drawnSize()).toBe(13);
+  });
+});
+
+it('keeps loaded history when a drag overshoots the bottom and turns back', async () => {
+  await mount();
+  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(400)));
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(1400)));
+  expect(session.getState().browse?.olderRows).toHaveLength(200);
+  // Past the bottom (the rubber band) and back up, in the same drag.
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(-30)));
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(300)));
+  await act(async () => callback('terminal-output-list', 'onScrollEndDrag', scroll(300)));
+  expect(session.getState().browse?.olderRows).toHaveLength(200);
+  // A drag that ends at the bottom returns to the live screen.
+  await act(async () => callback('terminal-output-list', 'onScrollBeginDrag', scroll(300)));
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(0)));
+  expect(session.getState().browse).not.toBeNull();
+  await act(async () => callback('terminal-output-list', 'onScrollEndDrag', scroll(0)));
+  expect(session.getState().browse).toBeNull();
+});
+it('keeps loaded history when the wheel overshoots the bottom and turns back', async () => {
+  mockOS = 'web'; await mount();
+  await wheel(-400);
+  expect(session.getState().browse?.olderRows).toHaveLength(200);
+  await wheel(2000); await wheel(-100); await wheelEnd();
+  expect(session.getState().browse?.olderRows).toHaveLength(200);
+  await wheel(500); await wheelEnd();
+  expect(session.getState().browse).toBeNull();
+});
+
+it('cancels only the vertical wheel it scrolls, and keeps the inverted list from blocking sideways scrolling', async () => {
+  mockOS = 'web'; mockWrap = false; await mount(['x'.repeat(300), ...Array.from({ length: 120 }, (_, index) => `line ${index}`)]);
+  const node = container.querySelector('[data-testid="terminal-output-list"]')!;
+  // Stands in for react-native-web's inverted-list handler, which cancels every wheel event.
+  const listOwn = jest.fn((event: Event) => event.preventDefault());
+  node.addEventListener('wheel', listOwn);
+  const line = node.querySelector('span')!;
+  const sideways = new dom.window.WheelEvent('wheel', { deltaX: 40, deltaY: 3, bubbles: true, cancelable: true });
+  const shifted = new dom.window.WheelEvent('wheel', { deltaY: 40, shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => { line.dispatchEvent(sideways); line.dispatchEvent(shifted); });
+  expect(sideways.defaultPrevented).toBe(false); expect(shifted.defaultPrevented).toBe(false);
+  expect(listOwn).not.toHaveBeenCalled();
+  expect(mockScrollToOffset).not.toHaveBeenCalledWith(expect.objectContaining({ offset: expect.any(Number) }));
+  const vertical = new dom.window.WheelEvent('wheel', { deltaY: -40, bubbles: true, cancelable: true });
+  await act(async () => { line.dispatchEvent(vertical); });
+  expect(vertical.defaultPrevented).toBe(true);
+  expect(listOwn).not.toHaveBeenCalled();
+  expect(mockScrollToOffset).toHaveBeenLastCalledWith({ offset: 40, animated: false });
+});
+
+it('checks the scroll method again when a full-screen program starts or quits', async () => {
+  let program = false;
+  channel.rpc.mockImplementation(async (method) => method === 'terminal.replay' ? (program ? application : {}) : method === 'terminal.conversation' ? { available: false } : {});
+  const shell = Array.from({ length: 47 }, (_, i) => `$ shell output ${i}`);
+  await mount(shell);
+  await pause(0);
+  expect(session.getState().applicationScroll ?? null).toBeNull();
+  program = true;
+  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: Array.from({ length: 47 }, (_, i) => `~ vim buffer ${i}`), cols: 120, rowsCount: 47, cursor: { x: 0, y: 0 } }));
+  await pause(400);
+  expect(session.getState().applicationScroll).toMatchObject({ columns: 156, rows: 47 });
+  program = false;
+  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 3, rows: shell, cols: 120, rowsCount: 47, cursor: { x: 0, y: 0 } }));
+  await pause(900);
+  expect(session.getState().applicationScroll ?? null).toBeNull();
+});
+it('leaves scrolling output alone instead of asking the computer again', async () => {
+  const shell = Array.from({ length: 47 }, (_, i) => `$ shell output ${i}`);
+  await mount(shell);
+  await pause(0);
+  const replays = () => channel.rpc.mock.calls.filter(([method]) => method === 'terminal.replay').length;
+  const before = replays();
+  await act(async () => channel.push({ type: 'screen.full', surfaceId: 'cmux-surface', rev: 2, rows: [...shell.slice(3), 'a', 'b', 'c'], cols: 120, rowsCount: 47, cursor: { x: 0, y: 0 } }));
+  await pause(400);
+  expect(replays()).toBe(before);
+});
+
+it('remembers the reading place when web scrolling stops, as drag-end events never fire there', async () => {
+  mockOS = 'web';
+  const saveReading = jest.fn();
+  session.dispose(); session = new TerminalSession(channel, { saveReading });
+  await mount();
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(400)));
+  expect(session.getState().browse).not.toBeNull();
+  await pause(200);
+  saveReading.mockClear();
+  await act(async () => callback('terminal-output-list', 'onScroll', scroll(510)));
+  expect(saveReading).not.toHaveBeenCalled();
+  await pause(200);
+  expect(saveReading).toHaveBeenCalledTimes(1);
+  expect(saveReading).toHaveBeenLastCalledWith(expect.objectContaining({ surfaceId: 'cmux-surface' }), expect.objectContaining({ rowFromBottom: 30 }));
+});
+
+it('searches from a find bar over the desktop terminal, marking and revealing each match', async () => {
+  mockOS = 'web';
+  await mount();
+  expect(mockNative.get('搜索和复制终端输出')).toBeUndefined();
+  await act(async () => (mockNative.get('在终端输出中搜索')?.onPress as () => void)());
+  expect(container.querySelector('[data-testid="terminal-find-bar"]')).not.toBeNull();
+  expect(session.getState().browse).not.toBeNull();
+  mockScrollToOffset.mockClear();
+  const input = () => mockNative.get('terminal-find-input')!;
+  await act(async () => (input().onChangeText as (text: string) => void)('LINE 5'));
+  // "line 5" and "line 50"–"line 59", case-insensitive; the newest is selected first.
+  const count = () => container.querySelector('[data-testid="terminal-find-count"]')?.textContent;
+  expect(count()).toBe('11/11');
+  const newest = outputList().data.findIndex((line) => line.plain === 'line 59');
+  expect(lineProps(newest)).toMatchObject({ findNeedle: 'line 5', findCurrent: true });
+  expect(lineProps(newest + 1)).toMatchObject({ findNeedle: 'line 5', findCurrent: false });
+  expect(lineProps(0).findNeedle).toBeUndefined();
+  // Line 59 sits 60 lines up: scrolled to the middle of the terminal.
+  expect(mockScrollToOffset).toHaveBeenLastCalledWith({ offset: 60 * 17 - (480 - 17) / 2, animated: false });
+  const key = (name: string, shiftKey = false) => act(async () => (input().onKeyPress as (event: unknown) => void)({ nativeEvent: { key: name, shiftKey }, preventDefault() {} }));
+  await key('Enter');
+  expect(count()).toBe('10/11');
+  expect(lineProps(newest + 1).findCurrent).toBe(true);
+  await key('Enter', true);
+  expect(count()).toBe('11/11');
+  await key('Escape');
+  expect(container.querySelector('[data-testid="terminal-find-bar"]')).toBeNull();
+  expect(lineProps(newest).findNeedle).toBeUndefined();
+  // The match is further up: closing keeps it in view.
+  expect(session.getState().browse).not.toBeNull();
+});
+it('keeps the search sheet on phones', async () => {
+  mockCompact = true; await mount();
+  expect(mockNative.get('在终端输出中搜索')).toBeUndefined();
+  expect(container.querySelector('[data-testid="terminal-find-bar"]')).toBeNull();
+});
+
+it('follows the list to its new node when wrapping is switched', async () => {
+  mockOS = 'web'; await mount();
+  mockWrap = false;
+  await act(async () => root.render(<Harness />));
+  const node = container.querySelector('[data-testid="terminal-output-list"]')!;
+  expect(node.closest('[data-native="ScrollView"]')).not.toBeNull();
+  mockScrollToOffset.mockClear();
+  const event = new dom.window.WheelEvent('wheel', { deltaY: -40, bubbles: true, cancelable: true });
+  await act(async () => { node.querySelector('span')!.dispatchEvent(event); });
+  expect(event.defaultPrevented).toBe(true);
+  expect(mockScrollToOffset).toHaveBeenLastCalledWith({ offset: 40, animated: false });
 });

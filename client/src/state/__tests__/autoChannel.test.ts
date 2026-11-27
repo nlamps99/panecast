@@ -703,3 +703,72 @@ describe('AutoChannel with the local gateway', () => {
     h.channel.stop();
   });
 });
+
+describe('AutoChannel while the local gateway restarts', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('does not disable loopback when the credential file is missing at the moment the old token is refused', async () => {
+    let local = true;
+    const h = setup({ lanLocal: () => local, lanRetryMinMs: 3_000, lanRetryMaxMs: 30_000 });
+    h.channel.start();
+    await flush();
+    h.latest('lan').open();
+    // The gateway restarts: the socket drops, its file is gone for a moment,
+    // and the reconnect with the old token is refused.
+    h.latest('lan').serverClose(1006);
+    await flush();
+    local = false;
+    expect(h.of('lan')).toHaveLength(2);
+    h.latest('lan').serverClose(1006, 'Received bad response code from server: 401.');
+    await flush();
+    expect(h.channel.transport).toBe('broker');
+    expect(h.logs.some((m) => m.includes('rejected'))).toBe(false);
+    h.latest('broker').open();
+    // The file is back with a new token: the next retry finds it.
+    local = true;
+    await advance(3_500);
+    h.latest('lan').open();
+    await flush();
+    expect(h.channel.transport).toBe('lan');
+    h.channel.stop();
+  });
+
+  it('marks statuses that are not open as local, so the UI blames this computer\'s gateway', async () => {
+    const h = setup({ lanLocal: () => true, probe: false });
+    h.channel.start();
+    await flush();
+    h.latest('broker').serverClose(1013);
+    expect(h.channel.status).toMatchObject({ state: 'waiting', reason: 'relay_offline', local: true });
+    // The stored object is stable between reads (React reads it on every render).
+    expect(h.channel.status).toBe(h.channel.status);
+    h.channel.stop();
+  });
+
+  it('leaves statuses unmarked for a computer reached through LAN or the broker', async () => {
+    const h = setup({ probe: false });
+    h.channel.start();
+    await flush();
+    h.latest('broker').serverClose(1013);
+    expect(h.channel.status).not.toHaveProperty('local');
+    h.channel.stop();
+  });
+
+  it('reconnect() starts over and tries LAN again, even after the relay rejected it', async () => {
+    const h = setup();
+    h.channel.start();
+    await flush();
+    h.latest('lan').serverClose(1006, 'Received bad response code from server: 401.');
+    h.latest('broker').open();
+    expect(h.probe.calls).toBe(1);
+    h.channel.reconnect();
+    await flush();
+    expect(h.probe.calls).toBe(2);
+    expect(h.of('lan')).toHaveLength(2);
+    h.latest('lan').open();
+    await flush();
+    expect(h.channel.status.state).toBe('open');
+    expect(h.channel.transport).toBe('lan');
+    h.channel.stop();
+  });
+});

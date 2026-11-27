@@ -26,6 +26,7 @@ import { CloseButton } from '../../ui/CloseButton';
 import { confirmClose } from '../../platform/confirm';
 import { requestWorkspaceClose } from '../../session/closeRequests';
 import { desktopBridge } from '../../platform/desktop';
+import { onDesktopCommand, useDesktopShell } from '../../ui/desktopShell';
 
 /** How long the list may say 正在连接 before it explains what might be wrong. */
 const SLOW_CONNECT_MS = 10_000;
@@ -102,6 +103,11 @@ export default function WorkspacesScreen() {
   const dismissMenu = () => setMenu((m) => (m ? { ...m, open: false } : m));
   const openCreate = () => setCreateDialog((d) => ({ key: (d?.key ?? 0) + 1, open: true }));
   const dismissCreate = () => setCreateDialog((d) => (d ? { ...d, open: false } : d));
+  // A desktop window too narrow for the sidebar shows this list instead; ⌘N asks here.
+  const shell = useDesktopShell();
+  useEffect(() => onDesktopCommand((command) => {
+    if (command.kind === 'newWorkspace' && !shell && canCreate) setCreateDialog((d) => ({ key: (d?.key ?? 0) + 1, open: true }));
+  }), [shell, canCreate]);
 
   return (
     <View style={styles.screen}>

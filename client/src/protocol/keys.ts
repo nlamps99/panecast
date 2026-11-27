@@ -1,5 +1,8 @@
 /**
- * Key names for `surface.send_key`. Mirrors `KeyEncoder` in SharedKit.
+ * Key names for `surface.send_key`, in cmux's vocabulary (its
+ * `pendingKeyEvent`): `pageup`/`pagedown`, not SharedKit's old `pgup`/`pgdn`,
+ * which cmux rejects as unknown keys. The tmux gateway and the Swift relay
+ * accept both spellings.
  *
  * cmux's control socket uses hyphen-joined names (`ctrl-c`), not `ctrl+c`. The
  * plus form is accepted by the RPC but does nothing.
@@ -14,8 +17,8 @@ export type NamedKey =
   | 'right'
   | 'home'
   | 'end'
-  | 'pgup'
-  | 'pgdn'
+  | 'pageup'
+  | 'pagedown'
   | 'backspace'
   | 'delete';
 
@@ -40,8 +43,8 @@ export const Keys = {
   right: { name: 'right' },
   home: { name: 'home' },
   end: { name: 'end' },
-  pageUp: { name: 'pgup' },
-  pageDown: { name: 'pgdn' },
+  pageUp: { name: 'pageup' },
+  pageDown: { name: 'pagedown' },
   backspace: { name: 'backspace' },
   delete: { name: 'delete' },
   ctrlC: { name: 'c', modifiers: ['ctrl'] },

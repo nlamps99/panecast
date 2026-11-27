@@ -1,24 +1,32 @@
 import { router } from 'expo-router';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 
+import { desktopBridge, desktopOnWindows } from '../platform/desktop';
 import type { Machine } from '../state/appStore';
 import { openSurface } from '../state/navigation';
-import { clampFontSize, DEFAULT_PREFS, getPrefs, setPrefs } from '../state/prefs';
+import { sessionMemory } from '../state/sessionMemory';
 import { SurfaceActions } from '../session/surfaceActions';
-import { desktopCommand, emitDesktopCommand, type DesktopCommand } from './desktopShell';
+import { desktopCommand, emitDesktopCommand, hideDesktopWindow, menuCommand, menuShortcut, setSidebarHidden, sidebarState, type DesktopCommand } from './desktopShell';
+import { sidebarWorkspaces } from './sidebarModel';
+import { zoomDesktopTerminal } from './terminalZoom';
 
-/** The workspaces in sidebar order and the current terminal's place among them. */
+/** Where the window is: the route on screen and whether the sidebar shell is up. */
+export type DesktopContext = { pathname: string; shell: boolean };
+
+/** The workspaces exactly as the sidebar lists them, and the current terminal's place among them. */
 function terminalsAround(machine: Machine) {
   const state = machine.workspaces.getState();
   const target = machine.session.getState().target;
-  const workspaces = state.workspaces;
+  const pinned = sessionMemory.computer(machine.computer?.id ?? 'demo').pinned;
+  const workspaces = sidebarWorkspaces(state.workspaces, state.surfaces, pinned, sidebarState().query);
   const workspaceIndex = target ? workspaces.findIndex((w) => w.id === target.workspaceId) : -1;
+  // The sidebar and the tab row list a workspace's terminals in the computer's order.
   const surfaces = target ? state.surfaces[target.workspaceId] ?? state.known.surfaces[target.workspaceId] ?? [] : [];
   return { state, target, workspaces, workspaceIndex, surfaces, surfaceIndex: target ? surfaces.findIndex((s) => s.id === target.surfaceId) : -1 };
 }
 
-export function runDesktopCommand(machine: Machine, command: DesktopCommand): boolean {
+export function runDesktopCommand(machine: Machine, command: DesktopCommand, context: DesktopContext = { pathname: '/terminal', shell: true }): boolean {
   const around = terminalsAround(machine);
   switch (command.kind) {
     case 'terminal': {
@@ -49,13 +57,26 @@ export function runDesktopCommand(machine: Machine, command: DesktopCommand): bo
       // A shared window may add terminals too; its computer enforces the limit.
       if (!target || !machine.channel.isOpen) return false;
       void new SurfaceActions(machine).create(target.workspaceId);
+      router.navigate('/terminal');
       return true;
     }
-    case 'font': {
-      const size = command.step === 0 ? DEFAULT_PREFS.fontSize : clampFontSize(getPrefs().fontSize + command.step);
-      setPrefs({ fontSize: size });
+    case 'newWorkspace':
+      // The sidebar asks for the name; without it, the workspace list does.
+      if (!context.shell) router.navigate('/');
+      emitDesktopCommand(command);
       return true;
-    }
+    case 'close':
+      // The terminal screen closes its terminal, after the usual confirmation.
+      if (context.pathname === '/terminal' && around.target) emitDesktopCommand(command);
+      else hideDesktopWindow();
+      return true;
+    case 'sidebar':
+      setSidebarHidden(!sidebarState().hidden);
+      return true;
+    case 'font':
+      // An explicit size stepped from the one on screen; ⌘0 fits the window again.
+      zoomDesktopTerminal(command.step);
+      return true;
     case 'settings':
       router.navigate('/settings');
       return true;
@@ -67,14 +88,22 @@ export function runDesktopCommand(machine: Machine, command: DesktopCommand): bo
   }
 }
 
-/** Window-wide keyboard shortcuts for the desktop app. */
-export function useDesktopShortcuts(machine: Machine | null, enabled: boolean): void {
+/**
+ * Window-wide keyboard shortcuts. The Mac menu bar owns the keys it shows
+ * (`menuShortcut`): the page lets them through to it, and `useDesktopMenu`
+ * runs the item when it arrives, so each shortcut runs once.
+ */
+export function useDesktopShortcuts(machine: Machine | null, enabled: boolean, pathname = '/terminal'): void {
+  const context = useRef<DesktopContext>({ pathname, shell: enabled });
+  useEffect(() => { context.current = { pathname, shell: enabled }; }, [pathname, enabled]);
   useEffect(() => {
     if (!enabled || !machine || Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const menuBar = !desktopOnWindows() && typeof desktopBridge()?.onMenu === 'function';
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
+      if (menuBar && menuShortcut(event)) return;
       const command = desktopCommand(event);
-      if (!command || !runDesktopCommand(machine, command)) return;
+      if (!command || !runDesktopCommand(machine, command, context.current)) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -82,4 +111,27 @@ export function useDesktopShortcuts(machine: Machine | null, enabled: boolean): 
     window.addEventListener('keydown', keydown, true);
     return () => window.removeEventListener('keydown', keydown, true);
   }, [machine, enabled]);
+}
+
+/**
+ * The Mac menu bar's items, on every screen and at any window width: the
+ * root layout listens, so they work before a computer is paired too. Without
+ * one, ⌘W closes (hides) the window and the sidebar still toggles; the rest
+ * need a computer and do nothing.
+ */
+export function useDesktopMenu(machine: Machine | null, pathname: string, shell: boolean): void {
+  const latest = useRef({ machine, context: { pathname, shell } });
+  useEffect(() => { latest.current = { machine, context: { pathname, shell } }; }, [machine, pathname, shell]);
+  useEffect(() => {
+    const bridge = desktopBridge();
+    if (!bridge?.onMenu) return;
+    return bridge.onMenu((id) => {
+      const command = menuCommand(id);
+      if (!command) return;
+      const { machine: current, context } = latest.current;
+      if (current) runDesktopCommand(current, command, context);
+      else if (command.kind === 'close') hideDesktopWindow();
+      else if (command.kind === 'sidebar') setSidebarHidden(!sidebarState().hidden);
+    });
+  }, []);
 }

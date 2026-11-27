@@ -61,6 +61,8 @@
     notify: options => invoke('desktop_notify', { options }),
     openNotificationSettings: () => invoke('notification_settings'),
     localGateway: () => invoke('local_gateway'),
+    // Held while computers are paired, so App Nap cannot stall a hidden window.
+    keepAwake: active => invoke('keep_awake', { active: active === true }),
     updateStatus: () => invoke('update_status'),
     checkForUpdate: () => invoke('update_check'),
     restartToUpdate: () => invoke('update_restart'),
@@ -79,5 +81,14 @@
       }).then(stop => { if (disposed) stop(); else unsubscribe = stop; }).catch(() => {});
       return () => { disposed = true; unsubscribe?.(); };
     },
+    // The Mac menu bar's own items arrive by id; the page runs them as its shortcuts.
+    onMenu: listener => {
+      let disposed = false, unsubscribe;
+      void window.__TAURI__.event.listen('panecast-menu', event => {
+        if (!disposed && typeof event.payload === 'string') listener(event.payload);
+      }).then(stop => { if (disposed) stop(); else unsubscribe = stop; }).catch(() => {});
+      return () => { disposed = true; unsubscribe?.(); };
+    },
+    closeWindow: () => { void window.__TAURI__.event.emit('panecast-close-window').catch(() => {}); },
   });
 })();

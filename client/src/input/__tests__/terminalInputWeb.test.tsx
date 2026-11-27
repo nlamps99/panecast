@@ -81,7 +81,8 @@ it('maps physical terminal keys once, preserving order and modifiers without mov
     await act(async () => { textarea.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(true);
   }
-  expect(sent).toEqual(['hello', 'tab', 'up', 'alt-left', 'shift-tab', 'ctrl-c', 'ctrl-r', 'backspace', 'delete', 'escape', 'f5', 'enter']);
+  // ⌥← moves a word back, as Terminal.app sends it (Esc-b).
+  expect(sent).toEqual(['hello', 'tab', 'up', 'alt-b', 'shift-tab', 'ctrl-c', 'ctrl-r', 'backspace', 'delete', 'escape', 'f5', 'enter']);
   expect(document.activeElement).toBe(textarea);
 });
 
@@ -124,4 +125,71 @@ it('keeps Command copy/paste and Option text input local, and lets Shift+Enter e
     expect(event.defaultPrevented).toBe(false);
   }
   expect(remote).not.toHaveBeenCalled(); expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it('stays focused and read-only when it stops being editable, and takes keys again once it is', async () => {
+  const onHardwareKey = jest.fn(() => true), onCommitText = jest.fn();
+  const { textarea } = await render({ mode: 'live', editable: false, onHardwareKey, onCommitText });
+  textarea.focus();
+  expect(textarea.disabled).toBe(false);
+  expect(textarea.readOnly).toBe(true);
+  expect(document.activeElement).toBe(textarea);
+  const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+  await act(async () => { textarea.dispatchEvent(tab); });
+  // Asked anyway, so a terminal key does not move focus away while offline.
+  expect(onHardwareKey).toHaveBeenCalledTimes(1);
+  expect(tab.defaultPrevented).toBe(true);
+  await act(async () => root.render(<TerminalInputView mode="live" editable onHardwareKey={onHardwareKey} onCommitText={onCommitText} />));
+  expect(textarea.readOnly).toBe(false);
+  expect(document.activeElement).toBe(textarea);
+});
+
+it('presses a key handed over from elsewhere as if typed in the field, focusing it', async () => {
+  const onSubmit = jest.fn(), onKeyAction = jest.fn();
+  const { handle, textarea } = await render({ initialText: 'ls', onSubmit, onKeyAction });
+  const outside = document.createElement('button'); document.body.appendChild(outside); outside.focus();
+  let used = false;
+  await act(async () => { used = handle.pressKey!({ key: 'Enter', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, altGraphKey: false }); });
+  expect(used).toBe(true);
+  expect(document.activeElement).toBe(textarea);
+  expect(onSubmit).toHaveBeenCalledWith('ls');
+  expect(handle.pressKey!({ key: 'ArrowLeft', ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, altGraphKey: false })).toBe(false);
+  outside.remove();
+});
+
+it('composes at the terminal cursor and goes back to its place afterwards', async () => {
+  const imeAnchor = jest.fn(() => ({ left: 300, top: 120, height: 17, background: 'rgb(1, 2, 3)' }));
+  const onCommitText = jest.fn();
+  const { textarea } = await render({ mode: 'live', imeAnchor, onCommitText, fontSize: 15 });
+  textarea.getBoundingClientRect = () => ({ left: 20, top: 700, width: 600, height: 36, right: 620, bottom: 736, x: 20, y: 700, toJSON() {} }) as DOMRect;
+  const canvas = dom.window.HTMLCanvasElement.prototype as unknown as { getContext: () => unknown };
+  canvas.getContext = () => ({ font: '', measureText: (text: string) => ({ width: text.length * 13 }) });
+  await act(async () => { textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
+  // The cursor cell's top left, in the terminal's text size, one line shown.
+  expect(textarea.style.transform).toBe('translate(280px, -580px)');
+  expect(textarea.style.fontSize).toBe('13px');
+  expect(textarea.style.clipPath).toBe('inset(0px 0px 19px 0px)');
+  expect(textarea.style.backgroundColor).toBe('rgb(1, 2, 3)');
+  await act(async () => { textarea.value = 'nihao'; textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true })); });
+  expect(textarea.style.width).toBe('77px');
+  expect(onCommitText).not.toHaveBeenCalled();
+  await act(async () => {
+    textarea.value = '你好';
+    textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+  });
+  expect(onCommitText).toHaveBeenCalledWith('你好');
+  expect(textarea.style.transform).toBe('');
+  expect(textarea.style.width).toBe('');
+  expect(textarea.style.fontSize).toBe('15px');
+  // Back to the field's own transparent background, not the browser's default.
+  expect(textarea.style.backgroundColor).toBe('transparent');
+});
+
+it('stays put for line input and when no cursor is shown', async () => {
+  const { textarea } = await render({ mode: 'live', imeAnchor: () => null });
+  await act(async () => { textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
+  expect(textarea.style.transform).toBe('');
+  const line = await render({ mode: 'line', imeAnchor: () => ({ left: 1, top: 1, height: 10, background: 'red' }) });
+  await act(async () => { line.textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
+  expect(line.textarea.style.transform).toBe('');
 });

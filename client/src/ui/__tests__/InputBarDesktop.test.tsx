@@ -1,7 +1,7 @@
 import { act, createRef, type ReactNode } from 'react';
 import type { TerminalInputHandle } from '../../../modules/terminal-input';
 import type { TerminalSession } from '../../session/terminalSession';
-import { setPrefs, usePrefs } from '../../state/prefs';
+import { getPrefs, setPrefs, usePrefs } from '../../state/prefs';
 import { InputBar } from '../InputBar';
 
 let mockDesktop = true;
@@ -40,9 +40,10 @@ jest.mock('../../state/hooks', () => {
 jest.mock('../KeyBar', () => ({ KeyBar: () => 'PHONE_KEYS', useKeyboardProfileEditor: () => ({ button: 'PHONE_PROFILE', editor: null }) }));
 let mockKeyboard = false;
 jest.mock('../useKeyboardVisible', () => ({ useKeyboardVisible: () => mockKeyboard }));
-jest.mock('../InputLibrarySheet', () => ({ InputLibrarySheet: () => null }));
+let mockInsert: ((text: string) => void) | null = null;
+jest.mock('../InputLibrarySheet', () => ({ InputLibrarySheet: ({ onInsert }: { onInsert: (text: string) => void }) => { mockInsert = onInsert; return null; } }));
 jest.mock('../ExpandedComposer', () => ({ ExpandedComposer: () => null }));
-jest.mock('../Sheet', () => ({ useSheet: () => ({ visible: false, open: jest.fn(), close: jest.fn(), onClosed: jest.fn() }) }));
+jest.mock('../Sheet', () => ({ useSheet: () => ({ visible: false, open: jest.fn(), close: (then?: () => void) => then?.(), onClosed: jest.fn() }) }));
 
 let dom: { window: Window & typeof globalThis };
 let container: HTMLDivElement;
@@ -50,11 +51,19 @@ type Root = { render(children: ReactNode): void; unmount(): void };
 let root: Root;
 let createRoot: (container: Element) => Root;
 const inputRef = createRef<TerminalInputHandle>();
+let mockSessionState = { target: { workspaceId: 'workspace', surfaceId: 'surface' }, input: { busy: false, error: null as string | null } };
+const sessionListeners = new Set<() => void>();
 const session = {
-  getState: () => ({ target: { workspaceId: 'workspace', surfaceId: 'surface' } }),
+  getState: () => mockSessionState,
+  subscribe: (listener: () => void) => { sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; },
   isConnected: true, sendText: jest.fn(), sendKey: jest.fn(),
   submitLine: jest.fn(async () => ({ status: 'sent', message: null })),
+  pasteText: jest.fn(async () => ({ status: 'sent', message: '已送达终端' })),
 } as unknown as TerminalSession;
+function setInput(input: { busy: boolean; error: string | null }) {
+  mockSessionState = { ...mockSessionState, input };
+  for (const listener of sessionListeners) listener();
+}
 function Harness({ chat = false }: { chat?: boolean }) {
   const { desktopInputMode, inputMode } = usePrefs();
   return <InputBar key={`${chat}:${mockDesktop ? desktopInputMode : inputMode}`} session={session} disabled={false} error={null} inputRef={inputRef} presentation={chat ? 'chat' : 'terminal'} />;
@@ -71,7 +80,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  mockDesktop = true; mockComputerId++; jest.clearAllMocks(); mockChannel.set('open');
+  mockDesktop = true; mockComputerId++; jest.clearAllMocks(); mockChannel.set('open'); setInput({ busy: false, error: null });
   setPrefs({ inputMode: 'line', desktopInputMode: 'live' });
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
 });
@@ -209,4 +218,114 @@ it('follows the connection: offline after a drop, back to normal after the recon
   expect(container.textContent).toContain('离线 · 可以继续写草稿');
   await act(async () => mockChannel.set('open'));
   expect(container.textContent).not.toContain('离线');
+});
+
+it('pastes multi-line text and Shift+Enter whole, with typed keys as the fallback', async () => {
+  await act(async () => root.render(<Harness />));
+  await text('echo one\necho two');
+  expect(session.sendText).not.toHaveBeenCalled();
+  expect(session.pasteText).toHaveBeenCalledWith('echo one\necho two', [
+    { kind: 'text', text: 'echo one' }, { kind: 'key', key: { name: 'enter' } }, { kind: 'text', text: 'echo two' }]);
+  expect((await key('Enter', { shiftKey: true })).defaultPrevented).toBe(true);
+  expect(session.pasteText).toHaveBeenLastCalledWith('\n', [{ kind: 'key', key: { name: 'enter', modifiers: ['shift'] } }]);
+  expect(session.sendKey).not.toHaveBeenCalled();
+});
+
+it('keeps a phone keyboard Return committed as a line break an Enter key', async () => {
+  mockDesktop = false;
+  setPrefs({ inputMode: 'live' });
+  await act(async () => root.render(<Harness />));
+  await text('ls\n');
+  expect(session.pasteText).not.toHaveBeenCalled();
+  expect(session.sendText).toHaveBeenCalledWith('ls');
+  expect(session.sendKey).toHaveBeenCalledWith({ name: 'enter' });
+});
+
+it('sends the Mac line-editing shortcuts in direct input', async () => {
+  await act(async () => root.render(<Harness />));
+  await key('ArrowLeft', { metaKey: true }); await key('Backspace', { altKey: true }); await key('ArrowRight', { altKey: true });
+  expect((session.sendKey as jest.Mock).mock.calls).toEqual([[{ name: 'a', modifiers: ['ctrl'] }], [{ name: 'w', modifiers: ['ctrl'] }], [{ name: 'f', modifiers: ['alt'] }]]);
+});
+
+it('sends Esc and Ctrl+C from an empty command line and the chat box, but edits a draft normally', async () => {
+  await act(async () => root.render(<Harness />));
+  await click('编辑命令');
+  expect((await key('Escape')).defaultPrevented).toBe(true);
+  expect((await key('c', { ctrlKey: true })).defaultPrevented).toBe(true);
+  expect((session.sendKey as jest.Mock).mock.calls).toEqual([[{ name: 'escape' }], [{ name: 'c', modifiers: ['ctrl'] }]]);
+  await text('draft');
+  expect((await key('Escape')).defaultPrevented).toBe(false);
+  expect((await key('c', { metaKey: true })).defaultPrevented).toBe(false);
+  expect(session.sendKey).toHaveBeenCalledTimes(2);
+  await act(async () => root.render(<Harness chat />));
+  await text('');
+  expect((await key('Escape')).defaultPrevented).toBe(true);
+  expect(session.sendKey).toHaveBeenLastCalledWith({ name: 'escape' });
+});
+
+it('keeps the field focusable but read-only while offline, without letting Tab leave the terminal', async () => {
+  await act(async () => root.render(<Harness />));
+  await act(async () => mockChannel.set('waiting'));
+  const textarea = container.querySelector('textarea')!;
+  expect(textarea.disabled).toBe(false);
+  expect(textarea.readOnly).toBe(true);
+  expect((await key('Tab')).defaultPrevented).toBe(true);
+  expect(session.sendKey).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('还没有连上电脑');
+  await act(async () => mockChannel.set('open'));
+  expect(textarea.readOnly).toBe(false);
+});
+
+it('says a send is taking long instead of going quiet', async () => {
+  await act(async () => root.render(<Harness />));
+  expect(container.textContent).not.toContain('发送中…');
+  await act(async () => setInput({ busy: true, error: null }));
+  expect(container.textContent).toContain('发送中…');
+  await act(async () => setInput({ busy: false, error: '输入没有确认送达：电脑没有响应' }));
+  expect(container.textContent).not.toContain('发送中…');
+});
+
+it('opens a snippet in the command line to edit, then goes back to direct input once it is sent, keeping the saved mode', async () => {
+  await act(async () => root.render(<Harness />));
+  await act(async () => mockInsert!('git status'));
+  expect(session.sendText).not.toHaveBeenCalled();
+  const field = () => container.querySelector('textarea')!;
+  expect(field().value).toBe('git status');
+  expect(container.textContent).toContain('直接输入');
+  expect(getPrefs().desktopInputMode).toBe('live');
+  await text('git status -s');
+  await key('Enter');
+  expect(session.submitLine).toHaveBeenCalledWith('git status -s');
+  // Back in direct input: typing goes straight to the terminal again.
+  expect(container.textContent).toContain('编辑命令');
+  await text('q');
+  expect(session.sendText).toHaveBeenCalledWith('q');
+  expect(getPrefs().desktopInputMode).toBe('live');
+});
+
+it('dismisses a snippet with Esc on its emptied line or the mode switch, without sending Escape', async () => {
+  await act(async () => root.render(<Harness />));
+  await act(async () => mockInsert!('rm -rf build'));
+  await text('');
+  expect((await key('Escape')).defaultPrevented).toBe(true);
+  expect(session.sendKey).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('编辑命令');
+  await act(async () => mockInsert!('npm test'));
+  await click('直接输入');
+  expect(container.textContent).toContain('编辑命令');
+  expect(getPrefs().desktopInputMode).toBe('live');
+  expect(session.submitLine).not.toHaveBeenCalled();
+});
+
+it('keeps a phone snippet in the command line the same way', async () => {
+  mockDesktop = false;
+  setPrefs({ inputMode: 'live' });
+  await act(async () => root.render(<Harness />));
+  await act(async () => mockInsert!('ls -la'));
+  expect(container.querySelector('textarea')!.value).toBe('ls -la');
+  await key('Enter');
+  expect(session.submitLine).toHaveBeenCalledWith('ls -la');
+  expect(getPrefs().inputMode).toBe('live');
+  await text('x');
+  expect(session.sendText).toHaveBeenCalledWith('x');
 });

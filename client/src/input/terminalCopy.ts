@@ -52,9 +52,10 @@ export function terminalSelectionText(container: Element, selection: Selection):
 export function useTerminalCopy(list: { current: { getScrollableNode(): unknown } | null }, enabled: boolean) {
   useEffect(() => {
     if (Platform.OS !== 'web' || !enabled || typeof document === 'undefined' || typeof Element === 'undefined') return;
-    const node = list.current?.getScrollableNode();
-    if (!(node instanceof Element)) return;
     const copy = (event: ClipboardEvent) => {
+      // Looked up at copy time: switching wrapping mounts the list's node anew.
+      const node = list.current?.getScrollableNode();
+      if (!(node instanceof Element)) return;
       const selection = window.getSelection();
       const text = selection ? terminalSelectionText(node, selection) : null;
       if (text === null || !event.clipboardData) return;

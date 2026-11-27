@@ -1,14 +1,15 @@
 import { Pressable, StyleSheet } from 'react-native';
+import { hoverTitle } from './ContextMenu';
 import { Icon } from './Icon';
 import { colors } from './theme';
 
 /** A small × that closes something on the computer; the caller asks for confirmation. */
 export function CloseButton({ label, disabled = false, onPress }: { label: string; disabled?: boolean; onPress(): void }) {
-  return <Pressable onPress={event => { event.stopPropagation(); onPress(); }} disabled={disabled}
+  return <Pressable ref={hoverTitle(label)} onPress={event => { event.stopPropagation(); onPress(); }} disabled={disabled}
     // 28 points is enough for a pointer; fingers get a larger touch area.
     hitSlop={6}
     accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }}
-    style={({ pressed }) => [styles.button, pressed && styles.pressed, disabled && styles.disabled]}>
+    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [styles.button, (pressed || hovered) && !disabled && styles.pressed, disabled && styles.disabled]}>
     <Icon name="close" size={13} color={colors.muted} />
   </Pressable>;
 }
