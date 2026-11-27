@@ -26,8 +26,10 @@ const clamp = (n, fallback, max) => Number.isInteger(n) ? Math.min(max, Math.max
 export const idleSkip = (idle) => idle < 4 ? 0 : idle < 8 ? 1 : 3;
 /** Bytes a session's transport may hold unsent before screen polling waits. */
 export const SCREEN_HIGH_WATER = 4 * 1024 * 1024;
-/** How often the broker link is pinged; a ping unanswered by the next one ends it. */
+/** How often the broker link is pinged; two unanswered in a row end it. */
 export const BROKER_HEARTBEAT_MS = 10_000;
+/** A run of text joined into one send stays under the 512 KiB a tmux or cmux TUI write takes. */
+export const MAX_JOINED_TEXT_BYTES = 256 * 1024;
 const json = (response, status, body) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); };
 const bearer = (request) => /^Bearer (.+)$/i.exec(request.headers.authorization ?? '')?.[1];
 // The kernel accepts on a live socket even while its owner is too busy to read.
@@ -78,7 +80,13 @@ export async function sendInputItems(items, target, call, sendKeys) {
   while (sent < items.length) {
     const text = items[sent].text !== undefined;
     let end = sent + 1;
-    if (text || sendKeys) while (end < items.length && (items[end].text !== undefined) === text) end++;
+    if (text) {
+      // Join whole items only, up to MAX_JOINED_TEXT_BYTES of UTF-8 (CJK is 3 bytes a character).
+      for (let bytes = Buffer.byteLength(items[sent].text); end < items.length && items[end].text !== undefined; end++) {
+        bytes += Buffer.byteLength(items[end].text);
+        if (bytes > MAX_JOINED_TEXT_BYTES) break;
+      }
+    } else if (sendKeys) while (end < items.length && items[end].text === undefined) end++;
     try {
       if (text) await call('surface.send_text', { ...target, text: end - sent === 1 ? items[sent].text : items.slice(sent, end).map((item) => item.text).join('') });
       else if (end - sent > 1) await sendKeys(items.slice(sent, end).map((item) => item.key));
@@ -306,24 +314,36 @@ export async function createTmuxRelay(config, options = {}) {
     // Only a host that confines guests to their shared window asks the broker for them.
     if (options.guestSessions) url.searchParams.set('features', 'guest-sessions');
     const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${config.broker.relay_token}` }, maxPayload: MAX_MESSAGE, handshakeTimeout: 10_000 });
-    tunnel = socket; let openedAt = 0, alive = true, flushed = 0, flushedAtPing = 0, readAtPing;
+    tunnel = socket; let openedAt = 0, alive = true, flushed = 0, missed = 0, mark = null, drainedAt = 0;
     const counted = (error) => { if (!error) flushed++; };
-    // Bytes of a large message still arriving (an upload chunk) hold back the pong behind them.
-    const bytesRead = () => socket._socket?.bytesRead;
+    /**
+     * What has moved on the link: bytes read (part of a large message still
+     * arriving, such as an upload chunk) and writes. One large write keeps
+     * `bufferedAmount` whole until it ends; the kernel queue under it shrinks.
+     */
+    const progress = () => ({ flushed, read: socket._socket?.bytesRead, queued: socket.bufferedAmount, kernel: socket._socket?._handle?.writeQueueSize });
     const send = (envelope) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(envelope), counted); };
     // Every phone shares this one link, so its backlog is what makes screens wait.
     const congested = () => socket.bufferedAmount > SCREEN_HIGH_WATER;
     socket.on('open', () => { openedAt = Date.now(); }); socket.on('pong', () => { alive = true; });
     // The broker's ws answers pings itself. A ping or pong waits behind what
-    // is already queued, so a link still moving a backlog either way is slow,
-    // not dead; one that moved nothing since the last ping is ended.
+    // is already queued: a large reply on a slow uplink can hold it for many
+    // seconds, first in this process and then in the kernel's send buffer,
+    // which nothing here can see. A link still moving data either way is slow,
+    // not dead; so is one that drained a backlog within the last three
+    // heartbeats. Only two heartbeats in a row with none of that and no pong
+    // end it (every phone on it reconnects).
+    const interval = options.brokerHeartbeatMs ?? BROKER_HEARTBEAT_MS;
     const heartbeat = setInterval(() => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      const writing = socket.bufferedAmount > 0 && flushed !== flushedAtPing;
-      const reading = bytesRead() !== undefined && bytesRead() !== readAtPing;
-      if (!alive && !writing && !reading) { socket.terminate(); return; }
-      flushedAtPing = flushed; readAtPing = bytesRead(); alive = false; socket.ping();
-    }, options.brokerHeartbeatMs ?? BROKER_HEARTBEAT_MS);
+      const now = progress(), at = Date.now();
+      const reading = mark && now.read !== undefined && now.read !== mark.read;
+      const draining = mark && now.queued > 0 && (now.flushed !== mark.flushed || now.queued < mark.queued || (now.kernel !== undefined && mark.kernel !== undefined && now.kernel < mark.kernel));
+      if (draining) drainedAt = at;
+      missed = alive || reading || draining || at - drainedAt < 3 * interval ? 0 : missed + 1;
+      if (missed >= 2) { socket.terminate(); return; }
+      mark = now; alive = false; socket.ping();
+    }, interval);
     socket.on('message', (data) => {
       alive = true;
       let e; try { e = JSON.parse(data.toString()); } catch { socket.close(); return; }

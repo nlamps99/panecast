@@ -213,3 +213,23 @@ test('concurrent reads of a growing transcript never duplicate records', async t
     for (const [i, page] of pages.entries()) assert.deepEqual(page, await fresh.read(fx.binding, { limit: 20 + i }), `round ${round}, limit ${20 + i}`);
   }
 });
+
+test('a transcript grown by more than a window is read afresh, not parsed from where the cache stopped', async t => {
+  const line = i => completed({ ...agent(`answer ${i} ${'y'.repeat(300)}`), id: `a${i}` }, `t${i}`);
+  const fx = await fixture(t, 'codex', [{ type: 'session_meta', payload: { id } }, ...Array.from({ length: 10 }, (_, i) => line(i))]);
+  const window = 8000, cached = new TerminalConversationReader({ home: fx.home, window });
+  const results = []; const extend = cached.extendTail.bind(cached);
+  cached.extendTail = async (...args) => { const records = await extend(...args); results.push(records ? records.length : null); return records; };
+  await cached.read(fx.binding);
+  await appendFile(fx.file, jsonl([line(10)]));
+  await cached.read(fx.binding);
+  assert.ok(results.at(-1) > 0, 'a small append is parsed incrementally');
+  await appendFile(fx.file, jsonl(Array.from({ length: 60 }, (_, i) => line(100 + i))));
+  const page = await cached.read(fx.binding);
+  assert.equal(results.at(-1), null, 'more than a window behind: the cached tail is not extended');
+  assert.deepEqual(page, await new TerminalConversationReader({ home: fx.home, window }).read(fx.binding));
+  assert.ok(cached.tails.get(`codex:${id}`).records[0].offset >= (await stat(fx.file)).size - window, 'the fresh window replaced the cache');
+  await appendFile(fx.file, jsonl([line(200)]));
+  assert.deepEqual(await cached.read(fx.binding), await new TerminalConversationReader({ home: fx.home, window }).read(fx.binding));
+  assert.ok(results.at(-1) > 0, 'and the next append extends it again');
+});

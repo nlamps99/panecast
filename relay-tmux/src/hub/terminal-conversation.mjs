@@ -228,7 +228,8 @@ export class TerminalConversationReader {
   }
   async extendTail(key, handle, info, epoch) {
     const tail = this.tails.get(key);
-    if (!tail || tail.epoch !== epoch || info.size < tail.end) return null;
+    // Grown by more than a window: only its last window counts, so read that afresh.
+    if (!tail || tail.epoch !== epoch || info.size < tail.end || info.size - tail.end > this.window) return null;
     const probe = Buffer.alloc(tail.check.length);
     await handle.read(probe, 0, probe.length, tail.end - probe.length);
     if (!probe.equals(tail.check) || this.tails.get(key) !== tail) return null;

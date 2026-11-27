@@ -50,6 +50,25 @@ test('batched input joins consecutive text and keys, keeps their order, and coun
   await assert.rejects(sendInputItems([{ text: 'a' }, { key: 'enter' }, { text: 'fa' }, { text: 'il' }, { key: 'enter' }], target, call),
     (error) => error.code === 'backend_error' && error.data.sent === 2);
 });
+test('a joined run of text stays under the 512 KiB a terminal write takes', async (t) => {
+  const calls = [];
+  const call = async (name, params) => { calls.push(params.text ?? params.key); };
+  const target = { workspace_id: '$0', surface_id: '%0' };
+  // 80 000 CJK characters are 240 000 UTF-8 bytes: two do not fit in 256 KiB together.
+  const cjk = '中'.repeat(80_000), items = [{ text: cjk }, { text: cjk }, { text: 'a' }, { key: 'enter' }, { text: cjk }];
+  assert.deepEqual(await sendInputItems(items, target, call), { sent: 5 });
+  assert.deepEqual(calls.map((value) => typeof value === 'string' && value.length > 10 ? Buffer.byteLength(value) : value), [240_000, 240_001, 'enter', 240_000]);
+  assert.equal(calls.slice(0, 2).join(''), cjk + cjk + 'a', 'the same text, in order');
+  // Through a relay session onto a backend that, like tmux, refuses writes over 512 KiB.
+  const writes = [];
+  const backend = { surface: async () => ({}), capture: async () => ({ rows: [], surface: {} }),
+    dispatch: async (name, p) => { if (name === 'surface.send_text') { if (Buffer.byteLength(p.text) > 512 * 1024) throw Object.assign(new Error('输入过大'), { code: 'invalid_params' }); writes.push(Buffer.byteLength(p.text)); } return {}; } };
+  const session = new RelaySession(backend, {}, () => {}, () => {}, () => {}); t.after(() => session.dispose());
+  const many = Array.from({ length: 6 }, () => ({ text: '文'.repeat(40_000) }));
+  assert.deepEqual(await session.dispatch('surface.input', { ...target, items: many }), { sent: 6 });
+  assert.ok(writes.every((bytes) => bytes <= 256 * 1024)); assert.equal(writes.reduce((a, b) => a + b, 0), 6 * 120_000);
+  assert.equal(writes.length, 3);
+});
 test('tmux gets one paste per text run and one send-keys per key run', async (t) => {
   const commands = [];
   const { backend } = await fixture(t, { execute: (command, args, input) => { commands.push(args.find((arg) => /^[a-z]+-[a-z]+$/.test(arg))); return run(command, args, input); } });
@@ -315,6 +334,44 @@ test('the broker link is ended when its pings go unanswered, and kept while they
   assert.equal(busy.sockets[0].closedAt, null, 'traffic from the broker counts as an answer');
   for (let i = 0; i < 40 && busy.sockets[0].closedAt === null; i++) await delay(25);
   assert.notEqual(busy.sockets[0].closedAt, null, 'and once it stops, the silent link ends');
+});
+
+test('one missed pong, or a large reply still draining, never ends the broker link', async (t) => {
+  const { directory } = await fixture(t);
+  // Answers every other ping, as a pong held up now and then behind a large message.
+  const flaky = await silentBroker(t);
+  flaky.server.on('connection', (ws) => { let pings = 0; ws.on('ping', () => { if (++pings % 2 === 0) ws.pong(); }); });
+  const big = 'x'.repeat(24 * 1024 * 1024);
+  const backend = { surface: async () => ({}), capture: async () => ({ rows: [], surface: {} }), dispatch: async () => ({ workspaces: [], blob: big }) };
+  const relay = await createTmuxRelay(brokerConfig(join(directory, 'flaky'), flaky.url), { backend, brokerHeartbeatMs: 100 });
+  await relay.start(); t.after(() => relay.close());
+  for (let i = 0; i < 40 && !flaky.sockets.length; i++) await delay(25);
+  await delay(800);
+  assert.equal(flaky.sockets.length, 1); assert.equal(flaky.sockets[0].closedAt, null, 'every other pong keeps the link');
+
+  // A broker that reads its socket only in short bursts, as a slow uplink drains one large reply.
+  // It answers pings, but those wait behind the reply, so no pong comes until it has drained.
+  const slow = await silentBroker(t, { autoPong: true });
+  const second = await createTmuxRelay(brokerConfig(join(directory, 'slow'), slow.url), { backend, brokerHeartbeatMs: 100 });
+  await second.start(); t.after(() => second.close());
+  for (let i = 0; i < 40 && !slow.sockets.length; i++) await delay(25);
+  const ws = slow.sockets[0]; let reply = null;
+  ws.on('message', (data) => { const e = JSON.parse(data); if (e.type === 'session.text') reply = JSON.parse(e.text); });
+  ws.send(JSON.stringify({ type: 'session.open', session_id: 's1', device_id: 'phone' }));
+  ws.send(JSON.stringify({ type: 'session.text', session_id: 's1', text: JSON.stringify({ deviceId: 'phone', protocolVersion: 1 }) }));
+  ws.send(JSON.stringify({ type: 'session.text', session_id: 's1', text: JSON.stringify({ id: '1', method: 'workspace.list', params: {} }) }));
+  ws._socket.pause();
+  const started = Date.now();
+  // About 512 KiB every 30 ms: a few heartbeats' worth, with every heartbeat seeing some of it move.
+  const bursts = setInterval(() => { let chunks = 0; const take = () => { if (++chunks >= 8) { ws._socket.off('data', take); ws._socket.pause(); } }; ws._socket.on('data', take); ws._socket.resume(); }, 30);
+  t.after(() => clearInterval(bursts));
+  for (let i = 0; i < 400 && !reply && ws.closedAt === null; i++) await delay(25);
+  clearInterval(bursts); ws._socket.resume();
+  assert.equal(ws.closedAt, null, `the link stayed up while the reply drained (${Date.now() - started} ms, no pong meanwhile)`);
+  assert.ok(Date.now() - started > 300, 'the reply took several heartbeats');
+  assert.equal(reply?.result?.blob?.length, big.length);
+  await delay(400);
+  assert.equal(ws.closedAt, null);
 });
 
 test('a null envelope closes the broker link without ending the relay', async (t) => {

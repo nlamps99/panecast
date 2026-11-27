@@ -68,6 +68,17 @@ const KEEPS_TEXT = new Set(['enter', 'escape', 'up', 'down', 'left', 'right', 'h
 const KEEPS_TEXT_CTRL = new Set(['c', 'a', 'e', 'b', 'f', 'p', 'n', 'l', 'o', 't', 's', 'x']);
 const MODIFIER = /^(ctrl|control|alt|option|opt|shift|cmd|command|meta|super)[-+](?=.)/;
 const SYSTEM_MODIFIERS = new Set(['cmd', 'command', 'meta', 'super']);
+/**
+ * Modifiers as the gateway's cmux relay reads them (relay/Sources/SharedKit/
+ * CmuxKeyNames.swift): opt, option and meta are Alt there, control is Ctrl,
+ * command and super are ⌘. Rules are checked on these, never on the spelling.
+ */
+const MODIFIER_MEANING = { ctrl: 'ctrl', control: 'ctrl', alt: 'alt', opt: 'alt', option: 'alt', meta: 'alt', shift: 'shift', cmd: 'cmd', command: 'cmd', super: 'cmd' };
+/**
+ * cmux names for control keys that are not spelled as chords: Ctrl-Z, Ctrl-\
+ * and Ctrl-D. A client spells these as chords, so a guest never needs them.
+ */
+const NAMED_CONTROL_REFUSED = new Set(['sigtstp', 'sigquit', 'eof']);
 const forbidden = () => new RpcError('forbidden', '分享窗口只能操作被分享的工作区里的终端');
 
 /** What a guest types: any text without control characters; a ! is typed as ！ (see above). */
@@ -91,31 +102,39 @@ export function guestPaste(text) {
  */
 export function guestKey(key, { editing = true } = {}) {
   if (typeof key !== 'string' || !key || key.length > 64 || CONTROL.test(key)) throw new RpcError('guest_key', '无效按键');
-  const modifiers = new Set();
+  const spelled = new Set();
   let rest = key.toLowerCase();
+  if (NAMED_CONTROL_REFUSED.has(rest)) throw new RpcError('guest_key', '分享窗口不能用这个按键名，请用组合键');
   for (let match = MODIFIER.exec(rest); match; match = MODIFIER.exec(rest)) {
-    modifiers.add(match[1]);
+    spelled.add(match[1]);
     rest = rest.slice(match[0].length);
   }
-  refuseKey(rest, modifiers);
+  refuseKey(rest, spelled);
   // cmux reads a chord by splitting on both + and - and dropping empty
   // pieces (`ctrl+-+g` is Ctrl-G there): its reading must pass as well.
   const chord = key.toLowerCase().split(/[+-]/).filter(Boolean);
   if (chord.length > 1) refuseKey(chord.at(-1), new Set(chord.slice(0, -1)));
-  const ctrl = modifiers.has('ctrl') || modifiers.has('control');
+  const modifiers = meanings(spelled), ctrl = modifiers.has('ctrl');
   if (!editing) {
-    const keeps = modifiers.has('alt') ? false : ctrl ? KEEPS_TEXT_CTRL.has(rest) : KEEPS_TEXT.has(rest);
+    const keeps = modifiers.has('alt') || modifiers.has('cmd') ? false : ctrl ? KEEPS_TEXT_CTRL.has(rest) : KEEPS_TEXT.has(rest);
     if (!keeps) throw new RpcError('guest_key', '这个分享窗口是旧版创建的，退格、删除等编辑键要等电脑上运行 panecast share reopen 重新打开窗口后才能用');
   }
   return key;
 }
 
-/** Throws for a key that acts outside the shared window (see above). */
-function refuseKey(rest, modifiers) {
-  if ([...modifiers].some((name) => SYSTEM_MODIFIERS.has(name))) throw new RpcError('guest_key', '分享窗口不能用 ⌘ 快捷键：它们由这台电脑上的终端处理');
+const meanings = (spelled) => new Set([...spelled].map((name) => MODIFIER_MEANING[name] ?? name));
+
+/**
+ * Throws for a key that acts outside the shared window (see above). Ctrl-\
+ * (also spelled ctrl-4, which the relay sends as Ctrl-\) stays allowed: the
+ * window's Claude runs under `exec` with its terminal in raw mode, so at most
+ * it ends Claude and the window, as Ctrl-C twice or Ctrl-D already can.
+ */
+function refuseKey(rest, spelled) {
+  const modifiers = meanings(spelled);
+  if (modifiers.has('cmd') || [...spelled].some((name) => SYSTEM_MODIFIERS.has(name))) throw new RpcError('guest_key', '分享窗口不能用 ⌘ 快捷键：它们由这台电脑上的终端处理');
   if (rest === '!' || (rest === '1' && modifiers.has('shift'))) throw new RpcError('guest_key', '半角 ! 会让 Claude 进入 shell 模式，请直接输入文字');
-  const ctrl = modifiers.has('ctrl') || modifiers.has('control');
-  if (ctrl && CTRL_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${CTRL_REFUSED[rest]}`);
+  if (modifiers.has('ctrl') && CTRL_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${CTRL_REFUSED[rest]}`);
   if (modifiers.has('alt') && ALT_REFUSED[rest]) throw new RpcError('guest_key', `分享窗口不能用这个组合键：${ALT_REFUSED[rest]}`);
 }
 

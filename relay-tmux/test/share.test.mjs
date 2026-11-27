@@ -392,6 +392,21 @@ test('a guest key is checked as cmux reads it, with + as well as - between keys'
   assert.throws(() => guestKey('ctrl+w', { editing: false }), { code: 'guest_key' });
 });
 
+test('a guest key is checked by what its modifiers mean, as the relay translates them', () => {
+  // The relay sends opt/option/meta as Alt, control as Ctrl, command/super as ⌘: Alt-Y yanks deleted text back.
+  for (const key of ['option-y', 'opt+y', 'option+y', 'opt-y', 'OPTION-Y', 'meta-y', 'opt+-+y', 'shift-option-y',
+    'control+g', 'control-v', 'control+shift+z', 'opt+ctrl+r', 'command+v', 'super-c', 'option-shift-1', 'opt-!']) {
+    assert.throws(() => guestKey(key), { code: 'guest_key' }, key);
+  }
+  // cmux's names for Ctrl-Z, Ctrl-\ and Ctrl-D, which a client spells as chords.
+  for (const key of ['sigtstp', 'SIGTSTP', 'sigquit', 'eof']) assert.throws(() => guestKey(key), { code: 'guest_key' }, key);
+  // Ctrl-\ (ctrl-4 to the relay) at most ends the window's Claude, as Ctrl-C twice does.
+  for (const key of ['ctrl-4', 'ctrl+4', 'ctrl-\\', 'option-left', 'opt+b', 'control-a']) assert.equal(guestKey(key), key);
+  // A window without the prompt hook keeps only keys that keep the text, whatever the spelling.
+  for (const key of ['option-left', 'opt+b', 'ctrl-8', 'ctrl-?', 'ctrl-4', 'control+w']) assert.throws(() => guestKey(key, { editing: false }), { code: 'guest_key' }, key);
+  for (const key of ['control-c', 'control+a', 'pageup']) assert.equal(guestKey(key, { editing: false }), key);
+});
+
 test('a guest lists, links and uploads files of the shared directory only', async (t) => {
   const outside = await mkdtemp(join(tmpdir(), 'panecast-outside-')); t.after(() => rm(outside, { recursive: true, force: true }));
   const folder = await realpath(await mkdtemp(join(tmpdir(), 'panecast-shared-'))); t.after(() => rm(folder, { recursive: true, force: true }));
